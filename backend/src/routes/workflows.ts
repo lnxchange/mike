@@ -5,7 +5,10 @@ import { createServerSupabase } from "../lib/supabase";
 
 function getAdminClient() {
   return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
+    // `NEXT_PUBLIC_SUPABASE_URL` is kept as a fallback only for deployments
+    // that share a single .env across frontend and backend; the backend's
+    // own var is `SUPABASE_URL` (see backend/.env.example).
+    process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
     process.env.SUPABASE_SECRET_KEY ?? "",
     { auth: { autoRefreshToken: false, persistSession: false } },
   );
