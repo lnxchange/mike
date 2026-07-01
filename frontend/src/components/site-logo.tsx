@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { MikeIcon } from "@/components/chat/mike-icon";
+import { appConfig } from "@/config";
 
 interface SiteLogoProps {
     size?: "sm" | "md" | "lg" | "xl";
@@ -16,7 +17,7 @@ export function SiteLogo({
 }: SiteLogoProps) {
     const landingHref =
         process.env.NODE_ENV === "production"
-            ? "https://mikeoss.com"
+            ? appConfig.branding.landingUrl
             : "http://localhost:3000";
     const sizeClasses = {
         sm: "text-xl",
@@ -39,7 +40,7 @@ export function SiteLogo({
             } ${className}`}
         >
             <MikeIcon size={iconSizes[size]} />
-            <span>Mike</span>
+            <span>{appConfig.branding.appName}</span>
         </h1>
     );
 
