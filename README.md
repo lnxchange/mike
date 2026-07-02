@@ -11,6 +11,7 @@ This fork is set up to be run and tested independently: a fresh Supabase project
 - `backend/schema.sql` - Supabase schema for fresh databases
 - `config/README.md` - the branding/feature-flag/deployment-profile configuration layer
 - `docs/safe-local-testing.md` - operational guidance for testing with disposable resources
+- [`QUICKSTART.md`](./QUICKSTART.md) - one linear runbook: Supabase + Vercel + a backend host, start to finish, with exactly which key goes where
 - [`SETUP_AUDIT.md`](./SETUP_AUDIT.md) - architecture audit and known gaps
 - [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md) - step-by-step fresh Supabase project setup
 - [`API_BOUNDARY.md`](./API_BOUNDARY.md) - the HTTP API surface, for future external/integration callers
@@ -29,6 +30,8 @@ This fork is set up to be run and tested independently: a fresh Supabase project
 - LibreOffice installed locally if you need DOC/DOCX to PDF conversion (backend only)
 
 ## Quick start
+
+For a full click-by-click walkthrough (create the Supabase project, deploy the backend, deploy the frontend to Vercel, and get every key into the right file), see [`QUICKSTART.md`](./QUICKSTART.md). Short version for local-only testing:
 
 ```bash
 git clone <this-repo>
