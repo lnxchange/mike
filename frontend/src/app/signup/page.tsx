@@ -10,6 +10,7 @@ import { SiteLogo } from "@/components/site-logo";
 import { CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { updateUserProfile } from "@/app/lib/mikeApi";
+import { appConfig } from "@/config";
 
 export default function SignupPage() {
     const router = useRouter();
@@ -255,7 +256,7 @@ export default function SignupPage() {
                     <div className="mt-4 text-center text-xs text-gray-500">
                         By signing up, you agree to our{" "}
                         <Link
-                            href="https://mikeoss.com/terms"
+                            href={appConfig.externalLinks.terms}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-600 hover:underline"
@@ -264,7 +265,7 @@ export default function SignupPage() {
                         </Link>{" "}
                         and{" "}
                         <Link
-                            href="https://mikeoss.com/privacy"
+                            href={appConfig.externalLinks.privacy}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-600 hover:underline"

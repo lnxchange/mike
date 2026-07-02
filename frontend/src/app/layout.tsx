@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, EB_Garamond } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
+import { appConfig } from "@/config";
 
 const inter = Inter({
     variable: "--font-inter",
@@ -14,11 +15,12 @@ const ebGaramond = EB_Garamond({
     weight: ["400", "500", "600", "700"],
 });
 
+const appTitle = `${appConfig.branding.appName} - AI Legal Platform`;
+
 export const metadata: Metadata = {
-    metadataBase: new URL("https://app.mikeoss.com"),
-    title: "Mike - AI Legal Platform",
-    description:
-        "AI-powered legal document analysis and contract review platform.",
+    metadataBase: new URL(appConfig.branding.appUrl),
+    title: appTitle,
+    description: appConfig.branding.tagline,
     icons: {
         icon: [
             { url: "/icon.svg", type: "image/svg+xml" },
@@ -28,25 +30,23 @@ export const metadata: Metadata = {
     },
     openGraph: {
         type: "website",
-        url: "https://app.mikeoss.com",
-        siteName: "Mike",
-        title: "Mike - AI Legal Platform",
-        description:
-            "AI-powered legal document analysis and contract review platform.",
+        url: appConfig.branding.appUrl,
+        siteName: appConfig.branding.appName,
+        title: appTitle,
+        description: appConfig.branding.tagline,
         images: [
             {
                 url: "/link-image.jpg",
                 width: 1200,
                 height: 651,
-                alt: "Mike",
+                alt: appConfig.branding.appName,
             },
         ],
     },
     twitter: {
         card: "summary_large_image",
-        title: "Mike - AI Legal Platform",
-        description:
-            "AI-powered legal document analysis and contract review platform.",
+        title: appTitle,
+        description: appConfig.branding.tagline,
         images: ["/link-image.jpg"],
     },
 };
