@@ -50,7 +50,13 @@ Both `oss` profiles (the only ones with real values) currently customize:
   current OSS behavior of free-text practice areas).
 - **Feature flags**: currently just `modeLawIntegration` (boolean, off by default) —
   reserved for future code that needs to branch on "is this a mode.law deployment",
-  without needing to know anything else about what that means.
+  without needing to know anything else about what that means. The first concrete use case
+  under discussion is a SharePoint/Zoho matter-sync adapter (see
+  `docs/integrations/sharepoint-zoho-matter-sync.md`) — the current recommendation there is
+  to build it as a *separate* service calling this app's API (`API_BOUNDARY.md`) rather
+  than flipping this flag on and adding in-process sync code, precisely to avoid holding a
+  broad-access SharePoint/Zoho credential inside this repo's own backend. This flag stays
+  reserved as the fallback if in-process integration is ever genuinely required instead.
 
 ## What a profile deliberately does NOT control
 

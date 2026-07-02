@@ -11,6 +11,7 @@ This fork is set up to be run and tested independently: a fresh Supabase project
 - `backend/schema.sql` - Supabase schema for fresh databases
 - `config/README.md` - the branding/feature-flag/deployment-profile configuration layer
 - `docs/safe-local-testing.md` - operational guidance for testing with disposable resources
+- `docs/integrations/` - design notes for planned (not yet built) integrations, e.g. a SharePoint/Zoho matter-sync adapter
 - [`QUICKSTART.md`](./QUICKSTART.md) - one linear runbook: Supabase + Vercel + a backend host, start to finish, with exactly which key goes where
 - [`SETUP_AUDIT.md`](./SETUP_AUDIT.md) - architecture audit and known gaps
 - [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md) - step-by-step fresh Supabase project setup
@@ -140,6 +141,8 @@ If a fully Vercel-hosted stack becomes a hard requirement later, the least invas
 ## Mode.law future-proofing
 
 This repo includes a small, explicit configuration layer (`backend/src/config/`, `frontend/src/config/`, documented in `config/README.md`) for branding, default prompts, allowed document categories, feature flags, support contact, and external links — selected via a `DEPLOYMENT_PROFILE` (backend) / `NEXT_PUBLIC_DEPLOYMENT_PROFILE` (frontend) env var. Only an `oss` profile has real values today; a `mode-law` profile placeholder exists with the same generic values, ready for a future overlay to fill in without touching application code. See `config/README.md` for the full explanation, and `API_BOUNDARY.md` for the HTTP API surface a future proprietary system should call instead of importing this codebase directly (keeping the AGPL boundary clean — see `SETUP_AUDIT.md` "Known gaps" for the technical reasoning).
+
+The first concrete future-integration under discussion — a SharePoint/Zoho matter-sync adapter for Attune Legal — is captured as a design-only planning doc in [`docs/integrations/sharepoint-zoho-matter-sync.md`](./docs/integrations/sharepoint-zoho-matter-sync.md). No code for it exists yet; the doc records the architecture decision (a separate adapter service calling this app's own API, not code inside this repo) before implementation starts.
 
 ## Troubleshooting
 

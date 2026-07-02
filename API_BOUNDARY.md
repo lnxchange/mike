@@ -155,3 +155,12 @@ Supabase user (or a dedicated service-account user, if per-user attribution isn'
 and call the HTTP routes above, the same way this repo's own frontend does. That keeps this
 repository's AGPL-covered code untouched and running as its own network service, with the
 proprietary logic living entirely outside it.
+
+### Worked example: matter sync from SharePoint / Zoho
+
+See `docs/integrations/sharepoint-zoho-matter-sync.md` for a concrete application of this
+pattern: a planned (not yet built) adapter service that pulls matter documents from
+SharePoint/Zoho and pushes them into this app via `POST /projects` and
+`POST /projects/:projectId/documents` — the same two endpoints listed in the "Core
+actions" table above — rather than holding SharePoint/Zoho credentials or sync logic
+inside this repo's `backend/`.
