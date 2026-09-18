@@ -9,16 +9,46 @@ under `docs/integrations/` (rather than the root-level docs) to keep it clearly 
 from the docs that describe this repo's own generic setup. See `config/README.md` for why
 that separation matters.
 
+## Deployment context (why this is a standalone deployment, not a mode.law feature yet)
+
+There are three separate objectives in play for this codebase, in priority order as of
+this writing:
+
+1. **Evaluate the app** — general capability testing (largely covered by the local/
+   Supabase-connected setup already done — see `TESTING.md`).
+2. **Use it in Attune Legal's own practice**, connected to SharePoint/Zoho for matter
+   documents — **this is the current priority** and what this document plans for.
+3. **A separate, customer-facing mode.law instance** — for mode.law's own users to ask
+   questions and edit generated/uploaded documents. This is a distinct, later effort.
+
+Objective 2 is deliberately built as **its own standalone deployment** — its own Vercel
+project, its own Railway-hosted backend, its own Supabase project (the one already
+connected — see `SUPABASE_SETUP.md`), its own storage bucket. It is not folded into any
+existing mode.law Vercel project or codebase. When objective 3 is eventually taken up, it
+will be **another separate deployment** of this same repo (own Vercel project, own
+Supabase project so mode.law's customer data never mixes with Attune Legal's matters),
+using the `mode-law` profile in `config/README.md` for branding — not a merge of the two
+into one instance. This keeps Attune Legal's matter data, and any SharePoint/Zoho
+credentials, scoped to exactly one deployment that needs them.
+
+**Libris** (Attune Legal's separate proprietary practice-management tool, with its own
+Azure/Microsoft-model-hosted AI component) is a known adjacent system. No integration with
+it is planned or designed here — noted for awareness only, in case a future connection
+point is worth revisiting once this SharePoint/Zoho work is live.
+
 ## The goal
 
 From inside this app, open a matter and see its SharePoint documents without a manual
-upload step:
+upload step — and have work done inside this app find its way back to SharePoint too:
 
 1. The firm's matter management system is split across **Zoho** (matter/client metadata,
    practice management) and **SharePoint** (each matter has a dedicated document folder).
 2. First time a matter is opened in this app, pull that folder's documents in.
 3. Every time the matter is revisited, refresh so the app reflects whatever is currently in
    the SharePoint folder — without a full re-list/re-download every time.
+4. **Two-way**: documents edited or generated inside this app should be reflected back into
+   the SharePoint matter folder, not just pulled from it — see "Push direction" under
+   "Sync design" below for the recommended (safety-first) design for this direction.
 
 ## Why the existing data model already fits this
 
@@ -70,6 +100,19 @@ Ingesting SharePoint files through this same table just needs one more `source` 
 change at all — synced files write to the same S3-compatible bucket via the same
 `uploadFile`/`storageKey` helpers in `backend/src/lib/storage.ts` that manual uploads
 already use (see "Storage and data safety" in `SETUP_AUDIT.md`).
+
+**Bucket choice for this deployment: Supabase Storage, not Cloudflare R2.** Supabase
+Storage exposes its own S3-compatible endpoint
+(`https://<project-ref>.storage.supabase.co/storage/v1/s3`, enabled and credentialed via
+**Storage > Configuration > S3** in the dashboard) that supports every operation this
+app's storage code uses (put/get/delete objects, presigned URLs). Since this deployment
+already has a Supabase project connected, using its Storage instead of standing up a
+separate Cloudflare account removes one more vendor/account from the setup — point the
+existing `R2_ENDPOINT_URL` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME`
+variables (names are legacy from when this repo only documented R2; the client is generic
+S3) at the Supabase values instead. Revisit this choice only if document volume/egress
+costs become a real concern later — R2's specific selling point is zero egress fees, which
+Supabase Storage does not necessarily match.
 
 ## Architecture decision: a separate adapter service, not code inside this repo's backend
 
@@ -139,16 +182,27 @@ approach; it's strictly less coupling for the same outcome.
   ask "what changed since last time." This is a performance/cost decision, not a
   permissions one — it applies the same way regardless of which Graph app/credential is
   used.
-- **Conflict policy — open question, resolve before building.** This app already lets
-  documents be edited in-place (AI-driven edits, accept/reject — see the `assistant_edit`,
-  `user_accept`, `user_reject` sources above). Once documents can also change independently
-  in SharePoint, there needs to be an explicit rule for what happens when both sides
-  changed the same file. Options to decide between before implementation starts:
-  - SharePoint is always the source of truth; any in-app edits are exported back to
-    SharePoint as a new version there, never silently overwritten by the next sync.
-  - In-app edits create a fork (a new document, not synced back) and the SharePoint-synced
-    copy stays read-only from this app's perspective.
-  - Something in between, keyed off whether the in-app edit has been "accepted" yet.
+- **Push direction (MikeOS → SharePoint) — recommended design, needs sign-off before
+  building.** The goal is genuine two-way sync: edits/generated documents made in this app
+  should be reflected back in the SharePoint matter folder, not just pulled from it.
+  Graph API supports uploading a new version of an existing SharePoint file (SharePoint
+  keeps its own version history, so no version is ever destroyed by a push), which makes
+  the mechanics straightforward. The risk worth designing around deliberately is **silent
+  overwrite of a concurrent edit** — e.g. someone reformats the file directly in
+  SharePoint/Word at the same time the AI edits it in MikeOS, and whichever sync runs last
+  wins with no one told there was a conflict. Recommended design, to avoid that:
+  - **Pull stays automatic** (as described above) — it's read-only from SharePoint's side,
+    so there's nothing to lose by refreshing silently.
+  - **Push is an explicit, user-triggered action** (e.g. a "Save to SharePoint" step after
+    a user accepts an AI edit — reusing the existing `user_accept` moment in the edit
+    workflow), not a continuous background sync in that direction.
+  - **Push is guarded by an ETag/ctag check**: before uploading, confirm the SharePoint
+    item hasn't changed since MikeOS last synced it. If it has, block the push and surface
+    the conflict to the user instead of overwriting.
+  - Treat "should push ever become fully automatic" as a decision to revisit after the
+    explicit-confirmation version has been used for a while, not a starting point — for a
+    legal-document system, an unnoticed overwrite is a worse failure mode than an extra
+    confirmation click.
 
 ## Open questions to resolve before implementation
 
@@ -161,7 +215,10 @@ approach; it's strictly less coupling for the same outcome.
    permissions apply) is more correct if different people should see different matters
    through this app. Pick based on whether matter access here should mirror each
    individual's existing SharePoint permissions.
-3. **Conflict policy** — see above; needs an explicit answer, not a default.
+3. **Push design sign-off** — a recommended design exists now (explicit user-triggered
+   push, ETag-guarded — see "Sync design" above); needs confirmation before building,
+   particularly whether "explicit action per push" is acceptable UX or whether some
+   automatic-push cases are needed sooner.
 4. **Additive schema changes** — exact column name/shape for the SharePoint folder
    reference on `projects`, and the new `document_versions.source` value. Small, additive,
    and should ideally be captured as a numbered file once `backend/migrations/` exists
