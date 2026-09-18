@@ -116,11 +116,19 @@ jobs:
           Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           EOF
           )"
-          gh issue create \
-            --title "[upstream-sync] main is no longer a clean mirror of upstream" \
-            --label "upstream-sync,needs-human" \
-            --body "$BODY"
-          echo "Opened issue for main conflict"
+          TITLE="[upstream-sync] main is no longer a clean mirror of upstream"
+          if ISSUE_URL="$(gh issue create --title "$TITLE" --label "upstream-sync,needs-human" --body "$BODY")"; then
+            echo "Opened issue for main conflict: $ISSUE_URL"
+          else
+            echo "Issues are disabled; falling back to a draft PR."
+            printf '%s\n' "$BODY" > UPSTREAM-SYNC-CONFLICT.md
+            git checkout -B "sync/main-conflict-${GITHUB_RUN_ID}"
+            git add UPSTREAM-SYNC-CONFLICT.md
+            git commit -m "docs: record unresolved upstream/main conflict"
+            git push origin "HEAD:sync/main-conflict-${GITHUB_RUN_ID}"
+            gh pr create --draft --base main --head "sync/main-conflict-${GITHUB_RUN_ID}" \
+              --title "$TITLE" --label "upstream-sync,needs-human" --body "$BODY"
+          fi
           exit 1
 
   sync-working:
@@ -208,11 +216,18 @@ jobs:
           Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           EOF
           )"
-          gh issue create \
-            --title "[upstream-sync] Merge conflict updating ${WORKING_BRANCH} from main" \
-            --label "upstream-sync,needs-human" \
-            --body "$BODY"
-          echo "Opened issue for working-branch conflict"
+          TITLE="[upstream-sync] Merge conflict updating ${WORKING_BRANCH} from main"
+          if ISSUE_URL="$(gh issue create --title "$TITLE" --label "upstream-sync,needs-human" --body "$BODY")"; then
+            echo "Opened issue for working-branch conflict: $ISSUE_URL"
+          else
+            echo "Issues are disabled; falling back to a draft PR."
+            printf '%s\n' "$BODY" > UPSTREAM-SYNC-CONFLICT.md
+            git add UPSTREAM-SYNC-CONFLICT.md
+            git commit -m "docs: record unresolved upstream merge conflict"
+            git push origin "$PROPOSAL"
+            gh pr create --draft --base "$WORKING_BRANCH" --head "$PROPOSAL" \
+              --title "$TITLE" --label "upstream-sync,needs-human" --body "$BODY"
+          fi
           exit 1
 
       - name: Open PR and enable auto-merge
