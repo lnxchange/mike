@@ -12,6 +12,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
+    "types": ["node", "react", "react-dom"],
     "incremental": true,
     "plugins": [
       {
@@ -19,7 +20,10 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@mike/contracts": ["../packages/contracts/index.d.ts"],
+      "@/*": ["./src/*"],
+      "@mike/upload-session-client": ["./src/shared/api/uploadSessionClient.ts"],
+      "@mike/secure-uuid": ["./src/shared/lib/secureUuid.ts"]
     }
   },
   "include": [

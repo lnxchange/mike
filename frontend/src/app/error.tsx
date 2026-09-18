@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
+import { pillButtonUIClassName } from "@/shared/ui/PillButtonUI.styles";
 
 export default function Error({
     error,
@@ -25,7 +26,10 @@ export default function Error({
 
                 <Link
                     href="/"
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-medium text-white bg-gray-900 hover:bg-gray-700 transition-colors"
+                    className={pillButtonUIClassName({
+                        tone: "black",
+                        size: "normal",
+                    })}
                 >
                     Home
                 </Link>

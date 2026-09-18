@@ -1,5 +1,10 @@
 # Setup Audit
 
+> **Point-in-time: May 2026 tree.** The architecture notes below (browser
+> Supabase auth, `NEXT_PUBLIC_API_BASE_URL`, no `backend/migrations/`)
+> describe the fork point, not current upstream. After the 2026-09-19
+> sync, prefer `README.md` and `docs/` for the live layout.
+
 This is a point-in-time audit of the repository as found, before any setup work in this
 change. It exists so future contributors (including a future mode.law integration effort)
 understand the starting architecture and the specific things that were blocking a fresh
