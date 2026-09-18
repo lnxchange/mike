@@ -4,6 +4,12 @@
 captures an architecture decision made before implementation starts, so the build follows
 the intended shape from the first commit instead of being refactored into it later.
 
+**Current blocker (as of 2026-09-18): whether this plan is viable at all is now an open
+question**, not just its implementation details — see "Coordination with the existing
+Libris/Attune email-filer tool" below for a stated Microsoft-native-first / containment
+concern from the adjacent Back Office codebase that may conflict with pulling matter
+documents into Mike's stack. Needs a human decision before implementation starts.
+
 This is Attune Legal / mode.law-specific planning, not general OSS guidance — it lives
 under `docs/integrations/` (rather than the root-level docs) to keep it clearly separated
 from the docs that describe this repo's own generic setup. See `config/README.md` for why
@@ -253,8 +259,56 @@ approach; it's strictly less coupling for the same outcome.
 
 There is already a live Azure Functions codebase (referred to as "Libris Back Office" /
 the Attune email/SharePoint filer — Graph, Zoho, and a command queue) that does related
-work today. **This design has not yet been cross-checked against that codebase.** Before
-building any part of this plan, resolve:
+work today. **This design has not yet been directly cross-checked against that
+codebase** — the codebase itself has not been read by whoever/whatever is authoring this
+doc. The notes below were relayed secondhand (via chat, from a separate agent session
+operating directly on that codebase) and should be treated as a starting point for
+verification, not a confirmed fact, until read directly.
+
+### Relayed finding: a stated conflict this plan needs to resolve — the most important open item
+
+An agent working directly in the Back Office/filer codebase gave this assessment when
+asked about integrating with Mike (paraphrased from the relayed note, dated 2026-09-18):
+
+- If Mike stays a separate running product, the filer's intended hook for *itself* to call
+  *into* Mike is **inbound MCP** (`SPEC-mcp-connections.md`, `src/mcp_connections.py`, a
+  planned `mcp.call` operation — specified but not built; registrations currently
+  `active: False`). Until that ships, their recommendation is a thin `admin_chat` read
+  tool as the lower-friction way to query Mike, rather than a new queue op or Function
+  route.
+- If the actual goal is "Mike-class AI document work" (chat-with-documents, redlining)
+  living *inside* Back Office rather than in a separate app, their recommendation is native
+  `doc.*` work (`doc.redline`, `doc.comment`, `find_in_document`) instead of wrapping Mike
+  as a callable tool — because wrapping Mike would route matter documents through "a
+  Node / Supabase / R2 / Anthropic stack," which they say conflicts with two stated
+  principles: **Microsoft-native-first** and an **executor-hosted containment rule**.
+
+**Why this matters here:** the direction above ("Back Office calls into Mike for a
+read-only chat/Q&A") is compatible with what this repo already exposes —
+`API_BOUNDARY.md`'s `POST /chat` primitive is essentially the `admin_chat` tool they
+describe, authenticated as a Supabase user like any other caller. **No conflict there.**
+
+The unresolved conflict is with the *other* direction this whole document plans for:
+pulling matter documents out of SharePoint and into Mike's stack (Supabase, an
+S3-compatible bucket, an LLM provider) so Mike's AI can work on them — which is exactly
+the "Node/Supabase/R2/Anthropic stack" the relayed note says conflicts with
+Microsoft-native-first / containment. Whether that's actually a blocker depends on scope,
+which is not yet known:
+
+- **(a)** The containment rule could be scoped specifically to Back Office's own
+  *automated* filer/executor pipeline — in which case a lawyer choosing to open a
+  separate, sibling app (Mike) for interactive, opt-in document work is a different flow
+  the rule was never meant to cover, and this plan can proceed largely as designed.
+- **(b)** The containment rule could be a blanket constraint that matter documents must
+  never leave Microsoft-hosted infrastructure at all — in which case the SharePoint →
+  Mike sync plan as designed (not just its auth/schema details) needs to be reconsidered,
+  not merely refined.
+
+**This must be resolved by a human decision-maker (not inferred or assumed by an agent on
+either side) before any implementation work on the push/pull sync begins.** The `admin_chat`
+/ `POST /chat` direction can likely proceed regardless of how (a)/(b) resolves.
+
+### Other cross-checks still needed once direct read access exists
 
 - Does that tool already maintain a matter-number → SharePoint-folder lookup (via Zoho or
   otherwise)? If so, this adapter should call/reuse that resolution rather than
@@ -268,11 +322,11 @@ building any part of this plan, resolve:
   scoped) that this sync adapter should plug into, rather than polling/webhooks designed
   independently here.
 
-As of this writing, the codebase for that tool has not been reviewed as part of this
-plan — access to it was requested but not yet established (a local-only path was given;
-see the repository's contribution history for the access-mechanics discussion). Do not
-finalize the schema/auth decisions above as "ready to build" until this cross-check has
-actually happened.
+As of this writing, the codebase for that tool has not been reviewed directly as part of
+this plan — access to it was requested but not yet established (a local-only path was
+given; see the repository's contribution history for the access-mechanics discussion). Do
+not finalize the schema/auth decisions above as "ready to build" until both the
+Microsoft-native-first/containment question and this cross-check have actually happened.
 
 ## How this maps back to the rest of the documentation
 
