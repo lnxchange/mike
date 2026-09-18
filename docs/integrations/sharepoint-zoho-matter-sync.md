@@ -32,9 +32,14 @@ into one instance. This keeps Attune Legal's matter data, and any SharePoint/Zoh
 credentials, scoped to exactly one deployment that needs them.
 
 **Libris** (Attune Legal's separate proprietary practice-management tool, with its own
-Azure/Microsoft-model-hosted AI component) is a known adjacent system. No integration with
-it is planned or designed here — noted for awareness only, in case a future connection
-point is worth revisiting once this SharePoint/Zoho work is live.
+Azure/Microsoft-model-hosted AI component) is a known adjacent system that already has its
+own Azure Functions-based Graph/Zoho/SharePoint automation (the "Attune email-filer" /
+Libris Back Office tool). This plan must be cross-checked against that codebase before
+implementation to avoid duplicating or conflicting with work it already does — see
+"Coordination with the existing Libris/Attune email-filer tool" below. No integration
+*into* this app's own code is planned here; the concern is avoiding two independent,
+possibly-conflicting implementations of the same matter/folder resolution and Graph/Zoho
+access.
 
 ## The goal
 
@@ -149,6 +154,10 @@ approach; it's strictly less coupling for the same outcome.
 
 ## Auth and credentials
 
+- **Zoho API access is required, not optional.** Zoho is the confirmed source of truth for
+  matter → SharePoint folder resolution (see "Sync design" below) — the adapter must query
+  Zoho first, on every matter, to get the correct folder reference. It is not a
+  document-content source; only the matter record + folder link are ever read from it.
 - **Reusing the existing Microsoft Graph app** (already consented for the Zoho↔SharePoint
   integration) is fine and saves the slow part of any Graph integration — Entra ID app
   registration and admin consent. A standalone app registration is also fine if preferred;
@@ -157,8 +166,9 @@ approach; it's strictly less coupling for the same outcome.
   per-site access grant) over a tenant-wide `Sites.Read.All`/`Sites.ReadWrite.All` scope,
   so the credential can only read the specific matter document libraries this integration
   actually needs — not the whole tenant. This is a Microsoft Graph best practice
-  independent of the reuse-vs-new-app decision.
-- These credentials (Graph tenant ID / client ID / client secret or certificate, and any
+  independent of the reuse-vs-new-app decision. For the push direction (see "Sync design"),
+  the granted scope needs to be `Sites.Selected` with **write**, not just read.
+- These credentials (Graph tenant ID / client ID / client secret or certificate, and the
   Zoho OAuth credentials) live **only** in the separate adapter service's own environment
   — never in `backend/.env`, `frontend/.env.local`, or any file in this repository. This
   follows the same "secrets only from `process.env`, never hardcoded, never committed"
@@ -170,11 +180,19 @@ approach; it's strictly less coupling for the same outcome.
 
 ## Sync design
 
-- **First open of a matter:** resolve the matter → SharePoint folder (via the new
-  `projects` column below), list the folder via Microsoft Graph, download each file, and
-  push it through this app's existing upload endpoint
-  (`POST /projects/:projectId/documents`) — reusing all the existing document processing
-  (page extraction, structure tree, etc.) with no changes needed there.
+- **Source of truth — confirmed.** Zoho holds the matter number and the authoritative link
+  to that matter's SharePoint folder. Folder resolution is **always** a Zoho lookup by
+  matter number (matching this app's existing `cm_number` field), never a SharePoint-side
+  search/guess. This is deterministic and reliable specifically because Zoho already
+  maintains that mapping — the adapter should not attempt to independently locate a
+  matter's folder by any other means (e.g. name matching against SharePoint's folder
+  structure).
+- **First open of a matter:** query Zoho by matter number to resolve the SharePoint folder
+  reference, store that reference on the new `projects` column (see "Open questions"
+  below), list the folder via Microsoft Graph, download each file, and push it through
+  this app's existing upload endpoint (`POST /projects/:projectId/documents`) — reusing
+  all the existing document processing (page extraction, structure tree, etc.) with no
+  changes needed there.
 - **Revisit refresh:** use Microsoft Graph **delta queries**
   (`/sites/{site-id}/drive/root/delta` or equivalent for the specific folder) rather than
   re-listing and diffing the whole folder on every visit. Store the delta token per matter
@@ -182,9 +200,9 @@ approach; it's strictly less coupling for the same outcome.
   ask "what changed since last time." This is a performance/cost decision, not a
   permissions one — it applies the same way regardless of which Graph app/credential is
   used.
-- **Push direction (MikeOS → SharePoint) — recommended design, needs sign-off before
-  building.** The goal is genuine two-way sync: edits/generated documents made in this app
-  should be reflected back in the SharePoint matter folder, not just pulled from it.
+- **Push direction (MikeOS → SharePoint) — design confirmed.** The goal is genuine two-way
+  sync: edits/generated documents made in this app should be reflected back in the
+  SharePoint matter folder, not just pulled from it.
   Graph API supports uploading a new version of an existing SharePoint file (SharePoint
   keeps its own version history, so no version is ever destroyed by a push), which makes
   the mechanics straightforward. The risk worth designing around deliberately is **silent
@@ -204,26 +222,57 @@ approach; it's strictly less coupling for the same outcome.
     legal-document system, an unnoticed overwrite is a worse failure mode than an extra
     confirmation click.
 
+## Decisions confirmed
+
+1. **Zoho is the source of truth** for matter → SharePoint folder resolution. The adapter
+   queries Zoho by matter number to get the folder reference; it never searches or infers
+   the folder from SharePoint directly. Zoho API access is therefore required (see "Auth
+   and credentials"). Zoho is not queried for document content, only the matter/folder
+   link.
+2. **Push-direction design signed off**: explicit user-triggered push, guarded by an
+   ETag/ctag conflict check, not continuous automatic bidirectional sync (see "Sync
+   design" above for the full rationale).
+
 ## Open questions to resolve before implementation
 
-1. **Zoho vs. SharePoint source of truth** — confirm which system owns which piece: is
-   Zoho purely matter/client metadata with a pointer to a SharePoint folder, or does Zoho
-   also need to be queried for anything document-related? This determines whether the
-   adapter needs Zoho API access at all, or only Microsoft Graph.
-2. **App-only vs. delegated Graph auth** — app-only (single service identity, works
+1. **App-only vs. delegated Graph auth** — app-only (single service identity, works
    without per-user consent) is simpler to build; delegated (each user's own SharePoint
    permissions apply) is more correct if different people should see different matters
    through this app. Pick based on whether matter access here should mirror each
    individual's existing SharePoint permissions.
-3. **Push design sign-off** — a recommended design exists now (explicit user-triggered
-   push, ETag-guarded — see "Sync design" above); needs confirmation before building,
-   particularly whether "explicit action per push" is acceptable UX or whether some
-   automatic-push cases are needed sooner.
-4. **Additive schema changes** — exact column name/shape for the SharePoint folder
-   reference on `projects`, and the new `document_versions.source` value. Small, additive,
-   and should ideally be captured as a numbered file once `backend/migrations/` exists
-   again (see `SETUP_AUDIT.md` "Known gaps" — that directory is currently missing from
-   this repo).
+2. **Additive schema changes** — exact column name/shape for the SharePoint folder
+   reference on `projects` (populated from the Zoho lookup above), and the new
+   `document_versions.source` value. Small, additive, and should ideally be captured as a
+   numbered file once `backend/migrations/` exists again (see `SETUP_AUDIT.md` "Known
+   gaps" — that directory is currently missing from this repo).
+3. **Coordination with the existing Libris/Attune email-filer tool** — see the dedicated
+   section below. Blocked on getting this doc's author (or a future agent) read access to
+   that codebase.
+
+## Coordination with the existing Libris/Attune email-filer tool
+
+There is already a live Azure Functions codebase (referred to as "Libris Back Office" /
+the Attune email/SharePoint filer — Graph, Zoho, and a command queue) that does related
+work today. **This design has not yet been cross-checked against that codebase.** Before
+building any part of this plan, resolve:
+
+- Does that tool already maintain a matter-number → SharePoint-folder lookup (via Zoho or
+  otherwise)? If so, this adapter should call/reuse that resolution rather than
+  re-implementing it independently — two independent implementations of the same lookup
+  is exactly the kind of duplication this cross-check is meant to prevent.
+- Does that tool already hold a Microsoft Graph app registration and/or Zoho OAuth
+  credentials this adapter could reuse (see "Auth and credentials" — reuse vs. new app was
+  already flagged as an open, low-risk choice; whether *this specific* existing tool's app
+  is the right one to reuse is now the more precise question).
+- Does that tool use a command-queue pattern (mentioned when this integration was
+  scoped) that this sync adapter should plug into, rather than polling/webhooks designed
+  independently here.
+
+As of this writing, the codebase for that tool has not been reviewed as part of this
+plan — access to it was requested but not yet established (a local-only path was given;
+see the repository's contribution history for the access-mechanics discussion). Do not
+finalize the schema/auth decisions above as "ready to build" until this cross-check has
+actually happened.
 
 ## How this maps back to the rest of the documentation
 
