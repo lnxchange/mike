@@ -1,0 +1,45 @@
+# Typecheck / lint / build for PRs that are not aimed at main.
+# Upstream CI already covers PRs into main. This job is the required check
+# that auto-merge of upstream-sync PRs into the working branch waits on.
+name: Fork verify
+
+on:
+  pull_request:
+    branches-ignore: [main]
+
+jobs:
+  backend:
+    name: Backend verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Validate package.json and lockfile parse
+        run: node -e "for (const f of ['package.json','package-lock.json']) JSON.parse(require('fs').readFileSync(f, 'utf8'))"
+      - run: npm ci
+      - run: npm run verify
+
+  frontend:
+    name: Frontend verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate package.json and lockfile parse
+        run: node -e "for (const f of ['package.json','package-lock.json']) JSON.parse(require('fs').readFileSync(f, 'utf8'))"
+      - run: npm ci
+      - run: npm run verify

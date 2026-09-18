@@ -1,0 +1,246 @@
+# Keep this fork current with open-legal-products/mike.
+#
+# main is a clean mirror of upstream plus this workflow file. Fast-forward
+# when possible; merge when we are only ahead by this infrastructure commit.
+# Any textual conflict on main is treated as a break in that invariant and
+# is escalated, never auto-resolved.
+#
+# The customized working branch is never updated in place. A clean merge
+# opens a PR (human glance + CI). Auto-merge runs only after CI is green.
+# A conflicted merge is aborted and filed as an issue.
+name: Sync upstream
+
+on:
+  schedule:
+    # Monday 06:00 AEST (Sunday 20:00 UTC). Weekly is enough for a
+    # fast-moving upstream without a daily PR/issue noise floor.
+    - cron: "0 20 * * 0"
+  workflow_dispatch:
+    inputs:
+      working_branch:
+        description: Customized working branch to propose a merge into
+        type: string
+        default: cursor/setup-supabase-vercel-oss-cad9
+        required: true
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM_URL: https://github.com/open-legal-products/mike.git
+  WORKING_BRANCH: ${{ inputs.working_branch || 'cursor/setup-supabase-vercel-oss-cad9' }}
+
+jobs:
+  labels:
+    name: Ensure labels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create labels if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create upstream-sync --repo "$GITHUB_REPOSITORY" \
+            --description "Automated upstream sync" --color "0E8A16" --force
+          gh label create needs-human --repo "$GITHUB_REPOSITORY" \
+            --description "Upstream sync needs a human" --color "D93F0B" --force
+
+  sync-main:
+    name: Update main from upstream
+    needs: labels
+    runs-on: ubuntu-latest
+    outputs:
+      conflict: ${{ steps.sync.outputs.conflict }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Fetch remotes
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote get-url upstream >/dev/null 2>&1 || git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags origin main
+          git fetch --no-tags upstream main
+
+      - name: Fast-forward or merge upstream/main
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+          git checkout main
+          git reset --hard origin/main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "origin/main already contains upstream/main"
+            exit 0
+          fi
+
+          if git merge --ff-only upstream/main; then
+            echo "Fast-forwarded main to $(git rev-parse --short HEAD)"
+            git push origin main
+            exit 0
+          fi
+
+          echo "Fast-forward not possible; attempting a merge (main should only be ahead by the sync workflow)."
+          if git merge --no-edit upstream/main; then
+            echo "Merged upstream/main into main at $(git rev-parse --short HEAD)"
+            git push origin main
+            exit 0
+          fi
+
+          echo "conflict=true" >> "$GITHUB_OUTPUT"
+          CONFLICTED="$(git diff --name-only --diff-filter=U | sed 's/^/- /' || true)"
+          git merge --abort
+          BODY="$(cat <<EOF
+          Automated sync of \`upstream/main\` into \`main\` hit a textual conflict.
+
+          \`main\` is supposed to stay a clean mirror of \`open-legal-products/mike\` (plus this workflow file). A conflict means something unexpected landed on \`main\`. Do not force-push; inspect the commits that are not in upstream.
+
+          Conflicted files:
+
+          ${CONFLICTED:-(none listed)}
+
+          Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          )"
+          gh issue create \
+            --title "[upstream-sync] main is no longer a clean mirror of upstream" \
+            --label "upstream-sync,needs-human" \
+            --body "$BODY"
+          echo "Opened issue for main conflict"
+          exit 1
+
+  sync-working:
+    name: Propose merge into working branch
+    needs: [labels, sync-main]
+    if: needs.sync-main.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Fetch remotes
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags origin main
+          git fetch --no-tags origin "$WORKING_BRANCH"
+
+      - name: Skip if a sync PR is already open
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EXISTING="$(gh pr list --base "$WORKING_BRANCH" --label upstream-sync --state open --json number,url,headRefName --jq 'map(select(.headRefName | startswith("sync/upstream-"))) | .[0].url' || true)"
+          if [ -n "${EXISTING:-}" ]; then
+            echo "An upstream-sync PR is already open: $EXISTING"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge main into a proposal branch
+        id: merge
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+          echo "noop=false" >> "$GITHUB_OUTPUT"
+
+          git checkout -B "$WORKING_BRANCH" "origin/$WORKING_BRANCH"
+
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "Working branch already contains origin/main"
+            echo "noop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SAFE_WORKING="$(printf '%s' "$WORKING_BRANCH" | tr '/' '-')"
+          PROPOSAL="sync/upstream-into-${SAFE_WORKING}-${GITHUB_RUN_ID}"
+          echo "proposal=$PROPOSAL" >> "$GITHUB_OUTPUT"
+          git checkout -b "$PROPOSAL"
+
+          if git merge --no-edit origin/main; then
+            echo "Clean merge of origin/main into $PROPOSAL"
+            git push origin "$PROPOSAL"
+            exit 0
+          fi
+
+          echo "conflict=true" >> "$GITHUB_OUTPUT"
+          CONFLICTED="$(git diff --name-only --diff-filter=U | sed 's/^/- /' || true)"
+          git merge --abort
+          BODY="$(cat <<EOF
+          Automated merge of \`main\` into \`${WORKING_BRANCH}\` hit a textual conflict. The merge was aborted; nothing was pushed onto the working branch.
+
+          Do not guess at a resolution. The last one-time catch-up preserved fork intent (Next.js peer range, \`SUPABASE_URL\` admin client, env validation, deployment-profile wiring) rather than taking ours/theirs blindly. Do the same here.
+
+          Conflicted files:
+
+          ${CONFLICTED:-(none listed)}
+
+          Suggested starting point:
+
+          \`\`\`
+          git fetch origin
+          git checkout -b ${WORKING_BRANCH}-upstream-sync origin/${WORKING_BRANCH}
+          git merge origin/main
+          \`\`\`
+
+          Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          )"
+          gh issue create \
+            --title "[upstream-sync] Merge conflict updating ${WORKING_BRANCH} from main" \
+            --label "upstream-sync,needs-human" \
+            --body "$BODY"
+          echo "Opened issue for working-branch conflict"
+          exit 1
+
+      - name: Open PR and enable auto-merge
+        if: steps.existing.outputs.skip != 'true' && steps.merge.outputs.noop != 'true' && steps.merge.outputs.conflict != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PROPOSAL="${{ steps.merge.outputs.proposal }}"
+          BODY="$(cat <<EOF
+          Automated proposal: merge current \`main\` (a mirror of \`open-legal-products/mike\`) into \`${WORKING_BRANCH}\`.
+
+          This is a merge commit, not a rebase, and it does not update the working branch until CI is green and auto-merge lands. A clean git merge can still be a semantic regression next to a deliberate fork fix, so glance at the diff before it merges.
+
+          Auto-merge is enabled and will land only after the Fork verify checks pass.
+
+          Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          )"
+          URL="$(gh pr create \
+            --base "$WORKING_BRANCH" \
+            --head "$PROPOSAL" \
+            --title "Sync upstream main into ${WORKING_BRANCH}" \
+            --label "upstream-sync" \
+            --body "$BODY")"
+          echo "Opened $URL"
+          if gh pr merge "$URL" --auto --merge; then
+            echo "Auto-merge enabled"
+          else
+            echo "Could not enable auto-merge (repo setting or branch protection). Merge manually after CI is green."
+          fi
