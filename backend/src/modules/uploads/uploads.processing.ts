@@ -14,18 +14,21 @@ import {
 
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { pathToFileURL } from "node:url";
 
 import { resolveContentOrgId } from "../../lib/access";
 import { recordAudit } from "../../lib/audit";
 import { enqueueStorageCleanup } from "../../lib/dbq/enqueue";
-import { convertedPdfKey, officeFileToPdf } from "../../lib/convert";
-import { shouldConvertToPdf } from "../../lib/documentTypes";
+import { convertedPdfKey } from "../../lib/convert";
+import {
+  isArchiveDocumentType,
+  isEmailDocumentType,
+} from "../../lib/documentTypes";
+import { parseEmail } from "../../lib/emailMessage";
 import { uploadJobWallClockMs } from "../../lib/runtimeConfig";
 import {
   copyFile,
@@ -33,11 +36,20 @@ import {
   deleteFile,
   StorageOperationError,
   storageKey,
-  uploadFileFromPath,
   versionStorageKey,
 } from "../../lib/storage";
 import { createServerSupabase, type Db } from "../../lib/supabase";
+import {
+  expandArchive,
+  expandEmailAttachments,
+  type ExpansionContext,
+} from "./uploads.expand";
 import { UPLOAD_VERIFICATION_LEASE_SECONDS } from "./uploads.manifest";
+import {
+  buildEmailPdfRendition,
+  buildPdfRendition,
+  countPdfPages,
+} from "./uploads.renditions";
 
 type UploadSessionRow = {
   id: string;
@@ -139,63 +151,6 @@ type SealedFileArtifact = {
   size: number;
   sha256: string;
 };
-
-async function countPdfPages(filePath: string): Promise<number | null> {
-  let loadingTask:
-    | {
-        promise: Promise<{ numPages: number }>;
-        destroy?: () => Promise<void>;
-      }
-    | undefined;
-  try {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs" as string);
-    loadingTask = (
-      pdfjsLib as unknown as {
-        getDocument: (options: unknown) => {
-          promise: Promise<{ numPages: number }>;
-          destroy?: () => Promise<void>;
-        };
-      }
-    ).getDocument({ url: pathToFileURL(filePath).href });
-    const pdf = await loadingTask.promise;
-    return pdf.numPages;
-  } catch {
-    return null;
-  } finally {
-    await loadingTask?.destroy?.().catch(() => {});
-  }
-}
-
-async function buildPdfRendition(args: {
-  sourceFilePath: string;
-  workingDirectory: string;
-  fileType: string;
-  userId: string;
-  documentId: string;
-  versionSlug?: string;
-  sourceStoragePath: string;
-}): Promise<string | null> {
-  if (args.fileType === "pdf") return args.sourceStoragePath;
-  if (!shouldConvertToPdf(args.fileType)) return null;
-  try {
-    const pdfPath = await officeFileToPdf(
-      args.sourceFilePath,
-      args.workingDirectory,
-    );
-    const key = args.versionSlug
-      ? `converted-pdfs/${args.userId}/${args.documentId}/${args.versionSlug}.pdf`
-      : convertedPdfKey(args.userId, args.documentId);
-    await uploadFileFromPath(key, pdfPath, "application/pdf");
-    return key;
-  } catch (error) {
-    console.error("[upload-worker] document conversion failed", {
-      documentId: args.documentId,
-      fileType: args.fileType,
-      error,
-    });
-    return null;
-  }
-}
 
 async function removeTemporaryArtifact(directory: string): Promise<void> {
   await rm(directory, { recursive: true, force: true }).catch((error) => {
@@ -332,6 +287,40 @@ async function processCreatedDocument(
     orgId = (workflowRow as { org_id?: string | null } | null)?.org_id ?? null;
   }
 
+  const expansion: ExpansionContext = {
+    db,
+    userId: session.user_id,
+    userEmail: session.user_email,
+    uploadFileId: file.id,
+    workingDirectory: artifact.directory,
+    target: {
+      scope,
+      projectId,
+      folderId: scope === "library" ? libraryFolderId : folderId,
+      libraryKind,
+      workflowId,
+      orgId,
+    },
+  };
+
+  // A zip is a container, not a document: every supported entry becomes its
+  // own document under the folder the zip was dropped on, and no row is kept
+  // for the archive itself. Child ids derive from this upload file, so a
+  // retried job files the same documents rather than a second set.
+  if (isArchiveDocumentType(file.file_type)) {
+    const created = await expandArchive(
+      expansion,
+      artifact.filePath,
+      expansion.target.folderId,
+    );
+    console.log("[upload-worker] archive expanded", {
+      fileId: file.id,
+      filename: file.filename,
+      documents: created.length,
+    });
+    return null;
+  }
+
   // The upsert below is what makes a retry idempotent — and, on a retry, what
   // would silently RESURRECT a document the user deleted while this job was
   // running. Only a row this job already wrote can have been deleted: the
@@ -385,16 +374,42 @@ async function processCreatedDocument(
 
   const sourcePath = storageKey(session.user_id, documentId, file.filename);
   await copyFile(file.sealed_storage_path, sourcePath);
-  const pdfPath = await buildPdfRendition({
-    sourceFilePath: artifact.filePath,
-    workingDirectory: artifact.directory,
-    fileType: file.file_type,
-    userId: session.user_id,
-    documentId,
-    sourceStoragePath: sourcePath,
-  });
-  const pageCount =
-    file.file_type === "pdf" ? await countPdfPages(artifact.filePath) : null;
+  let pdfPath: string | null;
+  let pageCount: number | null = null;
+  if (isEmailDocumentType(file.file_type)) {
+    // The message keeps its original bytes as the document; the PDF the
+    // viewer shows is rendered from the parsed message, and each attachment
+    // is filed as a sibling document first so the rendering can list which
+    // ones travelled with it.
+    const email = await parseEmail(
+      await readFile(artifact.filePath),
+      file.file_type,
+    );
+    const attachments = await expandEmailAttachments(expansion, email, {
+      documentId,
+      folderId: expansion.target.folderId,
+    });
+    const rendition = await buildEmailPdfRendition({
+      email,
+      importedAttachments: attachments.map((doc) => doc.filename),
+      workingDirectory: artifact.directory,
+      userId: session.user_id,
+      documentId,
+    });
+    pdfPath = rendition?.key ?? null;
+    pageCount = rendition ? await countPdfPages(rendition.localPath) : null;
+  } else {
+    pdfPath = await buildPdfRendition({
+      sourceFilePath: artifact.filePath,
+      workingDirectory: artifact.directory,
+      fileType: file.file_type,
+      userId: session.user_id,
+      documentId,
+      sourceStoragePath: sourcePath,
+    });
+    pageCount =
+      file.file_type === "pdf" ? await countPdfPages(artifact.filePath) : null;
+  }
 
   const { error: versionError } = await createDocumentVersion(db, {
     id: versionId,

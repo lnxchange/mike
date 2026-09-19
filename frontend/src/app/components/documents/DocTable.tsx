@@ -63,6 +63,7 @@ import {
     partitionSupportedDocumentFiles,
     SUPPORTED_DOCUMENT_ACCEPT,
 } from "@/app/lib/documentUploadValidation";
+import { isExpandableUploadFilename } from "@/shared/api/uploadSessionClient";
 import {
     collectDroppedDocumentUploadEntries,
     dataTransferHasDirectory,
@@ -256,6 +257,13 @@ interface DocTableProps {
     documentTypeOptions?: TableFilterOption<string>[];
     autoLoadOnScroll?: boolean;
     defaultSort?: DocumentSort | null;
+    /**
+     * Files handed over by another screen (the New Project dialog) to upload
+     * into this collection's root as soon as the table is ready. Consumed
+     * once; `onHandoffUploadFilesConsumed` fires when they have been taken.
+     */
+    handoffUploadFiles?: File[];
+    onHandoffUploadFilesConsumed?: () => void;
 }
 
 function documentTypeValue(doc: Document): string {
@@ -396,6 +404,8 @@ export function DocTable({
     documentTypeOptions,
     autoLoadOnScroll = false,
     defaultSort = null,
+    handoffUploadFiles,
+    onHandoffUploadFilesConsumed,
 }: DocTableProps) {
     const [addDocsOpen, setAddDocsOpen] = useState(false);
     const { user } = useAuth();
@@ -1746,7 +1756,24 @@ export function DocTable({
                 );
             }
             handleDocsSelected(uploaded);
-            const failedCount = supportedEntries.length - uploaded.length;
+            // Emails and archives come back "completed" with no document of
+            // their own: the server filed their contents as separate
+            // documents. Refetch so those appear, and do not count them as
+            // failures just because the outcome carried no result.
+            const expandedCompleted =
+                batchOutcomes?.some(
+                    (outcome) =>
+                        outcome.status === "completed" &&
+                        isExpandableUploadFilename(outcome.filename),
+                ) ?? false;
+            if (expandedCompleted) {
+                await operations.refreshCollection().catch(() => undefined);
+            }
+            const failedCount = batchOutcomes
+                ? folderFailureOutcomes.length +
+                  batchOutcomes.filter((outcome) => outcome.status !== "completed")
+                      .length
+                : supportedEntries.length - uploaded.length;
             if (failedCount > 0) {
                 setCollectionActionWarning(
                     failedUploadMessage([
@@ -1781,6 +1808,19 @@ export function DocTable({
             baseFolderId,
         );
     }
+
+    // Files handed over from the New Project dialog. The parent only passes
+    // them once the caller's role is known, so the capability check inside
+    // the upload flow sees a real answer rather than "unknown".
+    const handleDropCollectionFilesRef = useRef(handleDropCollectionFiles);
+    handleDropCollectionFilesRef.current = handleDropCollectionFiles;
+    const handoffConsumedRef = useRef(false);
+    useEffect(() => {
+        if (!handoffUploadFiles?.length || handoffConsumedRef.current) return;
+        handoffConsumedRef.current = true;
+        onHandoffUploadFilesConsumed?.();
+        void handleDropCollectionFilesRef.current(handoffUploadFiles, null);
+    }, [handoffUploadFiles, onHandoffUploadFilesConsumed]);
 
     async function handleDroppedCollectionDataTransfer(
         dataTransfer: DataTransfer,

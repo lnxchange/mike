@@ -1,9 +1,11 @@
 import type { Response } from "express";
-import { docxToPdf } from "./convert";
+import { docxToPdf, htmlToPdf } from "./convert";
 import {
   contentTypeForDocumentType,
+  isEmailDocumentType,
   shouldConvertToPdf,
 } from "./documentTypes";
+import { emailToHtml, parseEmail } from "./emailMessage";
 import {
   buildContentDisposition,
   downloadFile,
@@ -52,6 +54,14 @@ export async function prepareDocumentDisplay(source: {
       filename: pdfFilename(source.filename),
     };
   }
+  if (isEmailDocumentType(fileType)) {
+    const email = await parseEmail(toBuffer(source.sourceBytes), fileType);
+    return {
+      bytes: await htmlToPdf(emailToHtml(email)),
+      contentType: "application/pdf",
+      filename: pdfFilename(source.filename),
+    };
+  }
   return {
     bytes: toBuffer(source.sourceBytes),
     contentType: contentTypeForDocumentType(fileType),
@@ -74,7 +84,11 @@ export async function loadDocumentDisplay(
   source: DocumentDisplaySource,
 ): Promise<DocumentDisplayPayload | null> {
   const fileType = normalizedFileType(source);
-  const convertToPdf = shouldConvertToPdf(fileType);
+  // Emails are shown as PDF too: the worker stores a rendition alongside the
+  // original message, and prepareDocumentDisplay renders one when it is
+  // missing.
+  const convertToPdf =
+    shouldConvertToPdf(fileType) || isEmailDocumentType(fileType);
 
   if (convertToPdf) {
     if (source.pdfStoragePath) {

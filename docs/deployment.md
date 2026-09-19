@@ -129,7 +129,13 @@ session, whose status is derived from its file rows; there is no separate
 session-wide completion request.
 
 Upload sessions accept at most 50 supported files, 100 MB per file, and 2 GB
-in total. Users may run multiple independent upload sessions concurrently and,
+in total. Supported types are PDF, Word, Excel, PowerPoint, email messages
+(`.eml`, `.msg`) and `.zip` archives. An email is stored as-is with a PDF
+rendition for the viewer, and each attachment of a supported type is filed as
+its own document beside it. A zip is not kept as a document: every supported
+entry becomes a document, with the archive's directories recreated as folders
+under the upload target. Both need LibreOffice on the worker for the email
+rendition. Users may run multiple independent upload sessions concurrently and,
 by default, may create at most 50 sessions per hour. Upload-session mutation,
 polling, and hourly creation limits can be overridden with the
 `RATE_LIMIT_UPLOAD_SESSION_*` environment variables documented in

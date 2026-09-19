@@ -24,6 +24,7 @@ import {
     uploadProjectDocuments,
 } from "@/app/lib/mikeApi";
 import type { Document } from "@/app/components/shared/types";
+import { takePendingProjectUploads } from "@/app/lib/pendingProjectUploads";
 import { AddDocumentsModal } from "@/app/components/modals/AddDocumentsModal";
 import {
     DocTable,
@@ -76,6 +77,12 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
     const [selectionActions, setSelectionActions] =
         useState<DocTableSelectionActions | null>(null);
     const [actionsOpen, setActionsOpen] = useState(false);
+    // Files the New Project dialog chose for this project. Taken once on
+    // mount and released to the table when it can act on them.
+    const [handoffFiles, setHandoffFiles] = useState<File[]>(() =>
+        takePendingProjectUploads(projectId),
+    );
+    const clearHandoffFiles = useCallback(() => setHandoffFiles([]), []);
     const [directoryPagination, setDirectoryPagination] = useState<{
         projectId: string;
         limits: Record<string, number>;
@@ -434,6 +441,12 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 }
                 onOwnerOnlyAction={setOwnerOnlyAction}
                 canDo={canDo}
+                handoffUploadFiles={
+                    roleKnown && !projectLoading && !folderId
+                        ? handoffFiles
+                        : undefined
+                }
+                onHandoffUploadFilesConsumed={clearHandoffFiles}
             />
         </>
     );

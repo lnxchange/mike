@@ -1,22 +1,14 @@
-export const SUPPORTED_DOCUMENT_ACCEPT =
-    ".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt";
-export const UNSUPPORTED_DOCUMENT_WARNING_MESSAGE =
-    "Unsupported file type. Only PDF, Word, Excel, and PowerPoint files can be uploaded.";
+import {
+    SUPPORTED_UPLOAD_ACCEPT,
+    UNSUPPORTED_UPLOAD_MESSAGE,
+    isSupportedUploadFilename,
+} from "@/shared/api/uploadSessionClient";
 
-const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([
-    "pdf",
-    "docx",
-    "doc",
-    "xlsx",
-    "xlsm",
-    "xls",
-    "pptx",
-    "ppt",
-]);
+export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_UPLOAD_ACCEPT;
+export const UNSUPPORTED_DOCUMENT_WARNING_MESSAGE = UNSUPPORTED_UPLOAD_MESSAGE;
 
 export function isSupportedDocumentFile(file: File): boolean {
-    const extension = file.name.split(".").pop()?.toLowerCase();
-    return !!extension && SUPPORTED_DOCUMENT_EXTENSIONS.has(extension);
+    return isSupportedUploadFilename(file.name);
 }
 
 export function partitionSupportedDocumentFiles(files: File[]) {

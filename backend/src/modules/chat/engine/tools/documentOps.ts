@@ -28,12 +28,14 @@ import {
 } from "../types";
 import {
   contentTypeForDocumentType,
+  isEmailDocumentType,
   isPresentationDocumentType,
   isSpreadsheetDocumentType,
   isWordDocumentType,
   requiresLibreOfficeTextExtraction,
   shouldConvertToPdf,
 } from "../../../../lib/documentTypes";
+import { extractEmailText } from "../../../../lib/emailMessage";
 import { extractPresentationText } from "../../../../lib/officeText";
 import { spreadsheetToLLMText } from "../../../../lib/spreadsheet";
 
@@ -1545,6 +1547,13 @@ export async function readDocumentContent(
       text = await extractPresentationText(Buffer.from(raw));
       devLog(
         `[read_document] presentation extracted length=${text.length} for filename="${docInfo.filename}"`,
+      );
+    } else if (isEmailDocumentType(fileType)) {
+      // Headers plus body, parsed from the stored message. Attachments are
+      // separate documents; the header block names them so the model can ask.
+      text = await extractEmailText(Buffer.from(raw), fileType);
+      devLog(
+        `[read_document] email extracted length=${text.length} for filename="${docInfo.filename}"`,
       );
     } else if (
       isPresentationDocumentType(fileType) ||

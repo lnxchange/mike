@@ -1,7 +1,14 @@
 import Image from "next/image";
-import { File } from "lucide-react";
+import { File, FolderArchive, Mail } from "lucide-react";
 
-export type FileTypeKind = "pdf" | "word" | "excel" | "ppt" | "other";
+export type FileTypeKind =
+    | "pdf"
+    | "word"
+    | "excel"
+    | "ppt"
+    | "email"
+    | "archive"
+    | "other";
 
 /**
  * Normalize a file_type value (e.g. "pdf") or a filename (e.g. "deck.pptx")
@@ -16,6 +23,8 @@ export function fileTypeKind(value: string | null | undefined): FileTypeKind {
     if (ext === "docx" || ext === "doc") return "word";
     if (ext === "xlsx" || ext === "xlsm" || ext === "xls") return "excel";
     if (ext === "pptx" || ext === "ppt") return "ppt";
+    if (ext === "eml" || ext === "msg") return "email";
+    if (ext === "zip") return "archive";
     return "other";
 }
 
@@ -56,11 +65,19 @@ export function FileTypeIcon({
                 unoptimized
                 className={`${cls} object-contain grayscale opacity-35`}
             />
+        ) : kind === "email" ? (
+            <Mail className={`${cls} text-gray-300`} />
+        ) : kind === "archive" ? (
+            <FolderArchive className={`${cls} text-gray-300`} />
         ) : (
             <File className={`${cls} text-gray-300`} />
         );
     }
     switch (kind) {
+        case "email":
+            return <Mail className={`${cls} text-gray-500`} />;
+        case "archive":
+            return <FolderArchive className={`${cls} text-gray-500`} />;
         case "pdf":
             return (
                 <Image

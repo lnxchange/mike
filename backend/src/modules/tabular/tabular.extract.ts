@@ -3,10 +3,12 @@
 
 import { docxToPdf, normalizeDocxZipPaths } from "../../lib/convert";
 import {
+    isEmailDocumentType,
     isPresentationDocumentType,
     isSpreadsheetDocumentType,
     isWordDocumentType,
 } from "../../lib/documentTypes";
+import { extractEmailText } from "../../lib/emailMessage";
 import { extractPresentationText } from "../../lib/officeText";
 import { spreadsheetToLLMText } from "../../lib/spreadsheet";
 import {
@@ -243,6 +245,9 @@ export async function extractDocumentMarkdown(
     }
     if (normalizedType === "pptx") {
         return extractPresentationText(Buffer.from(buf));
+    }
+    if (isEmailDocumentType(normalizedType)) {
+        return extractEmailText(Buffer.from(buf), normalizedType);
     }
     if (
         isPresentationDocumentType(normalizedType) ||
