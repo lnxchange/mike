@@ -1,5 +1,7 @@
+import Image from "next/image";
 import Link from "next/link";
 import { MikeIcon } from "@/app/components/chat/mike-icon";
+import { appConfig } from "@/config";
 
 interface SiteLogoProps {
     size?: "sm" | "md" | "lg" | "xl";
@@ -18,7 +20,7 @@ export function SiteLogo({
 }: SiteLogoProps) {
     const landingHref =
         process.env.NODE_ENV === "production"
-            ? "https://mikeoss.com"
+            ? appConfig.branding.landingUrl
             : "http://localhost:3000";
     const sizeClasses = {
         sm: "text-xl",
@@ -34,18 +36,33 @@ export function SiteLogo({
         xl: 48,
     };
 
+    const iconSize = iconSizes[size];
+    const markSrc = appConfig.branding.markSrc;
+
     const logo = (
         <h1
-            className={`flex items-center gap-1.5 ${sizeClasses[size]} font-light font-serif ${
+            className={`flex items-center gap-1.5 ${sizeClasses[size]} font-light font-display ${
                 animate ? "sidebar-fade-in" : ""
             } ${className}`}
         >
             <span
                 className={`inline-flex shrink-0 items-center leading-none ${iconClassName}`}
             >
-                <MikeIcon size={iconSizes[size]} />
+                {markSrc ? (
+                    <Image
+                        src={markSrc}
+                        alt=""
+                        aria-hidden
+                        width={iconSize}
+                        height={iconSize}
+                        unoptimized
+                        style={{ height: iconSize, width: "auto" }}
+                    />
+                ) : (
+                    <MikeIcon size={iconSize} />
+                )}
             </span>
-            <span>Mike</span>
+            <span>{appConfig.branding.appName}</span>
         </h1>
     );
 
