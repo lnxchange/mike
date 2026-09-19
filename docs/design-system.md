@@ -99,6 +99,12 @@ the meaning ("this is the destructive action") rather than a specific color.
 `-500`, `-800` and `-900` are *not* overridden, so the scale is discontinuous —
 stay on the overridden steps for brand blue.
 
+The overridden steps resolve through `--brand-accent`, `--brand-accent-strong`
+and `--brand-accent-tint-{5,10,30}` on `:root`, so a deployment profile can
+re-accent the app from its theme stylesheet (see `config/README.md`, "Theme")
+without touching component classes. Keep using the `blue-*` utilities in
+components; do not reference the `--brand-accent*` variables directly.
+
 ### Dark mode
 
 `@custom-variant dark (&:is(.dark *))` — class-based, not
@@ -123,6 +129,7 @@ and exposed as CSS variables on `<body>`:
 | --- | --- | --- | --- |
 | Inter | `--font-inter` → `--font-sans` | `font-sans` (body default) | All UI text. |
 | EB Garamond | `--font-eb-garamond` → `--font-serif` | `font-serif` | Display headings, legal document body copy, tracked-change cards. |
+| (display) | `--font-display-face`, falling back to `--font-eb-garamond` → `--font-display` | `font-display` | The wordmark (`SiteLogo`) and page titles (`PageHeader`) only. Identical to `font-serif` unless a deployment profile supplies a dedicated display face. |
 
 The Word add-in supplies the same two variables from
 `word-addin/src/taskpane/styles.css` (fonts loaded via `<link>` in

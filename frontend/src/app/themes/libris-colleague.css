@@ -1,0 +1,72 @@
+/*
+ * Libris Colleague theme.
+ *
+ * Applies only when the root element carries data-profile="libris-colleague"
+ * (set from NEXT_PUBLIC_DEPLOYMENT_PROFILE in app/layout.tsx). Without that
+ * attribute nothing in this file takes effect, so the OSS profile renders the
+ * stock Mike theme untouched.
+ *
+ * Token values are vendored from lnxchange/libris-design-system
+ * (src/styles/tokens.css, dist/theme.css). That repo is the source of truth:
+ * re-copy from it rather than tuning values here.
+ *
+ * Only tokens are adopted. The design system's React components target the
+ * marketing site (Hero, Navbar, BookCard) and are not used in the app chrome.
+ */
+@import "@fontsource/grenze/600.css";
+@import "@fontsource/source-sans-pro/300.css";
+@import "@fontsource/source-sans-pro/400.css";
+@import "@fontsource/source-sans-pro/600.css";
+@import "@fontsource/source-sans-pro/700.css";
+
+html[data-profile="libris-colleague"] {
+    /* Neutrals: Libris cool grey replaces Tailwind gray; 950 is Libris
+       Charcoal (#263033), so the app's near-black controls become charcoal. */
+    --color-gray-50: hsl(210 20% 98%);
+    --color-gray-100: hsl(210 17% 95%);
+    --color-gray-200: hsl(210 16% 90%);
+    --color-gray-300: hsl(210 14% 83%);
+    --color-gray-400: hsl(210 12% 71%);
+    --color-gray-500: hsl(210 10% 56%);
+    --color-gray-600: hsl(210 12% 44%);
+    --color-gray-700: hsl(210 14% 34%);
+    --color-gray-800: hsl(210 16% 24%);
+    --color-gray-900: hsl(210 18% 16%);
+    --color-gray-950: hsl(193 14% 17%);
+
+    /* Accent: Libris Red (#b31e3b, primary-700) replaces Mike azure. */
+    --brand-accent: hsl(348 71% 40%);
+    --brand-accent-strong: hsl(345 74% 35%);
+    --brand-accent-tint-5: hsl(348 71% 40% / 0.05);
+    --brand-accent-tint-10: hsl(348 71% 40% / 0.1);
+    --brand-accent-tint-30: hsl(348 71% 40% / 0.3);
+    --color-blue-300: hsl(351 71% 63%);
+    --color-blue-400: hsl(351 68% 55%);
+    --color-blue-500: hsl(352 67% 49%);
+    --color-blue-800: hsl(345 74% 35%);
+    --color-blue-900: hsl(338 81% 26%);
+
+    /* Libris brand radius: rounded-lg is 0.75rem. */
+    --radius: 0.75rem;
+
+    /* Grenze is display only: the wordmark and page titles (font-display). */
+    --font-display-face: "Grenze", Georgia, "Times New Roman", serif;
+}
+
+/* Source Sans Pro for all body and UI text. These variables are declared by
+   next/font on <body>, so the override must sit on body too. */
+html[data-profile="libris-colleague"] body {
+    --font-inter: "Source Sans Pro", ui-sans-serif, system-ui, -apple-system,
+        "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-eb-garamond: "Source Sans Pro", ui-sans-serif, system-ui,
+        -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* shadcn semantic roles, light theme only. The .dark block in globals.css
+   keeps its own values so dark mode stays legible. */
+html[data-profile="libris-colleague"]:not(.dark) {
+    --primary: hsl(193 14% 17%);
+    --ring: hsl(351 68% 55%);
+    --sidebar-primary: hsl(193 14% 17%);
+    --sidebar-ring: hsl(351 68% 55%);
+}

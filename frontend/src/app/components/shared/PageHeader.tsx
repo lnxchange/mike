@@ -430,7 +430,7 @@ function PageHeaderBreadcrumbs({ items }: { items: PageHeaderBreadcrumb[] }) {
     return (
         <div
             ref={containerRef}
-            className="relative flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-2xl font-medium font-serif"
+            className="relative flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-2xl font-medium font-display"
         >
             {parent?.onClick && (
                 <button

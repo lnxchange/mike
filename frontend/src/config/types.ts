@@ -16,6 +16,11 @@ export interface DeploymentProfile {
     appUrl: string;
     /** Public marketing/landing site the logo links to (may differ from appUrl). */
     landingUrl: string;
+    /**
+     * Optional brand mark rendered in the logo lockup instead of the default
+     * Mike icon. A path under frontend/public (for example "/brand/mark.svg").
+     */
+    markSrc?: string;
   };
 
   externalLinks: {

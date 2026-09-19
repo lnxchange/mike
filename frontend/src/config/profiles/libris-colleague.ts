@@ -12,6 +12,10 @@ export const librisColleagueProfile: DeploymentProfile = {
     tagline: "AI colleague for legal document analysis and contract review.",
     appUrl: "https://libris-colleague-lnxchanges-projects.vercel.app",
     landingUrl: "https://libris.au",
+    // Libris bookmark glyph, copied from lnxchange/libris-design-system
+    // assets/logo/libris-bookmark.svg. The theme lives in
+    // app/themes/libris-colleague.css and keys off data-profile.
+    markSrc: "/brand/libris-bookmark.svg",
   },
   externalLinks: {
     terms: "https://libris.au",

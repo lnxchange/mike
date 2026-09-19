@@ -41,8 +41,15 @@ it as the spec both per-app config modules follow.
 
 Both `oss` profiles (the only ones with real values) currently customize:
 
-- **Branding**: app name, tagline, canonical app URL, marketing/landing URL (frontend);
-  the name the AI assistant refers to itself as in system prompts (backend).
+- **Branding**: app name, tagline, canonical app URL, marketing/landing URL, and an
+  optional `markSrc` brand glyph for the logo lockup (frontend); the name the AI
+  assistant refers to itself as in system prompts (backend).
+- **Theme** (frontend, CSS only): `app/layout.tsx` stamps the active profile id onto
+  `<html data-profile="...">`, and a profile may ship a stylesheet under
+  `frontend/src/app/themes/<id>.css` that overrides design tokens (Tailwind colour
+  ramps, the `--brand-accent*` variables, `--radius`, and the font variables) scoped to
+  that attribute. `libris-colleague.css` is the worked example. The OSS profile has no
+  theme file and renders the stock Mike design system.
 - **External links**: terms of use, privacy policy (frontend).
 - **Support contact**: a support email address (both).
 - **Allowed document categories**: an array of practice-area/document-category labels a
