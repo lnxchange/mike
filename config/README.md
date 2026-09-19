@@ -80,8 +80,10 @@ DEPLOYMENT_PROFILE=oss
 NEXT_PUBLIC_DEPLOYMENT_PROFILE=oss
 ```
 
-Setting either to `mode-law` activates the placeholder profile (currently identical output
-to `oss`, since no real values have been filled in yet). Setting either to an unrecognized
+Setting either to `libris-colleague` activates the Attune Legal product name
+(Libris Colleague) for the UI and the assistant. Setting either to `mode-law`
+activates the placeholder profile (currently identical output to `oss`, since
+no real values have been filled in yet). Setting either to an unrecognized
 value logs a warning and falls back to `oss` — it never crashes the app.
 
 ## Extending this later

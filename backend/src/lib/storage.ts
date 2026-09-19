@@ -7,6 +7,10 @@
  *   R2_ACCESS_KEY_ID    — R2 API token (Access Key ID)
  *   R2_SECRET_ACCESS_KEY — R2 API token (Secret Access Key)
  *   R2_BUCKET_NAME      — bucket name (default: "mike")
+ *   R2_REGION           — SigV4 region (default: "auto"). R2 accepts "auto";
+ *                         other S3-compatible stores (Supabase Storage, AWS
+ *                         S3) verify the region in the credential scope and
+ *                         need their real region here.
  */
 
 import {
@@ -40,10 +44,12 @@ const CHECKSUM_DEFAULTS = {
   responseChecksumValidation: "WHEN_REQUIRED",
 } as const;
 
+const REGION = process.env.R2_REGION?.trim() || "auto";
+
 function getClient(): S3Client {
   if (!cachedClient) {
     cachedClient = new S3Client({
-      region: "auto",
+      region: REGION,
       endpoint: process.env.R2_ENDPOINT_URL!,
       forcePathStyle: true,
       ...CHECKSUM_DEFAULTS,
@@ -63,7 +69,7 @@ function getUploadSigningClient(): S3Client {
     return cachedUploadSigningClient.client;
   }
   const client = new S3Client({
-    region: "auto",
+    region: REGION,
     endpoint,
     forcePathStyle: true,
     ...CHECKSUM_DEFAULTS,

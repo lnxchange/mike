@@ -1,10 +1,12 @@
 import type { DeploymentProfile } from "./types";
 import { ossProfile } from "./profiles/oss";
 import { modeLawProfile } from "./profiles/mode-law";
+import { librisColleagueProfile } from "./profiles/libris-colleague";
 
 const PROFILES: Record<string, DeploymentProfile> = {
   [ossProfile.id]: ossProfile,
   [modeLawProfile.id]: modeLawProfile,
+  [librisColleagueProfile.id]: librisColleagueProfile,
 };
 
 function resolveProfile(): DeploymentProfile {
