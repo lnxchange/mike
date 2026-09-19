@@ -2,15 +2,37 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { login } from "@/app/lib/authApi";
+import { Input } from "@/app/components/ui/input";
+import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import Link from "next/link";
-import { SiteLogo } from "@/components/site-logo";
-import { useAuth } from "@/contexts/AuthContext";
+import { SiteLogo } from "@/app/components/site-logo";
+import { useAuth } from "@/app/contexts/AuthContext";
+import { cn } from "@/app/lib/utils";
+import {
+    authGlassCardClassName,
+    authInputClassName,
+} from "@/app/components/auth/authStyles";
+import { AuthDivider } from "@/app/components/auth/AuthDivider";
+import { SsoAuthButton } from "@/app/components/auth/SsoAuthButton";
+import { GoogleAuthButton } from "@/app/components/auth/GoogleAuthButton";
+import { FieldLabel } from "@/app/components/ui/form-field";
+import { knownErrorCodeMessage } from "@/app/lib/userFacingError";
+
+const LOGIN_ERROR_MESSAGES = {
+    invalid_credentials: "The email or password is incorrect.",
+    email_not_confirmed: "Confirm your email address before logging in.",
+} as const;
+
 export default function LoginPage() {
     const router = useRouter();
-    const { isAuthenticated, authLoading } = useAuth();
+    const {
+        isAuthenticated,
+        authLoading,
+        authError,
+        refreshSession,
+        retrySession,
+    } = useAuth();
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [loading, setLoading] = useState(false);
@@ -18,7 +40,7 @@ export default function LoginPage() {
 
     useEffect(() => {
         if (!authLoading && isAuthenticated) {
-            router.replace("/assistant");
+            router.replace("/onboarding/profile");
         }
     }, [authLoading, isAuthenticated, router]);
 
@@ -28,103 +50,114 @@ export default function LoginPage() {
         setError(null);
 
         try {
-            const { data, error } = await supabase.auth.signInWithPassword({
-                email,
-                password,
-            });
-
-            if (error) throw error;
-
-            router.push("/assistant");
-        } catch (error: any) {
-            setError(error.message || "An error occurred during login");
+            await login(email, password);
+            await refreshSession();
+            router.push("/onboarding/profile");
+        } catch (error: unknown) {
+            setError(
+                knownErrorCodeMessage(
+                    error,
+                    LOGIN_ERROR_MESSAGES,
+                    "Unable to log in right now. Please try again.",
+                ),
+            );
         } finally {
             setLoading(false);
         }
     };
 
     return (
-        <div className="min-h-dvh bg-white flex items-start justify-center px-6 pt-32 md:pt-40 pb-10 relative">
+        <div className="relative flex min-h-dvh items-center justify-center bg-gray-50/80 px-6 py-10">
             <div className="absolute top-4 md:top-8 left-1/2 -translate-x-1/2">
-                <SiteLogo size="md" className="md:text-4xl" asLink />
+                <SiteLogo size="lg" asLink />
             </div>
             <div className="w-full max-w-md">
                 {/* Login Form */}
-                <div className="bg-white border border-gray-200 rounded-2xl p-8 mb-4">
-                    <div className="flex justify-between items-center mb-6">
-                        <h2 className="text-left text-2xl font-serif">
-                            Log In
-                        </h2>
-                        <div className="bg-gray-100 p-1 rounded-md flex text-xs font-medium">
-                            <span className="text-gray-600 px-3 py-1 bg-white rounded-sm shadow-sm">
-                                Log in
-                            </span>
-                            <Link
-                                href="/signup"
-                                className="px-3 py-1 text-gray-500 hover:text-gray-900"
-                            >
-                                Sign up
-                            </Link>
-                        </div>
-                    </div>
+                <div className={cn(authGlassCardClassName, "mb-4")}>
+                    <h2 className="mb-6 text-left text-2xl font-medium font-serif text-gray-950">
+                        Log In
+                    </h2>
                     <form onSubmit={handleLogin} className="space-y-4">
                         <div>
-                            <label
-                                htmlFor="email"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Email
-                            </label>
+                            <FieldLabel htmlFor="email">Email</FieldLabel>
                             <Input
                                 id="email"
                                 type="email"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
-                                placeholder="Enter your email"
                                 required
-                                className="w-full"
+                                className={`w-full ${authInputClassName}`}
                             />
                         </div>
 
                         <div>
-                            <label
-                                htmlFor="password"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Password
-                            </label>
+                            <div className="flex items-start justify-between gap-3">
+                                <FieldLabel htmlFor="password">
+                                    Password
+                                </FieldLabel>
+                                <Link
+                                    href="/forgot-password"
+                                    className="text-xs font-medium text-gray-500 transition-colors hover:text-gray-950"
+                                >
+                                    Forgot password?
+                                </Link>
+                            </div>
                             <Input
                                 id="password"
                                 type="password"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
-                                placeholder="Enter your password"
                                 required
-                                className="w-full"
+                                className={`w-full ${authInputClassName}`}
                             />
                         </div>
 
-                        {error && (
+                        {(error || authError) && (
                             <div className="text-red-600 text-sm bg-red-50 p-3 rounded">
-                                {error}
+                                {error ?? authError}
+                                {!error && authError && (
+                                    <button
+                                        type="button"
+                                        onClick={() =>
+                                            void retrySession().catch(() => {})
+                                        }
+                                        className="ml-2 underline underline-offset-2"
+                                    >
+                                        Retry
+                                    </button>
+                                )}
                             </div>
                         )}
 
-                        <Button
-                            type="submit"
+                        <div className="pt-2">
+                            <PillButtonUI
+                                type="submit"
+                                tone="black"
+                                size="normal"
+                                disabled={loading}
+                                className="w-full"
+                            >
+                                {loading ? "Logging in..." : "Log in"}
+                            </PillButtonUI>
+                        </div>
+                        <AuthDivider />
+                        <GoogleAuthButton
+                            onError={setError}
                             disabled={loading}
-                            className="w-full mt-5 bg-black hover:bg-gray-900 text-white"
-                        >
-                            {loading ? "Logging in..." : "Log in"}
-                        </Button>
+                            onLoadingChange={setLoading}
+                        />
+                        <SsoAuthButton disabled={loading} />
                     </form>
                 </div>
-                <p className="text-center text-xs text-gray-500 leading-relaxed px-2">
-                    Mike hosted on MikeOSS.com is currently a demo service.
-                    Please do not upload, submit, or store sensitive,
-                    confidential, privileged, client, or personally
-                    identifiable documents.
-                </p>
+                <div className="text-center text-sm text-gray-500">
+                    Don&apos;t have an account?{" "}
+                    <Link
+                        href="/signup"
+                        className="font-medium transition-colors hover:text-gray-950"
+                    >
+                        Sign up
+                    </Link>
+                </div>
             </div>
         </div>
     );

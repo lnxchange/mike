@@ -1,172 +1,191 @@
 # Mike
 
-Mike is a legal document assistant with a Next.js frontend, an Express backend, Supabase Auth/Postgres, and S3-compatible (Cloudflare R2 by default) object storage.
+![Mike](docs/assets/link-image.jpg)
 
-This fork is set up to be run and tested independently: a fresh Supabase project for data/auth, the frontend deployable to Vercel, and the backend deployable to any host that can run a long-lived Node process. See the docs below for the full picture — this README covers the fast path to running it locally.
+Mike (MikeOSS) is an open-source legal AI platform for document review,
+drafting, and legal research.
 
-## Contents
+It combines a Next.js frontend, an Express backend, Supabase Auth/Postgres,
+and Cloudflare R2-compatible object storage.
 
-- `frontend/` - Next.js application (UI only; talks to the backend over HTTP)
-- `backend/` - Express API, Supabase access, document processing, and database schema
-- `backend/schema.sql` - Supabase schema for fresh databases
-- `config/README.md` - the branding/feature-flag/deployment-profile configuration layer
-- `docs/safe-local-testing.md` - operational guidance for testing with disposable resources
-- `docs/integrations/` - design notes for planned (not yet built) integrations, e.g. a SharePoint/Zoho matter-sync adapter
-- [`QUICKSTART.md`](./QUICKSTART.md) - one linear runbook: Supabase + Vercel + a backend host, start to finish, with exactly which key goes where
-- [`SETUP_AUDIT.md`](./SETUP_AUDIT.md) - architecture audit and known gaps
-- [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md) - step-by-step fresh Supabase project setup
-- [`API_BOUNDARY.md`](./API_BOUNDARY.md) - the HTTP API surface, for future external/integration callers
-- [`TESTING.md`](./TESTING.md) - what has been verified in this environment and what remains unresolved
+Website: [mikeoss.com](https://mikeoss.com)
 
-> **Note:** `backend/migrations/` is referenced by `backend/schema.sql`'s header for incremental updates to *existing* deployments, but does not currently exist in this repository. It does not affect fresh-project setup — see `SUPABASE_SETUP.md` and `SETUP_AUDIT.md` for details.
+This `lnxchange/mike` fork keeps `main` as a clean mirror of upstream
+(`open-legal-products/mike`) and carries deployment-profile / setup work on
+the working branch. Fork-specific notes:
 
-## Prerequisites
+- [`config/README.md`](./config/README.md) — branding and deployment-profile layer (`DEPLOYMENT_PROFILE` / `NEXT_PUBLIC_DEPLOYMENT_PROFILE`)
+- [`QUICKSTART.md`](./QUICKSTART.md), [`SETUP_AUDIT.md`](./SETUP_AUDIT.md), [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md), [`API_BOUNDARY.md`](./API_BOUNDARY.md), [`TESTING.md`](./TESTING.md) — written against the May 2026 tree; treat them as historical until they are refreshed against the current Compose / same-origin `/api` gateway architecture
+- [`docs/integrations/`](./docs/integrations/) — design notes for planned integrations
 
-- Node.js 20 or newer
-- npm (the standardized package manager for this repo — see `SETUP_AUDIT.md` if you see a `bun.lock` and wonder why)
-- git
-- A Supabase project (a free/disposable one is fine for testing — see `SUPABASE_SETUP.md`)
-- An S3-compatible bucket: Cloudflare R2, MinIO, or another provider (optional for first boot — the app starts without it, uploads/downloads are just disabled)
-- At least one supported model provider API key: Anthropic, Google Gemini, or OpenAI (optional for first boot — can also be added per-user in-app)
-- LibreOffice installed locally if you need DOC/DOCX to PDF conversion (backend only)
+![Mike assistant home screen](docs/assets/mike-home.png)
+
+## Features
+
+- Chat with legal documents and open matters
+- Review documents and apply suggested edits
+- Run reusable assistant and tabular-review workflows
+- Organize projects, folders, and a document library
+- Verify citations and research US case law with CourtListener
+- Work from Microsoft Word with the beta task-pane add-in
+- Run supported language models locally through Ollama
 
 ## Quick start
 
-For a full click-by-click walkthrough (create the Supabase project, deploy the backend, deploy the frontend to Vercel, and get every key into the right file), see [`QUICKSTART.md`](./QUICKSTART.md). Short version for local-only testing:
+The included Docker Compose stack runs Mike, Supabase, RustFS object storage,
+and local email capture without requiring managed infrastructure.
 
-```bash
-git clone <this-repo>
-cd mike
+1. Copy the local environment templates:
 
-# 1. Install
-npm install --prefix backend
-npm install --prefix frontend
+   ```bash
+   cp .env.example .env
+   cp backend/.env.example backend/.env
+   ```
 
-# 2. Configure env vars
-cp backend/.env.example backend/.env
-cp frontend/.env.local.example frontend/.env.local
-# edit both files — see "Environment" below
+2. In `backend/.env`, set `DOWNLOAD_SIGNING_SECRET` and
+   `USER_API_KEYS_ENCRYPTION_SECRET` to separate values generated with:
 
-# 3. Set up a fresh Supabase project (see SUPABASE_SETUP.md), then verify it:
-npm run check:supabase --prefix backend
+   ```bash
+   openssl rand -hex 32
+   ```
 
-# 4. Run both apps (two terminals)
-npm run dev --prefix backend
-npm run dev --prefix frontend
-```
+3. Add an Anthropic, Gemini, or OpenAI API key to `backend/.env`, unless you
+   plan to use Ollama exclusively.
 
-Open `http://localhost:3000`.
+4. Start the stack:
 
-## Database Setup
+   ```bash
+   docker compose up --build
+   ```
 
-See [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md) for the full walkthrough (project creation, applying the schema, getting API keys, disabling email confirmation for local testing, and verifying the connection). Short version, for a new Supabase project: open the Supabase SQL editor and run the entire contents of `backend/schema.sql`.
+5. Open [http://localhost:3000](http://localhost:3000) and create an account.
 
-For an existing database that already has Mike's schema applied, do **not** re-run the full schema file — see `SUPABASE_SETUP.md` "Existing databases".
+The bundled credentials and infrastructure are intended for local development
+only. See [Local development](docs/local-development.md) for service endpoints,
+authentication behavior, Ollama setup, and first-run guidance.
 
-## Environment
+## Repository
 
-This repo has two independently deployable apps, each with its own env file — there is no single root `.env`. A root [`.env.example`](./.env.example) exists only as a pointer to the two real files:
+| Path | Purpose |
+| --- | --- |
+| `frontend/` | Next.js web application |
+| `backend/` | Express API, document processing, and database access |
+| `word-addin/` | Microsoft Word task-pane add-in (beta) |
+| `backend/schema.sql` | Complete schema for fresh databases |
+| `backend/migrations/` | Dated migrations for existing deployments |
+| `docker-compose.yml` | Local application and infrastructure stack |
+| `docs/` | Development, deployment, testing, and feature guides |
 
-- [`backend/.env.example`](./backend/.env.example) → copy to `backend/.env` (server secrets — Supabase service role key, storage credentials, model provider keys, signing secrets)
-- [`frontend/.env.local.example`](./frontend/.env.local.example) → copy to `frontend/.env.local` (client-safe public config — Supabase URL/anon key, backend base URL)
+## Documentation
 
-Both example files are grouped and commented (Supabase / storage / LLM providers / app URLs / security secrets / deployment profile) and explain which variables are required locally vs. on Vercel. **Never commit `backend/.env` or `frontend/.env.local`** — both are already excluded by `.gitignore`.
+- [Documentation index](docs/README.md)
+- [Local development](docs/local-development.md)
+- [Manual and production deployment](docs/deployment.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [CourtListener integration](docs/courtlistener.md)
+- [Microsoft Word add-in](word-addin/README.md)
+- [Tamper-evident exports](docs/tamper-evident-exports.md)
+- [Safe local testing](docs/safe-local-testing.md)
+- [End-to-end testing and CI](docs/e2e-ci.md)
+- [Deployment-profile config layer](config/README.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
-Key points:
+## Connectors
 
-- Supabase values come from the project dashboard (**Project Settings > API**). Use the project URL for `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`, the service role key for `SUPABASE_SECRET_KEY`, and the anon/public key for `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`. If your Supabase project shows multiple key formats, use the legacy JWT-style anon and service role keys expected by the Supabase client libraries.
-- Only `NEXT_PUBLIC_`-prefixed variables are safe to put in the frontend — they are bundled into client-side JavaScript. Everything else (service role key, model provider keys, storage credentials) belongs in `backend/.env` only. See `docs/safe-local-testing.md` for more on this.
-- Provider keys are only needed for the models you plan to use. Model provider keys can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
-- The backend fails fast at startup with a clear message if `SUPABASE_URL` / `SUPABASE_SECRET_KEY` are missing (see `backend/src/lib/env.ts`), and warns (without exiting) if storage or signing-secret variables are missing.
-- All secrets are read only from `process.env` — nothing is hardcoded. See `SETUP_AUDIT.md` for confirmation of this across both apps.
+Mike connects to the systems a legal team already works in — Slack and any
+remote [MCP](https://modelcontextprotocol.io) server — from
+**Settings > Connectors**. There are two setup pathways, and every connector
+uses one of them:
 
-## Install
+**Zero-setup (the server registers itself).** Most hosted MCP servers support
+OAuth dynamic client registration (RFC 7591). For these, nothing is configured
+on the Mike server at all: a user clicks **Add**, pastes the server URL (or
+picks a preset), and completes the provider's consent screen in a popup. Servers
+that use a bearer token or custom headers instead of OAuth also fall in this
+pathway — the credentials are entered in the same modal and stored encrypted.
 
-Install each app package (npm is the standardized package manager for both apps — see `SETUP_AUDIT.md` for why the `frontend/bun.lock` present in this repo isn't the primary path):
+**Bring-your-own OAuth app (you register a client once).** Some providers do
+not implement dynamic client registration, so the person hosting Mike creates
+an OAuth client with that provider once, puts its credentials in
+`backend/.env`, and every user of the deployment can then connect their own
+account with one click:
 
-```bash
-npm install --prefix backend
-npm install --prefix frontend
-```
+- **Google-hosted MCP servers** (`*.googleapis.com`) — create a Google Cloud
+  OAuth client and set `GOOGLE_MCP_OAUTH_CLIENT_ID` / `_SECRET`
+  (see `backend/.env.example`).
+- **Slack** — see [Slack](#slack) below.
 
-## Run Locally
+If a user starts an OAuth connect before the deployment is configured, the
+error message contains the exact provider-console steps and the redirect URI
+to paste — nothing fails silently.
 
-Start the backend:
+**Redirect URIs.** Every callback below is derived from the backend's
+`API_PUBLIC_URL`, which is the browser-reachable frontend gateway *including
+its `/api` prefix* (the frontend proxies `/api/*` to the backend, so the
+backend's own port never appears in a redirect URI):
 
-```bash
-npm run dev --prefix backend
-```
+| Deployment | `API_PUBLIC_URL` | Register with the provider |
+| --- | --- | --- |
+| Local development | `http://localhost:3000/api` | `http://localhost:3000/api/user/…/oauth/callback` |
+| Production | `https://<your-mike-host>/api` | `https://<your-mike-host>/api/user/…/oauth/callback` |
 
-Start the main app:
+The path is `/user/mcp-connectors/oauth/callback` for MCP connectors. A
+Connect attempt on an unconfigured Slack/Google MCP connector shows the exact
+URI, so you can copy it rather than assemble it. A value that does not
+byte-match what the provider has on file fails as `redirect_uri_mismatch`.
 
-```bash
-npm run dev --prefix frontend
-```
+### Slack
 
-Open `http://localhost:3000`.
+Slack's hosted MCP server (`https://mcp.slack.com/mcp`) gives the assistant
+access to the channels and DMs the connecting user can see. The requested
+scopes are mostly read/search, plus a few write scopes (`chat:write`,
+`reactions:write`, `canvases:write`) — a user approving the consent screen is
+granting those too. Slack does not support dynamic client registration, so
+the deployment needs a Slack app (created once, by someone with app-creation
+rights in the workspace):
 
-## First Run
+1. Create an app at [api.slack.com/apps](https://api.slack.com/apps) — the
+   fastest path is **From an app manifest**, pasting
+   `docs/slack-mcp-app-manifest.example.json` and replacing the redirect URL
+   placeholder. The manifest configures the bot user, the agent feature
+   (`features.assistant_view`), and the OAuth scopes. (Building by hand
+   instead: add the bot user and agent feature yourself.)
+2. Two settings the manifest cannot express, required on **either** path:
+   turn on the **Slack MCP Server** toggle under the app's *Agents* settings,
+   and enable **PKCE** under *OAuth & Permissions*.
+3. Add the callback,
+   `https://<your-mike-host>/api/user/mcp-connectors/oauth/callback`, as a
+   redirect URL. Slack requires HTTPS, so local development needs an HTTPS
+   tunnel pointed at the **frontend** (port 3000, which proxies `/api` to the
+   backend) — for example `cloudflared tunnel --url http://localhost:3000` —
+   with `API_PUBLIC_URL=https://<tunnel-host>/api` in `backend/.env` and the
+   matching `https://<tunnel-host>/api/user/mcp-connectors/oauth/callback`
+   registered on the Slack app. Quick tunnels get a new hostname on every
+   start, so update both when the tunnel restarts.
+4. Set `SLACK_MCP_OAUTH_CLIENT_ID` and `SLACK_MCP_OAUTH_CLIENT_SECRET` in
+   `backend/.env` and restart the backend.
 
-1. Sign up in the app.
-2. If you did not set provider keys in `backend/.env`, open **Account > Models & API Keys** and add an Anthropic, Gemini, or OpenAI API key.
-3. Create or open a project and start chatting with documents.
+Each user then clicks **Add** on **Settings > Connectors**, picks the
+**Slack** preset, and approves Slack's consent screen. On workspaces with
+app approval enabled, a Workspace Owner/Admin must approve the app before
+members can authorize it. Tokens are encrypted at rest, and individual tools
+can be toggled per connector.
 
-## Vercel deployment (frontend)
+Tools Slack marks as writes — sending messages, adding reactions, creating
+canvases and lists, scheduling messages — are cached but kept **disabled**,
+and the toggle refuses to enable them: Mike has no human-confirmation step
+for write tools yet, so the assistant is only ever given the read and search
+tools. The consent screen therefore grants more than the assistant can use;
+trim the manifest's user scopes if that is not acceptable for your workspace.
 
-The frontend is a standard Next.js App Router app and deploys to Vercel with no code changes beyond what's already in this repo. The Express backend does **not** run on Vercel — see "Why the backend isn't on Vercel" below.
+## System workflows
 
-1. **Import the repo into Vercel** and set **Root Directory to `frontend`** in the project's General settings. There is no root `package.json`, so Vercel must be pointed at the `frontend/` directory to detect the Next.js framework and run the build there.
-2. Vercel auto-detects the Next.js framework. `frontend/vercel.json` in this repo pins the install/build/dev commands explicitly to `npm` (the frontend directory also has a `bun.lock`, which could otherwise make package-manager auto-detection ambiguous).
-3. **Set environment variables** in the Vercel project (Settings > Environment Variables), one entry per variable from `frontend/.env.local.example`:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`
-   - `SUPABASE_SECRET_KEY` (not required by any active frontend code path today, but harmless to set — see `SETUP_AUDIT.md`)
-   - `NEXT_PUBLIC_API_BASE_URL` — the public URL of your deployed backend (see below)
-   - Set these for both **Preview** and **Production** environments if you want preview deployments to work against a (disposable/test) Supabase project.
-4. The build succeeds even if these env vars are missing (the Supabase client falls back to a safe placeholder at build time and logs a warning — see `SETUP_AUDIT.md` item 2), so a first deploy will build, but auth/API calls will fail at runtime until the env vars are set correctly. Set them before testing sign-up/sign-in.
-5. Deploy. Preview deployments (per-PR/per-branch) and the Production deployment both work the same way — they just read different values for the env vars above depending on which Vercel environment they're configured for.
+Mike's system assistant and tabular-review workflows are maintained in the
+[`Open-Legal-Products/mike-workflows`](https://github.com/Open-Legal-Products/mike-workflows)
+repository. See [Contributing](CONTRIBUTING.md#system-workflows) for how they are
+packaged and synchronized with this application.
 
-### Why the backend isn't on Vercel
+## License
 
-The Express backend (`backend/`) is a long-running Node process, not a set of stateless request handlers, and depends on things that don't fit Vercel's serverless Functions model without a significant rewrite:
-
-- `libreoffice-convert` shells out to a `soffice` binary for DOC/DOCX → PDF conversion — this needs a real LibreOffice install on the host, which Vercel Functions don't provide.
-- `multer` is configured for in-memory/disk-backed multipart uploads across ~40 endpoints in 8 routers; converting all of this to Vercel's Function request/response model is a large, invasive rewrite, not a "make it testable now" change.
-- The app is a single long-lived process with its own rate limiting (`express-rate-limit`) and CORS configuration — this maps naturally to a normal Node host, not to independently-invoked Functions.
-
-**Chosen path for testing now (least invasive):** deploy the frontend to Vercel, and run the backend anywhere that supports a long-lived Node process with LibreOffice installed — Railway, Render, Fly.io, or a VM all work. `backend/nixpacks.toml` already configures a Nixpacks build that installs LibreOffice, which several of those platforms (e.g. Railway) use automatically. Point the frontend's `NEXT_PUBLIC_API_BASE_URL` at wherever you deploy the backend, and set the backend's `FRONTEND_URL` to your Vercel URL (for CORS).
-
-If a fully Vercel-hosted stack becomes a hard requirement later, the least invasive path would be incrementally converting individual backend routers to Next.js Route Handlers (`frontend/src/app/api/**/route.ts`) that call the same `backend/src/lib/*` modules, replacing `multer` with Vercel's request body streaming and swapping LibreOffice conversion for a hosted conversion API. That is a real migration project, not a config change, and is out of scope here.
-
-## Mode.law future-proofing
-
-This repo includes a small, explicit configuration layer (`backend/src/config/`, `frontend/src/config/`, documented in `config/README.md`) for branding, default prompts, allowed document categories, feature flags, support contact, and external links — selected via a `DEPLOYMENT_PROFILE` (backend) / `NEXT_PUBLIC_DEPLOYMENT_PROFILE` (frontend) env var. Only an `oss` profile has real values today; a `mode-law` profile placeholder exists with the same generic values, ready for a future overlay to fill in without touching application code. See `config/README.md` for the full explanation, and `API_BOUNDARY.md` for the HTTP API surface a future proprietary system should call instead of importing this codebase directly (keeping the AGPL boundary clean — see `SETUP_AUDIT.md` "Known gaps" for the technical reasoning).
-
-The first concrete future-integration under discussion — a SharePoint/Zoho matter-sync adapter for Attune Legal — is captured as a design-only planning doc in [`docs/integrations/sharepoint-zoho-matter-sync.md`](./docs/integrations/sharepoint-zoho-matter-sync.md). No code for it exists yet; the doc records the architecture decision (a separate adapter service calling this app's own API, not code inside this repo) before implementation starts.
-
-## Troubleshooting
-
-**Sign-up confirmation email never arrives.** Confirmation emails are sent by Supabase Auth, not by Mike. For local development, the simplest fix is to disable email confirmation in **Supabase > Authentication > Providers > Email**. For production, configure custom SMTP in Supabase; the built-in mailer is heavily rate-limited and may be restricted on newer projects.
-
-**The model picker shows a missing-key warning.** Add a key for that provider in **Account > Models & API Keys**, or configure the provider key in `backend/.env` and restart the backend.
-
-**DOC or DOCX conversion fails.** Install LibreOffice locally and restart the backend so document conversion commands are available on the process path.
-
-**Backend exits immediately on startup.** It fails fast with a message listing exactly which required env vars are missing (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`). Copy `backend/.env.example` to `backend/.env` and fill those in.
-
-**Not sure if Supabase is wired up correctly.** Run `npm run check:supabase --prefix backend` — it's a read-only script that reports exactly what's missing or misreachable. See `SUPABASE_SETUP.md`.
-
-## Useful Checks
-
-```bash
-npm run verify --prefix backend    # typecheck + build
-npm run verify --prefix frontend   # lint + typecheck + build
-npm run check:supabase --prefix backend  # Supabase connectivity + schema health check
-```
-
-Individual scripts, if you want to run one at a time:
-
-| App      | `dev` | `build` | `start` | `lint` | `typecheck` |
-|----------|-------|---------|---------|--------|-------------|
-| frontend | `next dev` | `next build` | `next start` | ESLint | `tsc --noEmit` |
-| backend  | `tsx watch src/index.ts` | `tsc` | `node dist/index.js` | `tsc --noEmit` (no separate linter configured yet) | `tsc --noEmit` |
+Mike is available under the [GNU Affero General Public License v3.0](LICENSE).

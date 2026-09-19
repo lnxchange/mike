@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { supabase } from "@/lib/supabase";
-import type { MikeEditAnnotation } from "../shared/types";
+import { useEffect, useState } from "react";
+import { EditCardUI } from "@/shared/ui/EditCardUI";
+import { resolveDocumentEdit } from "@/app/lib/mikeApi";
+import type { EditAnnotation } from "../shared/types";
+import { RESPONSE_GLASS_SURFACE } from "./message/messageStyles";
 
 function normalizeText(s: string) {
     return s.replace(/\s+/g, " ").trim();
@@ -19,13 +21,6 @@ function findMatch(
         const byId = container.querySelector(
             `${tag}[data-w-id="${opts.w_id}"]`,
         ) as HTMLElement | null;
-        console.log("[EditCard] findMatch by w_id", {
-            tag,
-            w_id: opts.w_id,
-            found: !!byId,
-            totalTagged: container.querySelectorAll(`${tag}[data-w-id]`).length,
-            totalAny: container.querySelectorAll(tag).length,
-        });
         if (byId) return byId;
     }
     const text = opts.text ?? "";
@@ -42,12 +37,6 @@ function findMatch(
             normalizeText(el.textContent ?? "").includes(target),
         ) ??
         null;
-    console.log("[EditCard] findMatch by text", {
-        tag,
-        target,
-        found: !!byText,
-        candidateCount: candidates.length,
-    });
     return byText;
 }
 
@@ -63,7 +52,7 @@ function findMatch(
  * so if the backend call later fails we can restore the original look.
  */
 export function applyOptimisticResolution(
-    annotation: MikeEditAnnotation,
+    annotation: EditAnnotation,
     verb: "accept" | "reject",
 ): () => void {
     const reverts: (() => void)[] = [];
@@ -117,13 +106,6 @@ export function applyOptimisticResolution(
     const scrolls = document.querySelectorAll(
         `[data-document-id="${CSS.escape(annotation.document_id)}"]`,
     );
-    console.log("[EditCard] optimistic scrolls found:", scrolls.length, {
-        document_id: annotation.document_id,
-        ins_w_id: annotation.ins_w_id,
-        del_w_id: annotation.del_w_id,
-        inserted_text: annotation.inserted_text?.slice(0, 40),
-        deleted_text: annotation.deleted_text?.slice(0, 40),
-    });
     scrolls.forEach((scroll) => {
         const container = scroll.querySelector(".docx-view-container");
         if (!container) return;
@@ -150,7 +132,8 @@ export function applyOptimisticResolution(
 }
 
 interface Props {
-    annotation: MikeEditAnnotation;
+    annotation: EditAnnotation;
+    changeNumber?: number;
     /**
      * External override for this edit's status. When set, takes
      * precedence over the annotation's DB status and the card's own
@@ -164,7 +147,7 @@ interface Props {
      * Accept/Reject buttons disable so the user can't race resolutions.
      */
     isReloading?: boolean;
-    onViewClick?: (ann: MikeEditAnnotation) => void;
+    onViewClick?: (ann: EditAnnotation) => void;
     /**
      * Fires immediately when the user clicks Accept or Reject, before the
      * backend round-trip. Parents use this to show an in-progress spinner
@@ -203,6 +186,7 @@ interface Props {
  */
 export function EditCard({
     annotation,
+    changeNumber,
     resolvedStatus,
     isReloading,
     onViewClick,
@@ -210,24 +194,27 @@ export function EditCard({
     onResolved,
     onError,
 }: Props) {
-    const [busy, setBusy] = useState(false);
+    const [busyAction, setBusyAction] = useState<
+        "accept" | "reject" | null
+    >(null);
+    const busy = busyAction !== null;
     const [localStatus, setLocalStatus] = useState<
         "pending" | "accepted" | "rejected"
     >(annotation.status);
     // External override (from a bulk resolve) takes precedence over the
     // card's own click-driven state.
     const status = resolvedStatus ?? localStatus;
-    const setStatus = setLocalStatus;
+
+    useEffect(() => {
+        if (busy) return;
+        setLocalStatus(annotation.status);
+    }, [annotation.edit_id, annotation.status, busy]);
 
     const resolved = status !== "pending";
-    // True while an accept/reject request for any edit on this card's
-    // document is in flight — triggered here, in DocPanel, or in the
-    // bulk bar. Disables the buttons so the user can't race resolutions.
-    const inFlight = busy || !!isReloading;
 
     const handle = async (verb: "accept" | "reject") => {
         if (busy || resolved) return;
-        setBusy(true);
+        setBusyAction(verb);
         onResolveStart?.({
             editId: annotation.edit_id,
             documentId: annotation.document_id,
@@ -240,32 +227,14 @@ export function EditCard({
             console.error("[EditCard] optimistic update threw", e);
         }
         try {
-            const {
-                data: { session },
-            } = await supabase.auth.getSession();
-            const token = session?.access_token;
-            const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
-            const resp = await fetch(
-                `${apiBase}/single-documents/${annotation.document_id}/edits/${annotation.edit_id}/${verb}`,
-                {
-                    method: "POST",
-                    headers: token
-                        ? { Authorization: `Bearer ${token}` }
-                        : undefined,
-                },
+            const data = await resolveDocumentEdit(
+                annotation.document_id,
+                annotation.edit_id,
+                verb,
             );
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = (await resp.json()) as {
-                ok: boolean;
-                already_resolved?: boolean;
-                status?: "accepted" | "rejected";
-                version_id: string | null;
-                download_url: string | null;
-            };
             const nextStatus =
                 data.status ?? (verb === "accept" ? "accepted" : "rejected");
-            setStatus(nextStatus);
+            setLocalStatus(nextStatus);
             onResolved?.({
                 editId: annotation.edit_id,
                 documentId: annotation.document_id,
@@ -290,59 +259,26 @@ export function EditCard({
                         : "Couldn't save reject — reverted.",
             });
         } finally {
-            setBusy(false);
+            setBusyAction(null);
         }
     };
 
     return (
-        <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-            {annotation.reason && (
-                <p className="text-xs text-gray-500 mb-2">
-                    {annotation.reason}
-                </p>
-            )}
-            <div className="text-sm leading-relaxed font-serif bg-white border border-gray-200 rounded-md px-2 py-2">
-                {annotation.inserted_text && (
-                    <span className="text-green-700">
-                        {annotation.inserted_text}
-                    </span>
-                )}
-                {annotation.deleted_text && (
-                    <span className="text-red-600 line-through">
-                        {annotation.deleted_text}
-                    </span>
-                )}
-            </div>
-            <div className="flex gap-2 mt-3">
-                <button
-                    onClick={() => handle("accept")}
-                    disabled={inFlight || resolved}
-                    className="px-2 py-1 text-xs rounded border border-gray-900 bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50"
-                >
-                    {status === "accepted" ? "Accepted" : "Accept"}
-                </button>
-                <button
-                    onClick={() => handle("reject")}
-                    disabled={inFlight || resolved}
-                    className="px-2 py-1 text-xs rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-50"
-                >
-                    {status === "rejected" ? "Rejected" : "Reject"}
-                </button>
-                {onViewClick && (
-                    <button
-                        onClick={() => onViewClick(annotation)}
-                        disabled={resolved}
-                        title={
-                            resolved
-                                ? "This change has been resolved and is no longer in the document."
-                                : undefined
-                        }
-                        className="ml-auto px-2 py-1 text-xs rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
-                    >
-                        View
-                    </button>
-                )}
-            </div>
-        </div>
+        <EditCardUI
+            originalText={annotation.deleted_text}
+            replacementText={annotation.inserted_text}
+            reason={annotation.reason}
+            changeNumber={changeNumber}
+            status={status}
+            ariaBusy={!!isReloading}
+            className={`${RESPONSE_GLASS_SURFACE} p-2`}
+            actionsDisabled={!!isReloading}
+            busyAction={busyAction ?? undefined}
+            onAccept={() => handle("accept")}
+            onReject={() => handle("reject")}
+            onView={
+                onViewClick ? () => onViewClick(annotation) : undefined
+            }
+        />
     );
 }

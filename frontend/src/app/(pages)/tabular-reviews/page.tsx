@@ -1,34 +1,78 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Plus, Loader2, ChevronDown, Check, Table2 } from "lucide-react";
-import { HeaderSearchBtn } from "@/app/components/shared/HeaderSearchBtn";
-import { RowActions } from "@/app/components/shared/RowActions";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useDebouncedValue } from "@/app/hooks/useDebouncedValue";
+import { restoreOptimisticallyDeletedRows } from "@/app/lib/optimisticRows";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ChevronDown, Loader2 } from "lucide-react";
+import {
+    RowActionMenuItems,
+    RowActions,
+} from "@/app/components/shared/RowActions";
+import { TableLoadMoreRow } from "@/app/components/shared/TableLoadMoreRow";
 import {
     deleteTabularReview,
-    listTabularReviews,
     createTabularReview,
+    getTabularReviewPeople,
+    grantTabularReviewAccess,
     listProjects,
     updateTabularReview,
 } from "@/app/lib/mikeApi";
-import type { TabularReview, MikeProject } from "@/app/components/shared/types";
-import { ToolbarTabs } from "@/app/components/shared/ToolbarTabs";
-import { AddNewTRModal } from "@/app/components/tabular/AddNewTRModal";
-import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
-import { useAuth } from "@/contexts/AuthContext";
+import type { TabularReview, Project } from "@/app/components/shared/types";
+import { TableToolbar } from "@/app/components/shared/TableToolbar";
+import { NewTRModal } from "@/app/components/tabular/NewTRModal";
+import { TabularReviewDetailsModal } from "@/app/components/tabular/TabularReviewDetailsModal";
+import {
+    PermissionDeniedPopup,
+    type AccessContact,
+} from "@/app/components/popups/PermissionDeniedPopup";
+import { can, roleFrom } from "@/app/lib/permissions";
+import { WarningPopup } from "@/app/components/popups/WarningPopup";
+import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
+import { useAuth } from "@/app/contexts/AuthContext";
+import { PageHeader } from "@/app/components/shared/PageHeader";
+import {
+    TABLE_CHECKBOX_CLASS,
+    SkeletonCheckbox,
+    SkeletonLine,
+    TableBody,
+    TableCell,
+    TableEmptyState,
+    TableFilters,
+    type TableFilterOption,
+    TableHeaderCell,
+    TableHeaderRow,
+    TablePrimaryCell,
+    TableRow,
+    TableScrollArea,
+    rowActionSelectionIds,
+    type TableSortDirection,
+    TableStickyCell,
+} from "@/app/components/shared/TablePrimitive";
+import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { TabPillButtonUI } from "@/shared/ui/TabPillButtonUI";
+import { TabularReviewSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
+import { LiquidDropdownSurface } from "@/app/components/ui/liquid-dropdown";
+import {
+    type TabularReviewScope,
+    usePaginatedTabularReviews,
+} from "@/app/hooks/usePaginatedTabularReviews";
+import { deleteTabularReviewsWithConcurrency } from "@/app/lib/deleteTabularReviewsWithConcurrency";
+import { useQueryParamTab } from "@/app/hooks/useQueryParamTab";
 
-type Tab = "all" | "in-project" | "standalone";
+type ReviewScope = TabularReviewScope;
+type ReviewSortKey = "name" | "columns" | "documents" | "created";
 
-const CHECK_W = "w-8 shrink-0";
-const NAME_COL_W = "w-[300px] shrink-0";
-
-const TABS: { id: Tab; label: string }[] = [
-    { id: "all", label: "All Reviews" },
+const REVIEW_SCOPES: { id: ReviewScope; label: string }[] = [
+    { id: "all", label: "All" },
     { id: "in-project", label: "In Project" },
     { id: "standalone", label: "Standalone" },
 ];
-
+const REVIEW_SCOPE_IDS = REVIEW_SCOPES.map((scope) => scope.id);
+const SORT_OPTIONS: TableFilterOption<TableSortDirection>[] = [
+    { value: "asc", label: "Ascending" },
+    { value: "desc", label: "Descending" },
+];
 function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString(undefined, {
         day: "numeric",
@@ -38,48 +82,108 @@ function formatDate(iso: string) {
 }
 
 export default function TabularReviewsPage() {
-    const [reviews, setReviews] = useState<TabularReview[]>([]);
-    const [projects, setProjects] = useState<MikeProject[]>([]);
-    const [loading, setLoading] = useState(true);
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    const [projects, setProjects] = useState<Project[]>([]);
     const [creating, setCreating] = useState(false);
     const [newTROpen, setNewTROpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<Tab>("all");
-    const [renamingId, setRenamingId] = useState<string | null>(null);
-    const [renameValue, setRenameValue] = useState("");
+    const [detailsReview, setDetailsReview] = useState<TabularReview | null>(
+        null,
+    );
+    const [activeScope, setActiveScope] = useQueryParamTab(
+        REVIEW_SCOPE_IDS,
+        "all",
+    );
     const [projectFilter, setProjectFilter] = useState<string | null>(null);
-    const [filterOpen, setFilterOpen] = useState(false);
+    const [sort, setSort] = useState<{
+        key: ReviewSortKey;
+        direction: TableSortDirection;
+    } | null>(null);
     const [search, setSearch] = useState("");
-    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const debouncedSearch = useDebouncedValue(search, 250);
+    const {
+        reviews,
+        setReviews,
+        loading,
+        loadingMore,
+        hasMore,
+        error: loadError,
+        loadMoreError,
+        loadMore,
+        retry,
+        selectedReviewIds: selectedIds,
+        setSelectedReviewIds: setSelectedIds,
+        selectAllMatching,
+        selectingAll,
+        getReviewOwnerId,
+    } = usePaginatedTabularReviews({
+        projectId: projectFilter ?? undefined,
+        search: debouncedSearch,
+        selectionKey: search,
+        scope: activeScope,
+        sort,
+    });
     const [actionsOpen, setActionsOpen] = useState(false);
-    const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
-    const filterRef = useRef<HTMLDivElement>(null);
+    /**
+     * A refusal plus the person who can lift it. Unlike the projects overview,
+     * the reviews overview RPC returns no contact columns at all — only
+     * `access_role` — so the address is fetched from
+     * `/tabular-review/:id/people` the first time a refusal actually fires,
+     * exactly as TabularReviewView does for a standalone review. The popup
+     * opens immediately and the "ask …" line fills in when the roster
+     * answers; a refusal that names nobody is a dead end.
+     */
+    const [ownerOnlyAction, setOwnerOnlyAction] = useState<{
+        reviewId: string;
+        action: string;
+        requiredRole: "owner" | "editor";
+    } | null>(null);
+    const [contactsByReviewId, setContactsByReviewId] = useState<
+        Record<string, AccessContact[]>
+    >({});
+    const [selectionCameFromSelectAll, setSelectionCameFromSelectAll] =
+        useState(false);
+    const [confirmDeleteAllOpen, setConfirmDeleteAllOpen] = useState(false);
+    const [bulkDeleteNotice, setBulkDeleteNotice] = useState<string | null>(
+        null,
+    );
+    const [deletingReviewIds, setDeletingReviewIds] = useState<Set<string>>(
+        () => new Set(),
+    );
     const actionsRef = useRef<HTMLDivElement>(null);
-    const router = useRouter();
     const { user } = useAuth();
+    const previewEmptyStates = searchParams.get("emptyStates") === "1";
+    const effectiveLoading = loading && !previewEmptyStates;
+    const visibleReviews = useMemo(
+        () => (previewEmptyStates ? [] : reviews),
+        [previewEmptyStates, reviews],
+    );
 
     useEffect(() => {
-        Promise.all([
-            listTabularReviews().catch(() => []),
-            listProjects().catch(() => []),
-        ])
-            .then(([r, p]) => {
-                setReviews(r);
-                setProjects(p);
+        let cancelled = false;
+        void listProjects()
+            .then((loadedProjects) => {
+                if (!cancelled) setProjects(loadedProjects);
             })
-            .finally(() => setLoading(false));
+            .catch(() => {
+                if (!cancelled) setProjects([]);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
-    useEffect(() => {
-        setSelectedIds([]);
-    }, [activeTab, projectFilter]);
+    function handleLoadMore() {
+        void loadMore();
+    }
 
-    useEffect(() => {
-        function handleClick(e: MouseEvent) {
-            if (filterRef.current && !filterRef.current.contains(e.target as Node)) setFilterOpen(false);
-        }
-        document.addEventListener("mousedown", handleClick);
-        return () => document.removeEventListener("mousedown", handleClick);
-    }, []);
+    function handleScroll(event: React.UIEvent<HTMLDivElement>) {
+        if (loading || loadingMore || !hasMore) return;
+        const el = event.currentTarget;
+        const distanceToBottom =
+            el.scrollHeight - el.scrollTop - el.clientHeight;
+        if (distanceToBottom < 200) void loadMore();
+    }
 
     useEffect(() => {
         function handleClick(e: MouseEvent) {
@@ -94,15 +198,11 @@ export default function TabularReviewsPage() {
         return () => document.removeEventListener("mousedown", handleClick);
     }, [actionsOpen]);
 
-    const q = search.toLowerCase();
-    const filtered = reviews
-        .filter((r) => {
-            if (activeTab === "in-project") return !!r.project_id;
-            if (activeTab === "standalone") return !r.project_id;
-            return true;
-        })
-        .filter((r) => !projectFilter || r.project_id === projectFilter)
-        .filter((r) => !q || (r.title ?? "").toLowerCase().includes(q));
+    const projectNameById = useMemo(
+        () => new Map(projects.map((project) => [project.id, project.name])),
+        [projects],
+    );
+    const filtered = visibleReviews;
 
     const allSelected =
         filtered.length > 0 &&
@@ -111,8 +211,13 @@ export default function TabularReviewsPage() {
         !allSelected && filtered.some((r) => selectedIds.includes(r.id));
 
     function toggleAll() {
-        if (allSelected) setSelectedIds([]);
-        else setSelectedIds(filtered.map((r) => r.id));
+        if (allSelected) {
+            setSelectedIds([]);
+            setSelectionCameFromSelectAll(false);
+        } else {
+            setSelectionCameFromSelectAll(true);
+            void selectAllMatching();
+        }
     }
 
     function toggleOne(id: string) {
@@ -121,15 +226,40 @@ export default function TabularReviewsPage() {
         );
     }
 
-    const selectedProject = projects.find((p) => p.id === projectFilter);
+    function clearSelection() {
+        setSelectedIds([]);
+        setSelectionCameFromSelectAll(false);
+        setConfirmDeleteAllOpen(false);
+        setActionsOpen(false);
+    }
+
+    function handleProjectFilterChange(value: string | null) {
+        setProjectFilter(value);
+        clearSelection();
+    }
+
+    function handleSortChange(
+        key: ReviewSortKey,
+        direction: TableSortDirection | null,
+    ) {
+        setSort(direction ? { key, direction } : null);
+        clearSelection();
+    }
 
     const handleNewReview = async (
         title: string,
-        projectId?: string,
-        documentIds?: string[],
-        columnsConfig?:
+        projectId: string | undefined,
+        documentIds: string[] | undefined,
+        columnsConfig:
             | import("@/app/components/shared/types").ColumnConfig[]
-            | null,
+            | null
+            | undefined,
+        documentGrouping: "document" | "folder" | undefined,
+        model: string,
+        accessAssignments: {
+            email: string;
+            role: import("@/app/lib/mikeApi").AccessAssignmentRole;
+        }[],
     ) => {
         setCreating(true);
         try {
@@ -137,8 +267,17 @@ export default function TabularReviewsPage() {
                 title,
                 document_ids: documentIds ?? [],
                 columns_config: columnsConfig ?? [],
+                document_grouping: documentGrouping,
+                model,
                 ...(projectId && { project_id: projectId }),
             });
+            for (const assignment of accessAssignments) {
+                await grantTabularReviewAccess(
+                    review.id,
+                    assignment.email,
+                    assignment.role,
+                );
+            }
             router.push(
                 projectId
                     ? `/projects/${projectId}/tabular-reviews/${review.id}`
@@ -149,211 +288,375 @@ export default function TabularReviewsPage() {
         }
     };
 
-    async function handleRenameSubmit(reviewId: string) {
-        const trimmed = renameValue.trim();
-        if (!trimmed) {
-            setRenamingId(null);
+    /**
+     * Refuse an action on one review, and make sure the popup can say who to
+     * ask. The roster is fetched once per review and cached, so repeated
+     * refusals on the same row cost nothing.
+     */
+    function refuse(
+        reviewId: string,
+        action: string,
+        requiredRole: "owner" | "editor" = "owner",
+    ) {
+        setOwnerOnlyAction({ reviewId, action, requiredRole });
+        if (contactsByReviewId[reviewId]) return;
+        void getTabularReviewPeople(reviewId)
+            .then((people) => {
+                setContactsByReviewId((prev) => ({
+                    ...prev,
+                    [reviewId]: people.owner ? [people.owner] : [],
+                }));
+            })
+            .catch(() => {
+                // A roster we cannot read just means no name to offer; the
+                // refusal itself still stands.
+                setContactsByReviewId((prev) => ({ ...prev, [reviewId]: [] }));
+            });
+    }
+
+    function requestReviewDetails(review: TabularReview) {
+        // The overview RPC now returns each row's merged access_role. Details
+        // editing is member-tier — the server's PATCH asks for content.edit —
+        // so the refusal must say "member", not "admin" (the review page and
+        // this list previously disagreed about the same action).
+        if (!can(roleFrom(review), "content.edit")) {
+            refuse(review.id, "edit tabular review details", "editor");
             return;
         }
-        const review = reviews.find((r) => r.id === reviewId);
-        if (review && user?.id && review.user_id !== user.id) {
-            setRenamingId(null);
-            setOwnerOnlyAction("rename this tabular review");
+        setDetailsReview(review);
+    }
+
+    async function handleDetailsSave(values: {
+        title: string;
+        projectId?: string | null;
+    }) {
+        if (!detailsReview) return;
+        if (!can(roleFrom(detailsReview), "content.edit")) {
+            refuse(detailsReview.id, "edit tabular review details", "editor");
             return;
         }
+        const updated = await updateTabularReview(detailsReview.id, {
+            title: values.title,
+            project_id: values.projectId ?? null,
+        });
         setReviews((prev) =>
-            prev.map((r) => (r.id === reviewId ? { ...r, title: trimmed } : r)),
+            prev.map((review) =>
+                review.id === updated.id ? { ...review, ...updated } : review,
+            ),
         );
-        setRenamingId(null);
-        await updateTabularReview(reviewId, { title: trimmed });
+        setDetailsReview((current) =>
+            current?.id === updated.id ? { ...current, ...updated } : current,
+        );
+    }
+
+    function requestDeleteSelected() {
+        setActionsOpen(false);
+        if (selectionCameFromSelectAll) {
+            setConfirmDeleteAllOpen(true);
+            return;
+        }
+        void handleDeleteSelected();
     }
 
     async function handleDeleteSelected() {
         const ids = [...selectedIds];
         setActionsOpen(false);
+        setConfirmDeleteAllOpen(false);
+        setSelectionCameFromSelectAll(false);
+        setBulkDeleteNotice(null);
+        // Prefer the loaded row's role; select-all-matching can hand back
+        // ids that were never paged in, and for those the creator id is the
+        // only signal available.
+        const roleById = new Map(
+            reviews.map((review) => [review.id, roleFrom(review)] as const),
+        );
         const owned = ids.filter((id) => {
-            const r = reviews.find((rr) => rr.id === id);
-            return !r || !user?.id || r.user_id === user.id;
+            const role = roleById.get(id);
+            if (role) return can(role, "container.delete");
+            // Fail closed on rows we could not load. `!user?.id ||` made an
+            // unknown viewer identity pass every creator check, so a signed-in
+            // state that had not settled yet turned select-all-matching into
+            // "delete everything selected". Both halves must be known and
+            // must match; anything else is counted as blocked and reported.
+            const ownerId = getReviewOwnerId(id);
+            return !!ownerId && !!user?.id && ownerId === user.id;
         });
         const blocked = ids.length - owned.length;
         setSelectedIds([]);
-        await Promise.all(
-            owned.map((id) => deleteTabularReview(id).catch(() => {})),
+        const snapshot = reviews;
+        setReviews((current) =>
+            current.filter((review) => !owned.includes(review.id)),
         );
-        setReviews((prev) => prev.filter((r) => !owned.includes(r.id)));
-        if (blocked > 0) {
-            setOwnerOnlyAction(
-                `delete ${blocked} of the selected reviews — only the review creator can delete a review`,
+        const { failedIds } =
+            await deleteTabularReviewsWithConcurrency(
+                owned,
+                deleteTabularReview,
             );
+        setSelectedIds(failedIds);
+        if (failedIds.length > 0) {
+            setReviews((current) =>
+                restoreOptimisticallyDeletedRows(current, snapshot, failedIds),
+            );
+        }
+        const notices = [
+            blocked > 0
+                ? `${blocked} selected review${blocked === 1 ? " was" : "s were"} skipped because only a review owner can delete them.`
+                : null,
+            failedIds.length > 0
+                ? `${failedIds.length} review${failedIds.length === 1 ? " was" : "s were"} not deleted because the request failed. ${failedIds.length === 1 ? "It remains" : "They remain"} selected so you can try again.`
+                : null,
+        ].filter((notice): notice is string => notice !== null);
+        if (notices.length > 0) setBulkDeleteNotice(notices.join(" "));
+    }
+
+    async function handleDeleteReviewRow(review: TabularReview) {
+        if (!can(roleFrom(review), "container.delete")) {
+            refuse(review.id, "delete this tabular review");
+            return;
+        }
+        const snapshot = reviews;
+        setDeletingReviewIds((current) => new Set(current).add(review.id));
+        setReviews((current) =>
+            current.filter((candidate) => candidate.id !== review.id),
+        );
+        try {
+            await deleteTabularReview(review.id);
+        } catch (error) {
+            setReviews((current) =>
+                restoreOptimisticallyDeletedRows(current, snapshot, [review.id]),
+            );
+            throw error;
+        } finally {
+            setDeletingReviewIds((current) => {
+                const next = new Set(current);
+                next.delete(review.id);
+                return next;
+            });
         }
     }
 
     const projectFilterButton = (
-        <div className="relative" ref={filterRef}>
-            <button
-                onClick={() => setFilterOpen((o) => !o)}
-                className={`flex items-center gap-1 text-xs font-medium transition-colors ${
-                    projectFilter
-                        ? "text-gray-700 hover:text-gray-900"
-                        : "text-gray-500 hover:text-gray-700"
-                }`}
-            >
-                {selectedProject ? selectedProject.name : "Filter by project"}
-                <ChevronDown className="h-3 w-3" />
-            </button>
-            {filterOpen && (
-                <div className="absolute right-0 top-full mt-1.5 z-20 w-52 rounded-xl border border-gray-100 bg-white shadow-lg overflow-hidden">
-                    <button
-                        onClick={() => {
-                            setProjectFilter(null);
-                            setFilterOpen(false);
-                        }}
-                        className="flex items-center justify-between w-full px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
-                    >
-                        All Projects
-                        {!projectFilter && (
-                            <Check className="h-3.5 w-3.5 text-gray-400" />
-                        )}
-                    </button>
-                    {projects.length > 0 && (
-                        <div className="border-t border-gray-100" />
-                    )}
-                    {projects.map((p) => (
-                        <button
-                            key={p.id}
-                            onClick={() => {
-                                setProjectFilter(p.id);
-                                setFilterOpen(false);
-                            }}
-                            className="flex items-center justify-between w-full px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
-                        >
-                            <span className="truncate pr-2">{p.name}</span>
-                            {projectFilter === p.id && (
-                                <Check className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-                            )}
-                        </button>
-                    ))}
-                </div>
-            )}
-        </div>
+        <TableFilters
+            label="Filter by project"
+            value={projectFilter}
+            allLabel="All Projects"
+            options={projects.map((project) => ({
+                value: project.id,
+                label: project.name,
+            }))}
+            onChange={handleProjectFilterChange}
+        />
+    );
+    const nameSortDirection = sort?.key === "name" ? sort.direction : null;
+    const columnsSortDirection =
+        sort?.key === "columns" ? sort.direction : null;
+    const documentsSortDirection =
+        sort?.key === "documents" ? sort.direction : null;
+    const createdSortDirection =
+        sort?.key === "created" ? sort.direction : null;
+    const nameFilterButton = (
+        <TableFilters
+            label="Sort by review name"
+            value={nameSortDirection}
+            allLabel="Default Order"
+            widthClassName="w-40"
+            align="right"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("name", direction)}
+        />
+    );
+    const columnsFilterButton = (
+        <TableFilters
+            label="Sort by columns"
+            value={columnsSortDirection}
+            allLabel="Default Order"
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("columns", direction)}
+        />
+    );
+    const documentsFilterButton = (
+        <TableFilters
+            label="Sort by documents"
+            value={documentsSortDirection}
+            allLabel="Default Order"
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("documents", direction)}
+        />
+    );
+    const createdFilterButton = (
+        <TableFilters
+            label="Sort by created date"
+            value={createdSortDirection}
+            allLabel="Default Order"
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("created", direction)}
+        />
     );
 
-    const toolbarActions = (
-        <div className="flex items-center gap-2">
-            {selectedIds.length > 0 && (
-                <div ref={actionsRef} className="relative">
-                    <button
-                        onClick={() => setActionsOpen((v) => !v)}
-                        className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:text-gray-900 transition-colors"
-                    >
-                        Actions
-                        <ChevronDown className="h-3.5 w-3.5" />
-                    </button>
-                    {actionsOpen && (
-                        <div className="absolute top-full right-0 mt-1 w-36 rounded-lg border border-gray-100 bg-white shadow-lg z-50 overflow-hidden">
-                            <button
-                                onClick={handleDeleteSelected}
-                                className="w-full px-3 py-1.5 text-left text-xs text-red-600 hover:bg-red-50 transition-colors"
-                            >
-                                Delete
-                            </button>
-                        </div>
-                    )}
-                </div>
-            )}
-            {projectFilterButton}
-        </div>
-    );
+    const toolbarActions =
+        selectedIds.length > 0 ? (
+            <div ref={actionsRef} className="relative">
+                <TabPillButtonUI onClick={() => setActionsOpen((v) => !v)}>
+                    Actions
+                    <ChevronDown className="h-3.5 w-3.5" />
+                </TabPillButtonUI>
+                {actionsOpen && (
+                    <LiquidDropdownSurface className="absolute top-full right-0 mt-1 z-[100] w-36 overflow-hidden">
+                        <button
+                            onClick={requestDeleteSelected}
+                            className="w-full px-3 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-500/10"
+                        >
+                            Delete
+                        </button>
+                    </LiquidDropdownSurface>
+                )}
+            </div>
+        ) : undefined;
 
     return (
-        <div className="flex-1 overflow-y-auto bg-white">
+        <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             {/* Page header */}
-            <div className="flex items-center justify-between px-8 py-4">
+            <PageHeader
+                loading={loading}
+                actions={[
+                    {
+                        type: "search",
+                        value: search,
+                        onChange: setSearch,
+                        placeholder: "Search reviews…",
+                    },
+                    {
+                        type: "new",
+                        onClick: () => setNewTROpen(true),
+                        loading: creating,
+                        title: "New tabular review",
+                    },
+                ]}
+            >
                 <h1 className="text-2xl font-medium font-serif text-gray-900">
                     Tabular Reviews
                 </h1>
-                <div className="flex items-center gap-2">
-                    <HeaderSearchBtn value={search} onChange={setSearch} placeholder="Search reviews…" />
-                    <button
-                        onClick={() => setNewTROpen(true)}
-                        disabled={creating}
-                        className="flex items-center justify-center p-1.5 text-gray-500 hover:text-gray-900 transition-colors disabled:opacity-40"
-                    >
-                        {creating ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                            <Plus className="h-4 w-4" />
-                        )}
-                    </button>
-                </div>
-            </div>
+            </PageHeader>
 
-            <ToolbarTabs
-                tabs={TABS}
-                active={activeTab}
-                onChange={setActiveTab}
+            <TableToolbar
+                items={REVIEW_SCOPES}
+                active={activeScope}
+                onChange={(scope) => {
+                    setActiveScope(scope);
+                    clearSelection();
+                }}
                 actions={toolbarActions}
             />
 
             {/* Table */}
-            <div className="w-full overflow-x-auto">
-                <div className="min-w-max">
-                <div className="flex items-center h-8 pr-8 border-b border-gray-200 text-xs text-gray-500 font-medium select-none">
-                    <div className={`sticky left-0 z-[60] ${CHECK_W} relative bg-white flex items-center justify-center self-stretch before:absolute before:inset-x-0 before:bottom-0 before:h-px before:bg-white`}>
-                        {!loading && (
-                            <input
-                                type="checkbox"
-                                checked={allSelected}
-                                ref={(el) => {
-                                    if (el) el.indeterminate = someSelected;
-                                }}
-                                onChange={toggleAll}
-                                className="h-2.5 w-2.5 rounded border-gray-200 cursor-pointer accent-black"
-                            />
-                        )}
-                    </div>
-                    <div className={`sticky left-8 z-[60] ${NAME_COL_W} bg-white pl-2 text-left`}>
-                        Name
-                    </div>
-                    <div className="ml-auto w-24 shrink-0">Columns</div>
-                    <div className="w-24 shrink-0">Documents</div>
-                    <div className="w-40 shrink-0">Project</div>
-                    <div className="w-32 shrink-0">Created</div>
-                    <div className="w-8 shrink-0" />
-                </div>
-
-                {loading ? (
-                    <div>
-                        {[1, 2, 3].map((i) => (
-                            <div
-                                key={i}
-                                className="flex items-center h-10 pr-8 border-b border-gray-50"
-                            >
-                                <div className="w-8 shrink-0" />
-                                <div className="flex-1 min-w-0 pl-3 pr-4">
-                                    <div className="h-3.5 w-48 rounded bg-gray-100 animate-pulse" />
-                                </div>
-                                <div className="w-24 shrink-0">
-                                    <div className="h-3 w-8 rounded bg-gray-100 animate-pulse" />
-                                </div>
-                                <div className="w-24 shrink-0">
-                                    <div className="h-3 w-8 rounded bg-gray-100 animate-pulse" />
-                                </div>
-                                <div className="w-40 shrink-0">
-                                    <div className="h-3 w-24 rounded bg-gray-100 animate-pulse" />
-                                </div>
-                                <div className="w-32 shrink-0">
-                                    <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
-                                </div>
-                                <div className="w-8 shrink-0" />
+            <TableScrollArea
+                onScroll={handleScroll}
+                header={
+                    <TableHeaderRow>
+                        <TableStickyCell header>
+                            {effectiveLoading ? (
+                                <SkeletonCheckbox />
+                            ) : (
+                                <input
+                                    type="checkbox"
+                                    checked={allSelected}
+                                    disabled={
+                                        selectingAll ||
+                                        deletingReviewIds.size > 0
+                                    }
+                                    ref={(el) => {
+                                        if (el) el.indeterminate = someSelected;
+                                    }}
+                                    onChange={toggleAll}
+                                    className={TABLE_CHECKBOX_CLASS}
+                                    aria-label="Select all reviews"
+                                />
+                            )}
+                            <span className="mr-1">Name</span>
+                            {!loading && nameFilterButton}
+                        </TableStickyCell>
+                        <TableHeaderCell className="ml-auto w-24">
+                            <div className="flex items-center gap-1">
+                                <span>Columns</span>
+                                {!loading && columnsFilterButton}
                             </div>
+                        </TableHeaderCell>
+                        <TableHeaderCell className="w-24">
+                            <div className="flex items-center gap-1">
+                                <span>Documents</span>
+                                {!loading && documentsFilterButton}
+                            </div>
+                        </TableHeaderCell>
+                        <TableHeaderCell className="w-52">
+                            <div className="flex items-center gap-1">
+                                <span>Project</span>
+                                {!loading && projectFilterButton}
+                            </div>
+                        </TableHeaderCell>
+                        <TableHeaderCell className="w-32">
+                            <div className="flex items-center gap-1">
+                                <span>Created</span>
+                                {!loading && createdFilterButton}
+                            </div>
+                        </TableHeaderCell>
+                        <TableHeaderCell className="w-8" />
+                    </TableHeaderRow>
+                }
+            >
+                {effectiveLoading ? (
+                    <TableBody>
+                        {[1, 2, 3].map((i) => (
+                            <TableRow key={i} interactive={false}>
+                                <TableStickyCell
+                                    hover={false}
+                                    bgClassName="bg-transparent"
+                                >
+                                    <SkeletonCheckbox />
+                                    <SkeletonLine className="h-3.5 w-48" />
+                                </TableStickyCell>
+                                <TableCell className="ml-auto w-24">
+                                    <SkeletonLine className="w-8" />
+                                </TableCell>
+                                <TableCell className="w-24">
+                                    <SkeletonLine className="w-8" />
+                                </TableCell>
+                                <TableCell className="w-52">
+                                    <SkeletonLine className="w-24" />
+                                </TableCell>
+                                <TableCell className="w-32">
+                                    <SkeletonLine className="w-20" />
+                                </TableCell>
+                                <TableCell className="w-8" />
+                            </TableRow>
                         ))}
-                    </div>
+                    </TableBody>
+                ) : loadError ? (
+                    <TableEmptyState>
+                        <p className="text-lg font-medium font-serif text-gray-900">
+                            Unable to load reviews
+                        </p>
+                        <p className="mt-1 text-xs text-gray-400">
+                            Check your connection and try again.
+                        </p>
+                        <PillButtonUI
+                            tone="black"
+                            size="sm"
+                            onClick={retry}
+                            className="mt-4"
+                        >
+                            Try again
+                        </PillButtonUI>
+                    </TableEmptyState>
                 ) : filtered.length === 0 ? (
-                    <div className="flex flex-col items-start py-24 w-full max-w-xs mx-auto">
-                        {activeTab === "all" && !projectFilter ? (
+                    <TableEmptyState>
+                        {activeScope === "all" &&
+                        !projectFilter &&
+                        !debouncedSearch ? (
                             <>
-                                <Table2 className="h-8 w-8 text-gray-300 mb-4" />
+                                <TabularReviewSkeuoIcon className="mb-4 h-8 w-8" />
                                 <p className="text-2xl font-medium font-serif text-gray-900">
                                     Tabular Reviews
                                 </p>
@@ -361,108 +664,136 @@ export default function TabularReviewsPage() {
                                     Extract data from documents into tables
                                     using AI.
                                 </p>
-                                <button
+                                <PillButtonUI
+                                    tone="black"
+                                    size="sm"
                                     onClick={() => setNewTROpen(true)}
                                     disabled={creating}
-                                    className="mt-4 inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 transition-colors shadow-md disabled:opacity-40"
+                                    className="mt-4"
                                 >
-                                    + Create New
-                                </button>
+                                    Create
+                                </PillButtonUI>
                             </>
                         ) : (
                             <p className="text-sm text-gray-400">
                                 No reviews found
                             </p>
                         )}
-                    </div>
+                    </TableEmptyState>
                 ) : (
-                    <div>
+                    <TableBody>
                         {filtered.map((review) => {
-                            const project = projects.find(
-                                (p) => p.id === review.project_id,
+                            const projectName = review.project_id
+                                ? projectNameById.get(review.project_id)
+                                : null;
+                            const deleting = deletingReviewIds.has(review.id);
+                            const actionIds = rowActionSelectionIds(
+                                review.id,
+                                selectedIds,
                             );
-                            const rowBg = selectedIds.includes(review.id)
-                                ? "bg-gray-50"
-                                : "bg-white";
+                            const appliesToSelection = actionIds.length > 1;
                             return (
-                                <div
+                                <TableRow
                                     key={review.id}
-                                    onClick={() => {
-                                        if (renamingId === review.id) return;
-                                        router.push(
-                                            review.project_id
-                                                ? `/projects/${review.project_id}/tabular-reviews/${review.id}`
-                                                : `/tabular-reviews/${review.id}`,
-                                        );
-                                    }}
-                                    className="group flex items-center h-10 pr-8 border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors"
+                                    interactive={!deleting}
+                                    selected={
+                                        !deleting &&
+                                        selectedIds.includes(review.id)
+                                    }
+                                    rightClickDropdown={
+                                        deleting
+                                            ? undefined
+                                            : (close, menuProps) => (
+                                                  <RowActionMenuItems
+                                                      onClose={close}
+                                                      surfaceProps={menuProps}
+                                                      onView={
+                                                          appliesToSelection
+                                                              ? undefined
+                                                              : () =>
+                                                                    router.push(
+                                                                        review.project_id
+                                                                            ? `/projects/${review.project_id}/tabular-reviews/${review.id}`
+                                                                            : `/tabular-reviews/${review.id}`,
+                                                                    )
+                                                      }
+                                                      viewLabel="Open"
+                                                      onEditDetails={
+                                                          appliesToSelection
+                                                              ? undefined
+                                                              : () => {
+                                                                    requestReviewDetails(
+                                                                        review,
+                                                                    );
+                                                                }
+                                                      }
+                                                      onDelete={() =>
+                                                          appliesToSelection
+                                                              ? requestDeleteSelected()
+                                                              : handleDeleteReviewRow(
+                                                                    review,
+                                                                )
+                                                      }
+                                                      deleteLabel={
+                                                          appliesToSelection
+                                                              ? `Delete ${actionIds.length} reviews`
+                                                              : undefined
+                                                      }
+                                                  />
+                                              )
+                                    }
+                                    onClick={
+                                        deleting
+                                            ? undefined
+                                            : () => {
+                                                  router.push(
+                                                      review.project_id
+                                                          ? `/projects/${review.project_id}/tabular-reviews/${review.id}`
+                                                          : `/tabular-reviews/${review.id}`,
+                                                  );
+                                              }
+                                    }
+                                    className={
+                                        deleting
+                                            ? "pointer-events-none opacity-50"
+                                            : undefined
+                                    }
                                 >
-                                    <div
-                                        className={`sticky left-0 z-[60] ${CHECK_W} p-2 flex items-center justify-center ${rowBg} group-hover:bg-gray-50`}
-                                        onClick={(e) => e.stopPropagation()}
-                                    >
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedIds.includes(
-                                                review.id,
-                                            )}
-                                            onChange={() =>
-                                                toggleOne(review.id)
-                                            }
-                                            className="h-2.5 w-2.5 rounded border-gray-200 cursor-pointer accent-black"
-                                        />
-                                    </div>
-                                    <div className={`sticky left-8 z-[60] ${NAME_COL_W} p-2 ${rowBg} group-hover:bg-gray-50`}>
-                                        {renamingId === review.id ? (
-                                            <input
-                                                autoFocus
-                                                value={renameValue}
-                                                onChange={(e) =>
-                                                    setRenameValue(
-                                                        e.target.value,
-                                                    )
-                                                }
-                                                onKeyDown={(e) => {
-                                                    if (e.key === "Enter")
-                                                        handleRenameSubmit(
-                                                            review.id,
-                                                        );
-                                                    if (e.key === "Escape")
-                                                        setRenamingId(null);
-                                                }}
-                                                onBlur={() =>
-                                                    handleRenameSubmit(
+                                    <TablePrimaryCell
+                                                selected={
+                                                    !deleting &&
+                                                    selectedIds.includes(
                                                         review.id,
                                                     )
                                                 }
-                                                onClick={(e) =>
-                                                    e.stopPropagation()
-                                                }
-                                                className="w-full text-sm text-gray-800 bg-transparent outline-none"
-                                            />
-                                        ) : (
-                                            <span className="text-sm text-gray-800 truncate block">
-                                                {review.title ??
-                                                    "Untitled Review"}
-                                            </span>
-                                        )}
-                                    </div>
-                                    <div className="ml-auto w-24 shrink-0 text-sm text-gray-500 truncate">
+                                        selectionIndicator={
+                                            deleting ? (
+                                                <Loader2 className="mr-4 h-3 w-3 shrink-0 animate-spin text-gray-400" />
+                                            ) : undefined
+                                        }
+                                        onSelectionChange={() =>
+                                            toggleOne(review.id)
+                                        }
+                                        label={
+                                            review.title ?? "Untitled Review"
+                                        }
+                                    />
+                                    <TableCell className="ml-auto w-24">
                                         {review.columns_config?.length ?? 0}
-                                    </div>
-                                    <div className="w-24 shrink-0 text-sm text-gray-500 truncate">
+                                    </TableCell>
+                                    <TableCell className="w-24">
                                         {review.document_count ?? 0}
-                                    </div>
-                                    <div className="w-40 shrink-0 text-sm text-gray-500 truncate pr-2">
-                                        {project ? (
-                                            project.name
+                                    </TableCell>
+                                    <TableCell className="w-52 pr-2">
+                                        {projectName ? (
+                                            projectName
                                         ) : (
                                             <span className="text-gray-300">
                                                 —
                                             </span>
                                         )}
-                                    </div>
-                                    <div className="w-32 shrink-0 text-sm text-gray-500 truncate">
+                                    </TableCell>
+                                    <TableCell className="w-32">
                                         {review.created_at ? (
                                             formatDate(review.created_at)
                                         ) : (
@@ -470,69 +801,87 @@ export default function TabularReviewsPage() {
                                                 —
                                             </span>
                                         )}
-                                    </div>
+                                    </TableCell>
                                     <div
                                         className="w-8 shrink-0 flex justify-end"
                                         onClick={(e) => e.stopPropagation()}
                                     >
                                         <RowActions
-                                            onRename={() => {
-                                                if (
-                                                    user?.id &&
-                                                    review.user_id !== user.id
-                                                ) {
-                                                    setOwnerOnlyAction(
-                                                        "rename this tabular review",
-                                                    );
-                                                    return;
-                                                }
-                                                setRenameValue(
-                                                    review.title ??
-                                                        "Untitled Review",
-                                                );
-                                                setRenamingId(review.id);
+                                            onView={() =>
+                                                router.push(
+                                                    review.project_id
+                                                        ? `/projects/${review.project_id}/tabular-reviews/${review.id}`
+                                                        : `/tabular-reviews/${review.id}`,
+                                                )
+                                            }
+                                            viewLabel="Open"
+                                            onEditDetails={() => {
+                                                requestReviewDetails(review);
                                             }}
-                                            onDelete={async () => {
-                                                if (
-                                                    user?.id &&
-                                                    review.user_id !== user.id
-                                                ) {
-                                                    setOwnerOnlyAction(
-                                                        "delete this tabular review",
-                                                    );
-                                                    return;
-                                                }
-                                                await deleteTabularReview(
-                                                    review.id,
-                                                );
-                                                setReviews((prev) =>
-                                                    prev.filter(
-                                                        (r) =>
-                                                            r.id !== review.id,
-                                                    ),
-                                                );
-                                            }}
-                                            />
+                                            onDelete={() =>
+                                                handleDeleteReviewRow(review)
+                                            }
+                                        />
                                     </div>
-                                </div>
+                                </TableRow>
                             );
                         })}
-                    </div>
+                    </TableBody>
                 )}
-            </div>
-            </div>
+                <TableLoadMoreRow
+                    loading={effectiveLoading}
+                    hasMore={hasMore}
+                    itemCount={filtered.length}
+                    loadingMore={loadingMore}
+                    hasError={!!loadMoreError}
+                    onLoadMore={handleLoadMore}
+                />
+            </TableScrollArea>
 
-            <AddNewTRModal
+            <NewTRModal
                 open={newTROpen}
                 onClose={() => setNewTROpen(false)}
                 onAdd={handleNewReview}
                 projects={projects}
             />
 
-            <OwnerOnlyModal
+            <TabularReviewDetailsModal
+                open={!!detailsReview}
+                review={detailsReview}
+                projects={projects}
+                canEdit={
+                    !!detailsReview &&
+                    can(roleFrom(detailsReview), "content.edit")
+                }
+                onClose={() => setDetailsReview(null)}
+                onSave={handleDetailsSave}
+            />
+
+            <PermissionDeniedPopup
                 open={!!ownerOnlyAction}
-                action={ownerOnlyAction ?? undefined}
+                action={ownerOnlyAction?.action}
+                requiredRole={ownerOnlyAction?.requiredRole}
+                contacts={
+                    ownerOnlyAction
+                        ? contactsByReviewId[ownerOnlyAction.reviewId]
+                        : null
+                }
                 onClose={() => setOwnerOnlyAction(null)}
+            />
+            <WarningPopup
+                open={!!bulkDeleteNotice}
+                title="Some reviews were not deleted"
+                message={bulkDeleteNotice}
+                onClose={() => setBulkDeleteNotice(null)}
+            />
+            <ConfirmPopup
+                open={confirmDeleteAllOpen && selectedIds.length > 0}
+                title="Delete all selected reviews?"
+                message={`This will permanently delete every selected review you administer, including selected reviews not currently shown. Their review results and associated data will also be deleted. Reviews you cannot delete will be skipped. ${selectedIds.length} reviews are selected.`}
+                confirmLabel="Delete"
+                confirmVariant="danger"
+                onCancel={() => setConfirmDeleteAllOpen(false)}
+                onConfirm={() => void handleDeleteSelected()}
             />
         </div>
     );

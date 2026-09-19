@@ -1,5 +1,11 @@
 # Quickstart: fresh Supabase + Vercel test deployment
 
+> **Stale against current `main` (2026-09-19).** This runbook was written
+> against the May 2026 tree. Upstream now uses Docker Compose, a same-origin
+> `/api` gateway, and backend-handled auth (no `NEXT_PUBLIC_SUPABASE_*` in
+> the frontend bundle). Follow `README.md` and `docs/local-development.md`
+> for the current path; refresh this file before relying on it.
+
 One linear runbook: create accounts/projects, get every key, put them in the right place,
 and end up with a working deployment (or a working local dev setup, or both). This ties
 together `SUPABASE_SETUP.md`, `README.md`'s Vercel section, and the `.env.example` files

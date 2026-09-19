@@ -1,39 +1,62 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { isProjectItemDrag } from "@/app/lib/projectDragTypes";
+import { setRowDragPreview } from "@/app/lib/rowDragPreview";
 import {
-    FileText,
-    File,
-    Folder,
-    FolderOpen,
+    forwardRef,
+    useEffect,
+    useImperativeHandle,
+    useRef,
+    useState,
+} from "react";
+import {
     ChevronRight,
     ChevronDown,
-    FolderPlus,
+    FileText,
+    Download,
+    Loader2,
+    MessageSquarePlus,
+    Pencil,
     Trash2,
 } from "lucide-react";
-import type { MikeDocument, MikeFolder } from "@/app/components/shared/types";
+import type {
+    Document,
+    Folder as ProjectFolder,
+} from "@/app/components/shared/types";
 import { VersionChip } from "@/app/components/shared/VersionChip";
+import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
+import {
+    ProjectSvgIcon,
+    SubfolderSvgIcon,
+} from "@/app/components/shared/FolderSvgIcon";
+import { LIQUID_GLASS_FLOAT_CLASS } from "@/shared/ui/LiquidGlassUI";
 
 interface Props {
     projectName?: string | null;
-    documents: MikeDocument[];
-    folders?: MikeFolder[];
+    documents: Document[];
+    folders?: ProjectFolder[];
     selectedDocId?: string | null;
-    onDocClick: (doc: MikeDocument) => void;
+    onDocClick: (doc: Document) => void;
+    onAddToChat?: (doc: Document) => void;
+    onDownloadDoc?: (doc: Document) => Promise<void>;
+    onDownloadFolder?: (folder: ProjectFolder) => Promise<void>;
+    downloading?: boolean;
+    addToChatDisabled?: boolean;
     onCreateFolder?: (parentFolderId: string | null, name: string) => Promise<void>;
     onRenameFolder?: (folderId: string, name: string) => Promise<void>;
+    onRenameDoc?: (docId: string, filename: string) => Promise<void>;
     onDeleteFolder?: (folderId: string) => Promise<void>;
     onDeleteDoc?: (docId: string) => Promise<void>;
     onMoveDoc?: (docId: string, targetFolderId: string | null) => Promise<void>;
     onMoveFolder?: (folderId: string, targetFolderId: string | null) => Promise<void>;
+    uploadingDocuments?: ReadonlyArray<{
+        clientId: string;
+        filename: string;
+    }>;
 }
 
-function DocIcon({ fileType }: { fileType: string | null }) {
-    if (fileType === "pdf")
-        return <FileText className="h-3.5 w-3.5 text-red-500 shrink-0" />;
-    if (fileType === "docx" || fileType === "doc")
-        return <File className="h-3.5 w-3.5 text-blue-500 shrink-0" />;
-    return <File className="h-3.5 w-3.5 text-gray-400 shrink-0" />;
+export interface ProjectExplorerHandle {
+    createRootFolder: () => void;
 }
 
 type ContextMenuState = {
@@ -44,29 +67,50 @@ type ContextMenuState = {
     docId?: string;                // set if right-clicked on a specific document
 };
 
-export function ProjectExplorer({
+export const ProjectExplorer = forwardRef<ProjectExplorerHandle, Props>(function ProjectExplorer({
     projectName,
     documents,
     folders = [],
     selectedDocId,
     onDocClick,
+    onAddToChat,
+    onDownloadDoc,
+    onDownloadFolder,
+    downloading = false,
+    addToChatDisabled = false,
     onCreateFolder,
     onRenameFolder,
+    onRenameDoc,
     onDeleteFolder,
     onDeleteDoc,
     onMoveDoc,
     onMoveFolder,
-}: Props) {
+    uploadingDocuments = [],
+}: Props, ref) {
     const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [creatingIn, setCreatingIn] = useState<string | null | undefined>(undefined);
     const [newFolderName, setNewFolderName] = useState("");
     const [renamingId, setRenamingId] = useState<string | null>(null);
+    const [renamingDocId, setRenamingDocId] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
     const [dragOverRoot, setDragOverRoot] = useState(false);
     const newFolderInputRef = useRef<HTMLInputElement>(null);
     const contextMenuRef = useRef<HTMLDivElement>(null);
+    const contextDocument = contextMenu?.docId
+        ? documents.find((document) => document.id === contextMenu.docId)
+        : undefined;
+    const contextFolder = contextMenu?.folderId
+        ? folders.find((folder) => folder.id === contextMenu.folderId)
+        : undefined;
+
+    useImperativeHandle(ref, () => ({
+        createRootFolder: () => {
+            setCreatingIn(null);
+            setNewFolderName("");
+        },
+    }), []);
 
     // Close context menu on outside click
     useEffect(() => {
@@ -93,7 +137,11 @@ export function ProjectExplorer({
     function toggleFolder(id: string) {
         setExpandedIds((prev) => {
             const next = new Set(prev);
-            next.has(id) ? next.delete(id) : next.add(id);
+            if (next.has(id)) {
+                next.delete(id);
+            } else {
+                next.add(id);
+            }
             return next;
         });
     }
@@ -119,6 +167,13 @@ export function ProjectExplorer({
         await onRenameFolder(folderId, name);
     }
 
+    async function commitDocRename(docId: string) {
+        const filename = renameValue.trim();
+        setRenamingDocId(null);
+        if (!filename || !onRenameDoc) return;
+        await onRenameDoc(docId, filename);
+    }
+
     function openContextMenu(
         e: React.MouseEvent,
         parentId: string | null,
@@ -131,7 +186,7 @@ export function ProjectExplorer({
     }
 
     function wouldCreateCycle(movingId: string, targetId: string): boolean {
-        let cur: MikeFolder | undefined = folders.find((f) => f.id === targetId);
+        let cur: ProjectFolder | undefined = folders.find((f) => f.id === targetId);
         while (cur) {
             if (cur.id === movingId) return true;
             if (!cur.parent_folder_id) break;
@@ -157,14 +212,11 @@ export function ProjectExplorer({
     }
 
     function isInternalDrag(e: React.DragEvent): boolean {
-        return (
-            Array.from(e.dataTransfer.types).includes("application/mike-doc") ||
-            Array.from(e.dataTransfer.types).includes("application/mike-folder")
-        );
+        return isProjectItemDrag(e.dataTransfer);
     }
 
     function renderLevel(parentId: string | null, depth: number): React.ReactNode {
-        const basePadding = 28 + (depth - 1) * 16; // pl-7 at depth 1, +16px per level
+        const basePadding = 8 + (depth - 1) * 16;
         const childFolders = folders
             .filter((f) => f.parent_folder_id === parentId)
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -172,6 +224,30 @@ export function ProjectExplorer({
 
         return (
             <>
+                {parentId === null &&
+                    uploadingDocuments.map((upload) => (
+                        <li
+                            key={`uploading-${upload.clientId}`}
+                            role="status"
+                            aria-label={`Uploading ${upload.filename}`}
+                            className="flex items-center gap-2 py-1.5 pr-2 text-gray-400"
+                            style={{ paddingLeft: basePadding }}
+                        >
+                            <FileTypeIcon
+                                fileType={upload.filename}
+                                className="h-3.5 w-3.5"
+                                muted
+                            />
+                            <span className="min-w-0 flex-1 truncate text-xs">
+                                {upload.filename}
+                            </span>
+                            <Loader2
+                                aria-hidden="true"
+                                className="h-3 w-3 shrink-0 animate-spin"
+                            />
+                        </li>
+                    ))}
+
                 {/* Inline new-folder input */}
                 {creatingIn === parentId && (
                     <li
@@ -179,7 +255,7 @@ export function ProjectExplorer({
                         style={{ paddingLeft: basePadding }}
                     >
                         <ChevronRight className="h-3 w-3 text-gray-300 shrink-0" />
-                        <FolderPlus className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                        <SubfolderSvgIcon className="h-3.5 w-3.5 shrink-0" />
                         <input
                             ref={newFolderInputRef}
                             autoFocus
@@ -208,15 +284,23 @@ export function ProjectExplorer({
                                 onDragStart={(e) => {
                                     e.dataTransfer.setData("application/mike-folder", folder.id);
                                     e.dataTransfer.effectAllowed = "move";
+                                    setRowDragPreview({
+                                        dataTransfer: e.dataTransfer,
+                                        row: e.currentTarget,
+                                        clientX: e.clientX,
+                                        clientY: e.clientY,
+                                    });
                                     e.stopPropagation();
                                 }}
                                 onDragOver={(e) => {
+                                    if (!isInternalDrag(e)) return;
                                     e.preventDefault();
                                     e.stopPropagation();
                                     setDragOverFolderId(folder.id);
                                     setDragOverRoot(false);
                                 }}
                                 onDragLeave={(e) => {
+                                    if (!isInternalDrag(e)) return;
                                     e.stopPropagation();
                                     setDragOverFolderId(null);
                                 }}
@@ -229,10 +313,10 @@ export function ProjectExplorer({
                                         await handleDropOnTarget(folder.id, e);
                                     }
                                 }}
-                                className={`flex items-center gap-1.5 py-1.5 pr-2 rounded-sm cursor-pointer select-none transition-colors group ${
+                                className={`group flex cursor-pointer select-none items-center gap-1.5 rounded-lg py-1.5 pr-2 transition-colors ${
                                     isDragTarget
                                         ? "bg-blue-50 ring-1 ring-inset ring-blue-200"
-                                        : "hover:bg-gray-50"
+                                        : "theme-dropdown-item"
                                 }`}
                                 style={{ paddingLeft: basePadding }}
                                 onClick={() => toggleFolder(folder.id)}
@@ -244,10 +328,10 @@ export function ProjectExplorer({
                                     ? <ChevronDown className="h-3 w-3 text-gray-400 shrink-0" />
                                     : <ChevronRight className="h-3 w-3 text-gray-400 shrink-0" />
                                 }
-                                {isExpanded
-                                    ? <FolderOpen className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                                    : <Folder className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                                }
+                                <SubfolderSvgIcon
+                                    open={isExpanded}
+                                    className="h-3.5 w-3.5 shrink-0"
+                                />
                                 {isRenaming ? (
                                     <input
                                         autoFocus
@@ -275,15 +359,26 @@ export function ProjectExplorer({
                 {/* Child documents */}
                 {childDocs.map((doc) => {
                     const isSelected = doc.id === selectedDocId;
+                    const isRenaming = renamingDocId === doc.id;
                     return (
                         <li
                             key={`d-${doc.id}`}
                             draggable
                             onDragStart={(e) => {
                                 e.dataTransfer.setData("application/mike-doc", doc.id);
-                                e.dataTransfer.effectAllowed = "move";
+                                e.dataTransfer.effectAllowed = "copyMove";
+                                setRowDragPreview({
+                                    dataTransfer: e.dataTransfer,
+                                    row: e.currentTarget,
+                                    clientX: e.clientX,
+                                    clientY: e.clientY,
+                                });
                             }}
-                            onDragOver={(e) => e.stopPropagation()} // don't let doc rows affect root drag state
+                            onDragOver={(e) => {
+                                // Internal moves do not target document rows;
+                                // external files bubble to the panel upload target.
+                                if (isInternalDrag(e)) e.stopPropagation();
+                            }}
                             onClick={() => onDocClick(doc)}
                             onContextMenu={(e) =>
                                 openContextMenu(
@@ -293,14 +388,40 @@ export function ProjectExplorer({
                                     doc.id,
                                 )
                             }
-                            className={`flex items-center gap-2 py-1.5 pr-4 rounded-sm cursor-pointer select-none transition-colors ${
-                                isSelected ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                            className={`flex cursor-pointer select-none items-center gap-2 rounded-lg py-1.5 pr-4 transition-colors ${
+                                isSelected ? "theme-dropdown-selected text-gray-900" : "theme-dropdown-item text-gray-600 hover:text-gray-900"
                             }`}
                             style={{ paddingLeft: basePadding }}
                         >
-                            <DocIcon fileType={doc.file_type} />
-                            <span className="text-xs truncate">{doc.filename}</span>
-                            <VersionChip n={doc.latest_version_number} />
+                            <FileTypeIcon fileType={doc.file_type} />
+                            {isRenaming ? (
+                                <input
+                                    autoFocus
+                                    className="min-w-0 flex-1 border-b border-gray-300 bg-transparent text-xs text-gray-800 outline-none"
+                                    value={renameValue}
+                                    onChange={(event) =>
+                                        setRenameValue(event.target.value)
+                                    }
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter")
+                                            void commitDocRename(doc.id);
+                                        if (event.key === "Escape")
+                                            setRenamingDocId(null);
+                                    }}
+                                    onBlur={() => void commitDocRename(doc.id)}
+                                    onClick={(event) => event.stopPropagation()}
+                                />
+                            ) : (
+                                <span className="truncate text-xs">
+                                    {doc.filename}
+                                </span>
+                            )}
+                            <VersionChip
+                                n={
+                                    doc.active_version_number ??
+                                    doc.latest_version_number
+                                }
+                            />
                         </li>
                     );
                 })}
@@ -310,14 +431,16 @@ export function ProjectExplorer({
 
     return (
         <ul
-            className={`p-1 relative h-full ${dragOverRoot && dragOverFolderId === null ? "ring-2 ring-blue-400 ring-inset" : ""}`}
+            className={`relative h-full rounded-bl-2xl rounded-br-lg p-1 ${dragOverRoot && dragOverFolderId === null ? "ring-2 ring-blue-400 ring-inset" : ""}`}
             onContextMenu={(e) => {
                 // Only fires if not stopped by a child
                 openContextMenu(e, null);
             }}
             onDragOver={(e) => {
-                e.preventDefault();
-                setDragOverRoot(true);
+                if (isInternalDrag(e)) {
+                    e.preventDefault();
+                    setDragOverRoot(true);
+                }
             }}
             onDragLeave={(e) => {
                 if (!e.currentTarget.contains(e.relatedTarget as Node)) {
@@ -341,8 +464,8 @@ export function ProjectExplorer({
                     className="flex items-center gap-2 px-2 py-1.5 select-none"
                     onContextMenu={(e) => { e.stopPropagation(); openContextMenu(e, null); }}
                 >
-                    <FolderOpen className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                    <span className="text-xs text-gray-500 truncate">{projectName}</span>
+                    <ProjectSvgIcon open className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate text-xs font-semibold text-gray-500">{projectName}</span>
                 </li>
             )}
 
@@ -352,20 +475,68 @@ export function ProjectExplorer({
             {renderLevel(null, 1)}
 
             {/* Empty state */}
-            {documents.length === 0 && folders.length === 0 && creatingIn === undefined && (
-                <li className="px-4 py-2 text-xs text-gray-400">No documents in this project.</li>
-            )}
+            {documents.length === 0 &&
+                folders.length === 0 &&
+                uploadingDocuments.length === 0 &&
+                creatingIn === undefined && (
+                    <li className="px-4 py-2 text-xs text-gray-400">
+                        No documents in this project.
+                    </li>
+                )}
 
             {/* Context menu */}
             {contextMenu && (
                 <div
                     ref={contextMenuRef}
-                    className="fixed z-50 w-44 rounded-lg border border-gray-100 bg-white shadow-lg overflow-hidden text-xs"
+                    className={`fixed z-50 w-44 overflow-hidden rounded-lg text-xs ${LIQUID_GLASS_FLOAT_CLASS} backdrop-blur-2xl`}
                     style={{ top: contextMenu.y, left: contextMenu.x }}
                 >
-                    {onCreateFolder && (
+                    {contextDocument && (
                         <button
-                            className="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                            type="button"
+                            className="theme-dropdown-item flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/40"
+                            onClick={() => {
+                                onDocClick(contextDocument);
+                                setContextMenu(null);
+                            }}
+                        >
+                            <FileText aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                            Open
+                        </button>
+                    )}
+                    {contextDocument && onAddToChat && (
+                        <button
+                            type="button"
+                            disabled={addToChatDisabled}
+                            className="theme-dropdown-item flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-40"
+                            onClick={() => {
+                                onAddToChat(contextDocument);
+                                setContextMenu(null);
+                            }}
+                        >
+                            <MessageSquarePlus aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                            Add to chat
+                        </button>
+                    )}
+                    {((contextDocument && onDownloadDoc) || (contextFolder && onDownloadFolder)) && (
+                        <button
+                            type="button"
+                            disabled={downloading}
+                            className="theme-dropdown-item flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-40"
+                            onClick={() => {
+                                if (contextDocument) void onDownloadDoc?.(contextDocument);
+                                else if (contextFolder) void onDownloadFolder?.(contextFolder);
+                                setContextMenu(null);
+                            }}
+                        >
+                            <Download aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                            Download
+                        </button>
+                    )}
+                    {onCreateFolder && !contextMenu.docId && (
+                        <button
+                            type="button"
+                            className="theme-dropdown-item flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/40"
                             onClick={() => {
                                 setContextMenu(null);
                                 if (contextMenu.parentId) {
@@ -377,20 +548,35 @@ export function ProjectExplorer({
                                 setNewFolderName("");
                             }}
                         >
-                            <FolderPlus className="h-3.5 w-3.5 text-gray-400" />
+                            <SubfolderSvgIcon className="h-3.5 w-3.5 shrink-0" />
                             New subfolder
                         </button>
                     )}
                     {contextMenu.folderId && onRenameFolder && (
                         <button
-                            className="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50"
+                            type="button"
+                            className="theme-dropdown-item flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700"
                             onClick={() => {
-                                const f = folders.find((x) => x.id === contextMenu.folderId);
-                                setRenameValue(f?.name ?? "");
+                                setRenameValue(contextFolder?.name ?? "");
                                 setRenamingId(contextMenu.folderId!);
                                 setContextMenu(null);
                             }}
                         >
+                            <Pencil aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                            Rename
+                        </button>
+                    )}
+                    {contextMenu.docId && onRenameDoc && (
+                        <button
+                            type="button"
+                            className="theme-dropdown-item flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700"
+                            onClick={() => {
+                                setRenameValue(contextDocument?.filename ?? "");
+                                setRenamingDocId(contextMenu.docId!);
+                                setContextMenu(null);
+                            }}
+                        >
+                            <Pencil aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                             Rename
                         </button>
                     )}
@@ -422,4 +608,4 @@ export function ProjectExplorer({
             )}
         </ul>
     );
-}
+});

@@ -10,12 +10,10 @@ import crypto from "crypto";
  */
 
 function getSecret(): string {
-    const secret =
-        process.env.DOWNLOAD_SIGNING_SECRET ??
-        process.env.SUPABASE_SECRET_KEY;
+    const secret = process.env.DOWNLOAD_SIGNING_SECRET;
     if (!secret) {
         throw new Error(
-            "DOWNLOAD_SIGNING_SECRET (or SUPABASE_SECRET_KEY as a fallback) must be set. " +
+            "DOWNLOAD_SIGNING_SECRET must be set. " +
                 "Generate a strong random value (e.g. `openssl rand -hex 32`) and set it in the environment.",
         );
     }
@@ -75,8 +73,8 @@ export function verifyDownload(
 }
 
 /**
- * Returns a relative download URL (e.g. "/download/abc.def"). The frontend
- * prefixes it with NEXT_PUBLIC_API_BASE_URL when rendering `<a href=…>`.
+ * Returns a relative download URL (e.g. "/download/abc.def"). Browser clients
+ * prefix it with their same-origin `/api` gateway.
  */
 export function buildDownloadUrl(path: string, filename: string): string {
     return `/download/${signDownload(path, filename)}`;

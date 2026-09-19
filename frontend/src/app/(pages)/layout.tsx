@@ -1,12 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { Menu } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useCallback, useMemo, useState, useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { PanelLeft } from "lucide-react";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { ChatHistoryProvider } from "@/app/contexts/ChatHistoryContext";
 import { SidebarContext } from "@/app/contexts/SidebarContext";
+import { PageChromeContext } from "@/app/contexts/PageChromeContext";
 import { AppSidebar } from "@/app/components/shared/AppSidebar";
+import { FullScreenLoader } from "@/app/components/shared/FullScreenLoader";
+import { HeaderButtonUI, HeaderButtonsUI } from "@/shared/ui/HeaderButtonsUI";
+import { cn } from "@/app/lib/utils";
 
 export default function MikeLayout({
     children,
@@ -15,6 +19,12 @@ export default function MikeLayout({
 }) {
     const { isAuthenticated, authLoading } = useAuth();
     const router = useRouter();
+    const pathname = usePathname();
+    const isChatPage =
+        /^\/assistant\/chat\/[^/]+\/?$/.test(pathname) ||
+        /^\/projects\/[^/]+\/assistant\/chat\/[^/]+\/?$/.test(pathname);
+    const [mobileActionsContainer, setMobileActionsContainer] =
+        useState<HTMLDivElement | null>(null);
 
     const [isSidebarOpenDesktop, setIsSidebarOpenDesktop] = useState(() => {
         if (typeof window !== "undefined") {
@@ -31,6 +41,12 @@ export default function MikeLayout({
         return true;
     });
 
+    // Persist what is actually on screen. The mount initializer above reads
+    // this key back but `isSidebarOpen` starts open on desktop regardless, so
+    // storing anything else leaves the restored preference disagreeing with
+    // the rendered sidebar and the first toggle click is spent re-syncing
+    // them. Remembering a collapsed sidebar across reloads needs the mount
+    // path to apply the stored value too — a separate change.
     useEffect(() => {
         if (typeof window !== "undefined" && window.innerWidth >= 768) {
             localStorage.setItem("sidebarOpen", isSidebarOpen.toString());
@@ -58,6 +74,31 @@ export default function MikeLayout({
         }
     };
 
+    const handleMobileActionsContainerRef = useCallback(
+        (node: HTMLDivElement | null) => {
+            setMobileActionsContainer(node);
+        },
+        [],
+    );
+
+    const setSidebarOpen = useCallback((open: boolean) => {
+        const isSmall =
+            typeof window !== "undefined" && window.innerWidth < 768;
+        if (isSmall) {
+            if (!open) setIsSidebarOpen(false);
+            return;
+        }
+        setIsSidebarOpen(open);
+        setIsSidebarOpenDesktop(open);
+    }, []);
+
+    const pageChromeValue = useMemo(
+        () => ({ mobileActionsContainer }),
+        [mobileActionsContainer],
+    );
+
+    const sidebarValue = useMemo(() => ({ setSidebarOpen }), [setSidebarOpen]);
+
     useEffect(() => {
         if (!authLoading && !isAuthenticated) {
             router.push("/login");
@@ -65,43 +106,55 @@ export default function MikeLayout({
     }, [authLoading, isAuthenticated, router]);
 
     if (authLoading) {
-        return (
-            <div className="flex h-screen items-center justify-center">
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
-            </div>
-        );
+        return <FullScreenLoader />;
     }
 
     if (!isAuthenticated) return null;
 
     return (
         <ChatHistoryProvider>
-            <SidebarContext.Provider
-                value={{ setSidebarOpen: (open) => { setIsSidebarOpen(open); setIsSidebarOpenDesktop(open); } }}
-            >
-                <div className="h-dvh bg-white flex flex-col">
-                    <div className="flex-1 flex overflow-hidden">
-                        <AppSidebar
-                            isOpen={isSidebarOpen}
-                            onToggle={handleSidebarToggle}
-                        />
-                        <div className="flex-1 flex flex-col h-dvh md:overflow-hidden relative w-full">
-                            {/* Mobile header */}
-                            <div className="flex md:hidden items-center gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
-                                <button
-                                    onClick={handleSidebarToggle}
-                                    className="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-100 text-gray-500 transition-colors"
+            <PageChromeContext.Provider value={pageChromeValue}>
+                <SidebarContext.Provider value={sidebarValue}>
+                    <div className="h-dvh flex flex-col bg-app-background">
+                        <div className="flex-1 flex min-w-0 overflow-visible">
+                            <AppSidebar
+                                isOpen={isSidebarOpen}
+                                onToggle={handleSidebarToggle}
+                            />
+                            <div className="flex-1 flex flex-col h-dvh md:overflow-hidden relative w-full">
+                                {/* Mobile header */}
+                                <div
+                                    data-slot="mobile-header"
+                                    className={cn(
+                                        "z-30 flex items-center gap-3 overflow-visible px-4 md:hidden",
+                                        isChatPage
+                                            ? "pointer-events-none fixed inset-x-0 top-0 bg-transparent pb-2 pt-3"
+                                            : "relative shrink-0 pb-2 pt-3",
+                                    )}
                                 >
-                                    <Menu className="h-5 w-5" />
-                                </button>
+                                    <HeaderButtonsUI className="pointer-events-auto">
+                                        <HeaderButtonUI
+                                            iconOnly
+                                            onClick={handleSidebarToggle}
+                                            title="Open sidebar"
+                                            aria-label="Open sidebar"
+                                        >
+                                            <PanelLeft className="h-4 w-4" />
+                                        </HeaderButtonUI>
+                                    </HeaderButtonsUI>
+                                    <div
+                                        ref={handleMobileActionsContainerRef}
+                                        className="pointer-events-auto ml-auto flex min-w-0 flex-1 items-center justify-end"
+                                    />
+                                </div>
+                                <main className="flex h-full w-full flex-1 flex-col overflow-y-auto md:overflow-hidden">
+                                    {children}
+                                </main>
                             </div>
-                            <main className="flex-1 overflow-y-auto md:overflow-hidden w-full h-full">
-                                {children}
-                            </main>
                         </div>
                     </div>
-                </div>
-            </SidebarContext.Provider>
+                </SidebarContext.Provider>
+            </PageChromeContext.Provider>
         </ChatHistoryProvider>
     );
 }
