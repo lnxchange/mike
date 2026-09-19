@@ -35,6 +35,7 @@ import { ORG_ROLE_LABELS } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { LIQUID_SUBTLE_PANEL_SURFACE_CLASS } from "@/app/components/ui/liquid-surface";
 import { CreateOrganizationModal } from "./OrganizationModals";
+import { appConfig } from "@/config";
 
 type OrganizationFilter = "managed" | "joined" | "invites";
 type OrganizationSortKey = "name" | "members" | "created";
@@ -318,7 +319,7 @@ export function OrganizationsOverview() {
               <EmptyState
                 icon={<OrganizationSkeuoIcon />}
                 title="Organizations"
-                description="Create an organization to share projects, chats and reviews with your team."
+                description={`Create an organization to share ${appConfig.terminology.projectsLower}, chats and reviews with your team.`}
                 action={
                   <PillButtonUI
                     tone="black"

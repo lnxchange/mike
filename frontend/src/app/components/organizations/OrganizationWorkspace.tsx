@@ -67,12 +67,15 @@ import {
   InviteOrganizationMemberModal,
   OrganizationSettingsModal,
 } from "./OrganizationModals";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 type OrganizationTab = "people" | "projects" | "workflows";
 
 const TABS: { id: OrganizationTab; label: string }[] = [
   { id: "people", label: "People" },
-  { id: "projects", label: "Projects" },
+  { id: "projects", label: t.projects },
   { id: "workflows", label: "Workflows" },
 ];
 
@@ -781,9 +784,9 @@ function ResourceTable({
   } | null>(null);
   const copy = {
     projects: {
-      title: "Projects",
+      title: t.projects,
       context: "Practice",
-      empty: "No projects belong to this organization.",
+      empty: `No ${t.projectsLower} belong to this organization.`,
       icon: <ClosedProjectSvgIcon />,
     },
     workflows: {

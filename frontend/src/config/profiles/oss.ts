@@ -13,6 +13,13 @@ export const ossProfile: DeploymentProfile = {
     appUrl: "https://app.mikeoss.com",
     landingUrl: "https://mikeoss.com",
   },
+  terminology: {
+    project: "Project",
+    projects: "Projects",
+    projectLower: "project",
+    projectsLower: "projects",
+    referenceNumber: "CM number",
+  },
   externalLinks: {
     terms: "https://mikeoss.com/terms",
     privacy: "https://mikeoss.com/privacy",

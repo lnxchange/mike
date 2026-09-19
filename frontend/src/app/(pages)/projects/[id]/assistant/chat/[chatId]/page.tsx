@@ -73,7 +73,7 @@ import { DocumentUploadMenu } from "@/app/components/shared/DocumentUploadMenu";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import { PermissionDeniedPopup } from "@/app/components/popups/PermissionDeniedPopup";
-import { MikeIcon } from "@/app/components/chat/mike-icon";
+import { BrandMark } from "@/app/components/brand-mark";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { useSidebar } from "@/app/contexts/SidebarContext";
@@ -107,6 +107,9 @@ import {
     type DocumentUploadEntry,
 } from "@/app/lib/documentDirectoryUpload";
 import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 interface Props {
     params: Promise<{ id: string; chatId?: string }>;
@@ -198,7 +201,7 @@ function AssistantGreeting({ username }: { username: string }) {
                             "transform 900ms cubic-bezier(0.25, 0.46, 0.45, 0.94)",
                     }}
                 >
-                    <MikeIcon size={ICON_SIZE} />
+                    <BrandMark size={ICON_SIZE} />
                 </div>
                 <h1
                     ref={textRef}
@@ -947,7 +950,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         if (!canEditContent) {
             // Only accuse somebody of lacking a role once we know they do.
             if (projectRole) {
-                setEditorGateAction("upload documents to this project");
+                setEditorGateAction(
+                    `upload documents to this ${t.projectLower}`,
+                );
             }
             return;
         }
@@ -1569,7 +1574,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                     triggerClassName="h-6 w-6 text-gray-500 hover:text-gray-900"
                                     items={[
                                         {
-                                            label: "Select project",
+                                            label: `Select ${t.projectLower}`,
                                             icon: FolderOpen,
                                             onSelect: () =>
                                                 void projectPicker.openPicker(),
@@ -1582,7 +1587,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             disabled: !canEditContent,
                                         },
                                         {
-                                            label: "Go to project page",
+                                            label: `Go to ${t.projectLower} page`,
                                             icon: ArrowUpRight,
                                             onSelect: () =>
                                                 router.push(
@@ -2006,7 +2011,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     onClose={() => setAddDocumentsOpen(false)}
                     onSelect={(documents) => addUploadedDocuments(documents)}
                     breadcrumb={[
-                        "Projects",
+                        t.projects,
                         project.name +
                             (project.cm_number
                                 ? ` (${project.cm_number})`
@@ -2020,7 +2025,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             <WarningPopup
                 open={!!projectPicker.error}
                 onClose={projectPicker.clearError}
-                title="Projects could not be loaded"
+                title={`${t.projects} could not be loaded`}
                 message={projectPicker.error ?? ""}
             />
             <WarningPopup
@@ -2036,9 +2041,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 loading={projectPicker.loading}
                 selectedId={projectPicker.selectedId}
                 onSelect={projectPicker.setSelectedId}
-                breadcrumbs={["IDE", "Select project"]}
+                breadcrumbs={["IDE", `Select ${t.projectLower}`]}
                 primaryAction={{
-                    label: "Select project",
+                    label: `Select ${t.projectLower}`,
                     type: "button",
                     onClick: selectProject,
                     disabled: !projectPicker.selectedId,

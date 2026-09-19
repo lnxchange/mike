@@ -26,10 +26,13 @@ create table if not exists public.user_profiles (
     check (
       professional_title is null
       or professional_title in (
+        'Principal',
         'Partner',
+        'Special Counsel',
         'Senior Associate',
         'Associate',
         'Law Clerk',
+        'Paralegal',
         'Counsel',
         'General Counsel',
         'Legal Counsel',

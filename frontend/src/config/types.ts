@@ -21,6 +21,35 @@ export interface DeploymentProfile {
      * Mike icon. A path under frontend/public (for example "/brand/mark.svg").
      */
     markSrc?: string;
+    /**
+     * Optional browser tab icon (favicon). A path under frontend/public.
+     * When unset, the stock Mike icon set is used.
+     */
+    iconSrc?: string;
+    /**
+     * Optional raster Apple touch icon (180x180 PNG). Safari does not accept
+     * an SVG here, so a profile that sets iconSrc should set this too.
+     * Falls back to iconSrc when unset.
+     */
+    appleTouchIconSrc?: string;
+  };
+
+  /**
+   * User-visible nouns for the top-level workspace container. The OSS product
+   * calls it a "project"; a law-firm deployment may call it a "matter". Only
+   * copy reads these; routes, identifiers and API field names never change.
+   */
+  terminology: {
+    /** Singular, capitalised: "Project". */
+    project: string;
+    /** Plural, capitalised: "Projects". */
+    projects: string;
+    /** Singular, lower case: "project". */
+    projectLower: string;
+    /** Plural, lower case: "projects". */
+    projectsLower: string;
+    /** Label for the client/matter reference field: "CM number". */
+    referenceNumber: string;
   };
 
   externalLinks: {

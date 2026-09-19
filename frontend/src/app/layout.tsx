@@ -17,17 +17,28 @@ const ebGaramond = EB_Garamond({
 
 const appTitle = `${appConfig.branding.appName} - AI Legal Platform`;
 
+// A profile may supply its own tab icon; otherwise the stock Mike icon set
+// (SVG, .ico and raster Apple touch icon) is used unchanged.
+const appIcons: Metadata["icons"] = appConfig.branding.iconSrc
+    ? {
+          icon: [{ url: appConfig.branding.iconSrc, type: "image/svg+xml" }],
+          apple:
+              appConfig.branding.appleTouchIconSrc ??
+              appConfig.branding.iconSrc,
+      }
+    : {
+          icon: [
+              { url: "/icon.svg", type: "image/svg+xml" },
+              { url: "/favicon.ico" },
+          ],
+          apple: "/apple-touch-icon.png",
+      };
+
 export const metadata: Metadata = {
     metadataBase: new URL(appConfig.branding.appUrl),
     title: appTitle,
     description: appConfig.branding.tagline,
-    icons: {
-        icon: [
-            { url: "/icon.svg", type: "image/svg+xml" },
-            { url: "/favicon.ico" },
-        ],
-        apple: "/apple-touch-icon.png",
-    },
+    icons: appIcons,
     openGraph: {
         type: "website",
         url: appConfig.branding.appUrl,

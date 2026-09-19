@@ -15,6 +15,7 @@ import {
     LIQUID_GLASS_FLOAT_CLASS,
     LIQUID_GLASS_SUBTLE_CLASS,
 } from "@/shared/ui/LiquidGlassUI";
+import { appConfig } from "@/config";
 
 interface ColumnDraft {
     name: string;
@@ -481,7 +482,7 @@ export function AddColumnModal({
                                             prompt: e.target.value,
                                         })
                                     }
-                                    placeholder="Write the analysis prompt — describe what Mike should extract from each document for this column…"
+                                    placeholder={`Write the analysis prompt — describe what ${appConfig.branding.appName} should extract from each document for this column…`}
                                     className="mt-2 min-h-36"
                                 />
                                                 </>

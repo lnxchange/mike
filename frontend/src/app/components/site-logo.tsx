@@ -1,6 +1,5 @@
-import Image from "next/image";
 import Link from "next/link";
-import { MikeIcon } from "@/app/components/chat/mike-icon";
+import { BrandMark } from "@/app/components/brand-mark";
 import { appConfig } from "@/config";
 
 interface SiteLogoProps {
@@ -37,7 +36,6 @@ export function SiteLogo({
     };
 
     const iconSize = iconSizes[size];
-    const markSrc = appConfig.branding.markSrc;
 
     const logo = (
         <h1
@@ -48,19 +46,7 @@ export function SiteLogo({
             <span
                 className={`inline-flex shrink-0 items-center leading-none ${iconClassName}`}
             >
-                {markSrc ? (
-                    <Image
-                        src={markSrc}
-                        alt=""
-                        aria-hidden
-                        width={iconSize}
-                        height={iconSize}
-                        unoptimized
-                        style={{ height: iconSize, width: "auto" }}
-                    />
-                ) : (
-                    <MikeIcon size={iconSize} />
-                )}
+                <BrandMark size={iconSize} />
             </span>
             <span>{appConfig.branding.appName}</span>
         </h1>

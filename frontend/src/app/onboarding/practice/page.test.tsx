@@ -113,7 +113,7 @@ describe("OnboardingPracticePage", () => {
     );
     await user.click(
       screen.getByRole("menuitemradio", {
-        name: "Not a practising attorney",
+        name: "Not currently practising",
       }),
     );
     await user.click(

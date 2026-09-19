@@ -32,6 +32,7 @@ import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import { TabularReviewSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import type { Document, TabularReview } from "@/app/components/shared/types";
 import { formatDate } from "./ProjectPageParts";
+import { appConfig } from "@/config";
 import type {
     TabularReviewSortDirection,
     TabularReviewSortKey,
@@ -254,7 +255,7 @@ export function ProjectReviewsTable({
                         <EmptyState
                             icon={<TabularReviewSkeuoIcon />}
                             title="Tabular Reviews"
-                            description="Extract data from project documents into tables using AI."
+                            description={`Extract data from ${appConfig.terminology.projectLower} documents into tables using AI.`}
                             action={
                                 <PillButtonUI
                                     tone="black"

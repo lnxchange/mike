@@ -11,8 +11,10 @@ import {
 import type { Project } from "@/app/components/shared/types";
 import { listOrgs, type Org } from "@/app/lib/mikeApi";
 import { ProjectPracticeField } from "./ProjectPracticeField";
+import { appConfig } from "@/config";
 
 const PERSONAL_WORKSPACE = "__personal__";
+const t = appConfig.terminology;
 
 interface ProjectDetailsModalProps {
     open: boolean;
@@ -107,7 +109,7 @@ export function ProjectDetailsModal({
             });
             setSaved(true);
         } catch {
-            setError("Could not update project details.");
+            setError(`Could not update ${t.projectLower} details.`);
         } finally {
             setSaving(false);
         }
@@ -117,7 +119,7 @@ export function ProjectDetailsModal({
         <Modal
             open={open}
             onClose={onClose}
-            breadcrumbs={["Projects", project.name, "Details"]}
+            breadcrumbs={[t.projects, project.name, "Details"]}
             secondaryAction={
                 onShareProject
                     ? {
@@ -148,7 +150,7 @@ export function ProjectDetailsModal({
             <div className="flex min-h-0 flex-1 flex-col gap-6 py-1">
                 <div>
                     <FieldLabel htmlFor="project-details-name">
-                        Project name
+                        {t.project} name
                     </FieldLabel>
                     <FormTextInput
                         id="project-details-name"
@@ -159,14 +161,14 @@ export function ProjectDetailsModal({
                             setError(null);
                         }}
                         disabled={!canEdit || saving}
-                        placeholder="Add project name"
+                        placeholder={`Add ${t.projectLower} name`}
                         variant="minimal"
                     />
                 </div>
 
                 <div>
                     <FieldLabel htmlFor="project-details-cm">
-                        CM number
+                        {t.referenceNumber}
                     </FieldLabel>
                     <FormTextInput
                         id="project-details-cm"
@@ -177,7 +179,7 @@ export function ProjectDetailsModal({
                             setError(null);
                         }}
                         disabled={!canEdit || saving}
-                        placeholder="Add a CM number..."
+                        placeholder={`Add a ${t.referenceNumber}...`}
                         variant="minimal"
                         className="text-xl text-gray-600"
                     />

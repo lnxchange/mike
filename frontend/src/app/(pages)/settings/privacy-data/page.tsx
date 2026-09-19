@@ -28,6 +28,9 @@ import {
   startUserExport,
   type UserExportType,
 } from "@/app/lib/mikeApi";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 type DeleteDataAction = "chats" | "tabular-reviews" | "projects" | "memory";
 type ExportDataAction =
@@ -60,14 +63,12 @@ const DELETE_DATA_COPY: Record<
       "This will permanently delete all tabular reviews you own, including their cells and review chats. This action cannot be undone.",
   },
   projects: {
-    title: "Delete all projects?",
-    message:
-      "This will permanently delete all projects you own, including their documents, chats, and tabular reviews. This action cannot be undone.",
+    title: `Delete all ${t.projectsLower}?`,
+    message: `This will permanently delete all ${t.projectsLower} you own, including their documents, chats, and tabular reviews. This action cannot be undone.`,
   },
   memory: {
     title: "Delete all memory?",
-    message:
-      "This permanently deletes your app memory and memories for private projects you created. Project collaborators will also lose those memories. Memory remains enabled and can be rebuilt from future conversations. This action cannot be undone.",
+    message: `This permanently deletes your app memory and memories for private ${t.projectsLower} you created. ${t.project} collaborators will also lose those memories. Memory remains enabled and can be rebuilt from future conversations. This action cannot be undone.`,
   },
 };
 
@@ -352,8 +353,8 @@ export default function PrivacyDataPage() {
             <div className="space-y-1">
               <SettingsLabel>Export memory</SettingsLabel>
               <SettingsDescription>
-                Download your app memory and every project memory you can access
-                as Markdown files in a ZIP archive.
+                Download your app memory and every {t.projectLower} memory you
+                can access as Markdown files in a ZIP archive.
               </SettingsDescription>
             </div>
             <PillButtonUI
@@ -417,10 +418,10 @@ export default function PrivacyDataPage() {
           </SettingsRow>
           <SettingsRow>
             <div className="space-y-1">
-              <SettingsLabel>Delete all projects</SettingsLabel>
+              <SettingsLabel>Delete all {t.projectsLower}</SettingsLabel>
               <SettingsDescription>
-                Permanently delete all projects you own, including documents,
-                chats, and tabular reviews.
+                Permanently delete all {t.projectsLower} you own, including
+                documents, chats, and tabular reviews.
               </SettingsDescription>
             </div>
             <PillButtonUI
@@ -439,8 +440,8 @@ export default function PrivacyDataPage() {
             <div className="space-y-1">
               <SettingsLabel>Delete all memory</SettingsLabel>
               <SettingsDescription>
-                Permanently delete your app memory and memories for private
-                projects you created.
+                Permanently delete your app memory and memories for private{" "}
+                {t.projectsLower} you created.
               </SettingsDescription>
             </div>
             <PillButtonUI

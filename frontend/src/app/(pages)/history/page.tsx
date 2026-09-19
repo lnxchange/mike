@@ -39,6 +39,7 @@ import {
 import { LiquidDropdownContent } from "@/app/components/ui/liquid-dropdown";
 import { cn } from "@/app/lib/utils";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
+import { appConfig } from "@/config";
 
 const ACTION_LABELS: Record<string, string> = {
   "chat.message": "Chat",
@@ -70,7 +71,7 @@ const GLASS_DOT =
 
 const SURFACE_LABELS: Record<string, string> = {
   assistant: "Assistant",
-  project: "Project",
+  project: appConfig.terminology.project,
   word: "Word",
   tabular: "Tabular",
   workflows: "Workflows",

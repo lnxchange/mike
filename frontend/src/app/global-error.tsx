@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { appConfig } from "@/config";
 
 export default function GlobalError({
     error,
@@ -15,7 +16,7 @@ export default function GlobalError({
     return (
         <html lang="en">
             <head>
-                <title>Something went wrong – Mike</title>
+                <title>{`Something went wrong – ${appConfig.branding.appName}`}</title>
                 <style>{`
                     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=EB+Garamond:wght@400;500&display=swap');
                     

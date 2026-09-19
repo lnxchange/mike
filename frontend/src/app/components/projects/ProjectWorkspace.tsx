@@ -53,6 +53,9 @@ import {
     ProjectPageHeader,
     type ProjectWorkspaceSection,
 } from "./ProjectPageParts";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 /**
  * A denied action: the sentence for the popup plus which role the action is
@@ -433,7 +436,7 @@ export function ProjectWorkspaceProvider({
     }) {
         if (!canDo("access.manage")) {
             denyUnlessLoading({
-                action: "edit project details",
+                action: `edit ${t.projectLower} details`,
                 requiredRole: "owner",
             });
             return;
@@ -461,7 +464,7 @@ export function ProjectWorkspaceProvider({
 
     function requestProjectDelete() {
         if (!canDo("container.delete")) {
-            denyUnlessLoading("delete this project");
+            denyUnlessLoading(`delete this ${t.projectLower}`);
             return;
         }
         setDeleteProjectStatus("idle");
@@ -611,8 +614,8 @@ export function ProjectWorkspaceProvider({
 
                 <ConfirmPopup
                     open={deleteProjectConfirmOpen}
-                    title="Delete project?"
-                    message="This will permanently delete the project and its related documents, chats, and tabular reviews."
+                    title={`Delete ${t.projectLower}?`}
+                    message={`This will permanently delete the ${t.projectLower} and its related documents, chats, and tabular reviews.`}
                     confirmLabel="Delete"
                     confirmVariant="danger"
                     confirmStatus={
@@ -639,7 +642,7 @@ export function ProjectWorkspaceProvider({
                         fetchAccess={getProjectPeople}
                         currentUserEmail={user?.email ?? null}
                         breadcrumb={[
-                            "Projects",
+                            t.projects,
                             project.name +
                                 (project.cm_number
                                     ? ` (${project.cm_number})`
@@ -649,7 +652,7 @@ export function ProjectWorkspaceProvider({
                         access={{
                             grants: grants ?? [],
                             orgId: project.org_id ?? null,
-                            ownerLabel: "Project owners",
+                            ownerLabel: `${t.project} owners`,
                             canManage: canDo("access.manage"),
                             onGrant: async (email, role) => {
                                 await grantProjectAccess(

@@ -21,6 +21,9 @@ import { RowActions } from "@/app/components/shared/RowActions";
 import { HeaderActionsMenu } from "@/app/components/shared/HeaderActionsMenu";
 import { DocumentUploadMenu } from "@/app/components/shared/DocumentUploadMenu";
 import { tableTreeCellStyle } from "@/app/components/shared/TablePrimitive";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 export type ProjectWorkspaceSection =
     | "documents"
@@ -447,16 +450,16 @@ export function ProjectPageHeader({
         <PageHeader
             breadcrumbs={[
                 {
-                    label: "Projects",
+                    label: t.projects,
                     onClick: onBackToProjects,
-                    title: "Back to Projects",
+                    title: `Back to ${t.projects}`,
                 },
                 {
                     ...(project
                         ? {
                               label: project.name,
                               onClick: onProjectRoot,
-                              title: "Back to project documents",
+                              title: `Back to ${t.projectLower} documents`,
                           }
                         : {
                               loading: true,

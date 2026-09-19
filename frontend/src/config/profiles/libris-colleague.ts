@@ -16,6 +16,17 @@ export const librisColleagueProfile: DeploymentProfile = {
     // assets/logo/libris-bookmark.svg. The theme lives in
     // app/themes/libris-colleague.css and keys off data-profile.
     markSrc: "/brand/libris-bookmark.svg",
+    iconSrc: "/brand/libris-bookmark.svg",
+    // Rasterised from the same SVG (rsvg-convert, 180px, padded square).
+    appleTouchIconSrc: "/brand/libris-apple-touch-icon.png",
+  },
+  // Australian law firms work in matters, not projects.
+  terminology: {
+    project: "Matter",
+    projects: "Matters",
+    projectLower: "matter",
+    projectsLower: "matters",
+    referenceNumber: "Matter number",
   },
   externalLinks: {
     terms: "https://libris.au",

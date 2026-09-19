@@ -25,6 +25,9 @@ import {
     LIQUID_GLASS_HOVER_CLASS,
     LIQUID_GLASS_MODAL_ROW_HOVER_CLASS,
 } from "@/shared/ui/LiquidGlassUI";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 export type AccessScope = "direct" | "project";
 
@@ -405,7 +408,7 @@ export function OrganizationAccessEditor({
     members,
     assignments,
     organizationName,
-    ownerLabel = "Project owners",
+    ownerLabel = `${t.project} owners`,
     loading = false,
     disabled = false,
     error,
@@ -459,7 +462,7 @@ export function OrganizationAccessEditor({
     );
     const resourceNoun = ownerLabel.toLowerCase().startsWith("workflow")
         ? "workflow"
-        : "project";
+        : t.projectLower;
     const organizationMembersLabel = organizationName || "organisation";
     const ownerDescription = `Add ${organizationMembersLabel} members as owners with rights to manage access, settings and delete the ${resourceNoun}.`;
     const denyDescription = `Deny ${organizationMembersLabel} members from accessing this ${resourceNoun}.`;
@@ -689,8 +692,8 @@ export function AccessEditor({
 
                 {scope === "project" ? (
                     <p className="mb-2 text-xs text-gray-500">
-                        Access is inherited from the project and must be changed
-                        from the project&apos;s Access panel.
+                        Access is inherited from the {t.projectLower} and must be
+                        changed from the {t.projectLower}&apos;s Access panel.
                     </p>
                 ) : null}
 

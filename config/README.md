@@ -41,9 +41,15 @@ it as the spec both per-app config modules follow.
 
 Both `oss` profiles (the only ones with real values) currently customize:
 
-- **Branding**: app name, tagline, canonical app URL, marketing/landing URL, and an
-  optional `markSrc` brand glyph for the logo lockup (frontend); the name the AI
-  assistant refers to itself as in system prompts (backend).
+- **Branding**: app name, tagline, canonical app URL, marketing/landing URL, an
+  optional `markSrc` brand glyph for the logo lockup and an optional `iconSrc` browser
+  tab icon (frontend); the name the AI assistant refers to itself as in system prompts
+  (backend).
+- **Terminology** (frontend): the user-visible nouns for the workspace container
+  (`project`, `projects`, `projectLower`, `projectsLower`) and the label of its client
+  reference field (`referenceNumber`). OSS says "Project" and "CM number";
+  `libris-colleague` says "Matter" and "Matter number". Only copy reads these; routes
+  (`/projects`), identifiers, API fields and test ids are never renamed.
 - **Theme** (frontend, CSS only): `app/layout.tsx` stamps the active profile id onto
   `<html data-profile="...">`, and a profile may ship a stylesheet under
   `frontend/src/app/themes/<id>.css` that overrides design tokens (Tailwind colour

@@ -71,7 +71,7 @@ export type UserPersonalisation = {
 const PRACTICE_SETTING_LABELS: Record<string, string> = {
   private_practice: "Private practice",
   in_house: "In-house",
-  not_practising: "Not a practising attorney",
+  not_practising: "Not currently practising",
 };
 
 /**

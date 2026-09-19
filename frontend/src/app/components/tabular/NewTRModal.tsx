@@ -32,7 +32,9 @@ import {
     type PendingDirectGrant,
 } from "../modals/CreateAccessStep";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { appConfig } from "@/config";
 
+const t = appConfig.terminology;
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {
     if (isDev) console.log(...args);
@@ -371,7 +373,7 @@ export function NewTRModal({
                   project.name +
                   (project.cm_number ? ` (#${project.cm_number})` : ""),
           }))
-        : [{ value: "", label: "No projects found" }];
+        : [{ value: "", label: `No ${t.projectsLower} found` }];
 
     // What to show in the directory depends on mode and toggle state
     const directoryDocuments = isProjectMode
@@ -393,7 +395,7 @@ export function NewTRModal({
     const breadcrumbs =
         isProjectMode && projectName
             ? [
-                  "Projects",
+                  t.projects,
                   `${projectName}${projectCmNumber ? ` (#${projectCmNumber})` : ""}`,
                   "New Tabular Review",
               ]
@@ -552,7 +554,7 @@ export function NewTRModal({
                         {/* Create under a project toggle */}
                         {!isProjectMode && (
                             <div className="space-y-3">
-                                <FieldLabel as="p">Project</FieldLabel>
+                                <FieldLabel as="p">{t.project}</FieldLabel>
                                 <ToggleSwitchUI
                                     checked={underProject}
                                     onCheckedChange={(next) => {
@@ -565,7 +567,7 @@ export function NewTRModal({
                                         }
                                     }}
                                 >
-                                    Create under a project
+                                    Create under a {t.projectLower}
                                 </ToggleSwitchUI>
 
                                 {underProject && (

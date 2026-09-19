@@ -598,10 +598,13 @@ export type PracticeSetting =
     "private_practice" | "in_house" | "not_practising";
 
 export type ProfessionalTitle =
+    | "Principal"
     | "Partner"
+    | "Special Counsel"
     | "Senior Associate"
     | "Associate"
     | "Law Clerk"
+    | "Paralegal"
     | "Counsel"
     | "General Counsel"
     | "Legal Counsel"

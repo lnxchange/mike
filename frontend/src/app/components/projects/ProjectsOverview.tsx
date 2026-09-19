@@ -66,6 +66,12 @@ import { TabPillButtonUI } from "@/shared/ui/TabPillButtonUI";
 import { useQueryParamTab } from "@/app/hooks/useQueryParamTab";
 import { LIQUID_GLASS_FLOAT_CLASS } from "@/shared/ui/LiquidGlassUI";
 import { AccessScopeLabel } from "@/app/components/shared/AccessScopeLabel";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
+// Column header and sort label: "CM number" becomes "CM", "Matter number"
+// becomes "Matter".
+const REFERENCE_SHORT = t.referenceNumber.replace(/\s+number$/i, "");
 
 function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -177,7 +183,7 @@ export function ProjectsOverview() {
         ownerUserIdFilter: ownerFilter,
         sort,
     });
-    const loadError = loadErrorObj ? "Could not load projects." : null;
+    const loadError = loadErrorObj ? `Could not load ${t.projectsLower}.` : null;
     const effectiveLoading = loading && !previewEmptyStates;
     const visibleProjects = useMemo(
         () => (previewEmptyStates ? [] : projects),
@@ -275,7 +281,7 @@ export function ProjectsOverview() {
         sort?.key === "created" ? sort.direction : null;
     const nameFilterButton = (
         <TableFilters
-            label="Sort by project name"
+            label={`Sort by ${t.projectLower} name`}
             value={nameSortDirection}
             allLabel="Default Order"
             widthClassName="w-40"
@@ -299,7 +305,7 @@ export function ProjectsOverview() {
     );
     const cmFilterButton = (
         <TableFilters
-            label="Sort by CM"
+            label={`Sort by ${REFERENCE_SHORT}`}
             value={cmSortDirection}
             allLabel="Default Order"
             widthClassName="w-40"
@@ -381,7 +387,7 @@ export function ProjectsOverview() {
         // mistaken for an outsider just because they did not create it.
         if (!can(roleFrom(detailsProject), "access.manage")) {
             setOwnerOnlyAction({
-                action: "edit project details",
+                action: `edit ${t.projectLower} details`,
                 contacts: detailsProject.admin_contacts,
             });
             return;
@@ -436,7 +442,7 @@ export function ProjectsOverview() {
             setActionError(
                 userFacingApiError(
                     error,
-                    "This project could not be deleted. Please try again.",
+                    `This ${t.projectLower} could not be deleted. Please try again.`,
                 ),
             );
         }
@@ -495,7 +501,7 @@ export function ProjectsOverview() {
                     .map((project) => project?.admin_contacts),
             );
             setOwnerOnlyAction({
-                action: `delete ${blocked} of the selected projects — only a project owner can delete a project`,
+                action: `delete ${blocked} of the selected ${t.projectsLower} — only a ${t.projectLower} owner can delete a ${t.projectLower}`,
                 contacts: blockedContacts,
             });
         }
@@ -533,17 +539,17 @@ export function ProjectsOverview() {
                         type: "search",
                         value: search,
                         onChange: setSearch,
-                        placeholder: "Search projects…",
+                        placeholder: `Search ${t.projectsLower}…`,
                     },
                     {
                         type: "new",
                         onClick: () => setModalOpen(true),
-                        title: "New project",
+                        title: `New ${t.projectLower}`,
                     },
                 ]}
             >
                 <h1 className="text-2xl font-medium font-serif text-gray-900">
-                    Projects
+                    {t.projects}
                 </h1>
             </PageHeader>
 
@@ -580,7 +586,7 @@ export function ProjectsOverview() {
                                     }}
                                     onChange={toggleAll}
                                     className={TABLE_CHECKBOX_CLASS}
-                                    aria-label="Select all projects"
+                                    aria-label={`Select all ${t.projectsLower}`}
                                 />
                             )}
                             <span className="mr-1">Name</span>
@@ -592,7 +598,7 @@ export function ProjectsOverview() {
                         </TableHeaderCell>
                         <TableHeaderCell className="w-32">
                             <div className="flex items-center gap-1">
-                                <span>CM</span>
+                                <span>{REFERENCE_SHORT}</span>
                                 {!loading && cmFilterButton}
                             </div>
                         </TableHeaderCell>
@@ -680,7 +686,7 @@ export function ProjectsOverview() {
                     <TableEmptyState>
                         <EmptyState
                             icon={<OpenProjectSvgIcon />}
-                            title="Projects"
+                            title={t.projects}
                             description={loadError}
                             tone="error"
                             action={
@@ -698,13 +704,13 @@ export function ProjectsOverview() {
                     <TableEmptyState>
                         {activeFilter === "shared" ? (
                             <p className="text-sm text-gray-400">
-                                No shared projects
+                                No shared {t.projectsLower}
                             </p>
                         ) : (
                             <EmptyState
                                 icon={<OpenProjectSvgIcon />}
-                                title="Projects"
-                                description="Upload documents into projects and to commence chats and tabular reviews with them."
+                                title={t.projects}
+                                description={`Upload documents into ${t.projectsLower} and to commence chats and tabular reviews with them.`}
                                 action={
                                     <PillButtonUI
                                         tone="black"
@@ -771,7 +777,7 @@ export function ProjectsOverview() {
                                             }
                                             deleteLabel={
                                                 appliesToSelection
-                                                    ? `Delete ${actionIds.length} projects`
+                                                    ? `Delete ${actionIds.length} ${t.projectsLower}`
                                                     : undefined
                                             }
                                         />
@@ -962,8 +968,8 @@ export function ProjectsOverview() {
             />
             <ConfirmPopup
                 open={confirmDeleteAllOpen && selectedIds.length > 0}
-                title="Delete all selected projects?"
-                message={`This will permanently delete every selected project you administer, including selected projects not currently shown. Every file within those projects will also be deleted. Projects you cannot delete will be skipped. ${selectedIds.length} projects are selected.`}
+                title={`Delete all selected ${t.projectsLower}?`}
+                message={`This will permanently delete every selected ${t.projectLower} you administer, including selected ${t.projectsLower} not currently shown. Every file within those ${t.projectsLower} will also be deleted. ${t.projects} you cannot delete will be skipped. ${selectedIds.length} ${t.projectsLower} are selected.`}
                 confirmLabel="Delete"
                 confirmVariant="danger"
                 onCancel={() => setConfirmDeleteAllOpen(false)}

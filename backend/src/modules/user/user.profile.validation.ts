@@ -17,10 +17,13 @@ const PRACTICE_SETTINGS = new Set([
 ]);
 
 const PROFESSIONAL_TITLES = new Set([
+    "Principal",
     "Partner",
+    "Special Counsel",
     "Senior Associate",
     "Associate",
     "Law Clerk",
+    "Paralegal",
     "Counsel",
     "General Counsel",
     "Legal Counsel",

@@ -7,6 +7,7 @@ import { VersionChip } from "@/app/components/shared/VersionChip";
 import type { Document } from "@/app/components/shared/types";
 import type { TabDropPosition } from "@/app/lib/reorderTabs";
 import { cn } from "@/app/lib/utils";
+import { appConfig } from "@/config";
 
 const TAB_DRAG_TYPE = "application/mike-project-document-tab";
 
@@ -96,7 +97,7 @@ export function ProjectDocumentTabs({
     return (
         <div
             role="tablist"
-            aria-label="Project documents"
+            aria-label={`${appConfig.terminology.project} documents`}
             className="project-document-tabs flex h-10 min-w-0 shrink-0 items-end gap-1 overflow-x-auto bg-app-surface px-1 pt-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
         >
             {tabs.length === 0 ? (

@@ -4,11 +4,15 @@
 captures an architecture decision made before implementation starts, so the build follows
 the intended shape from the first commit instead of being refactored into it later.
 
-**Current blocker (as of 2026-09-18): whether this plan is viable at all is now an open
-question**, not just its implementation details — see "Coordination with the existing
-Libris/Attune email-filer tool" below for a stated Microsoft-native-first / containment
-concern from the adjacent Back Office codebase that may conflict with pulling matter
-documents into Mike's stack. Needs a human decision before implementation starts.
+**Decision (2026-09-20, Yule Guttenbeil): approved.** The containment question raised
+on 2026-09-18 (below, under "Coordination with the existing Libris/Attune email-filer
+tool") has been settled: this deployment operates as a deliberate exception to the
+Libris Microsoft-native boundary. The instance stays outside the Microsoft
+organisation, on infrastructure already provisioned and assessed as secure to the
+standard of any SaaS service the firm uses. The sync must integrate with Zoho as well as
+SharePoint, since Zoho is the matter system of record. Implementation is scheduled after
+the upload, email, terminology and branding work has been tested; detailed planning
+happens then, starting from the design below.
 
 This is Attune Legal / mode.law-specific planning, not general OSS guidance — it lives
 under `docs/integrations/` (rather than the root-level docs) to keep it clearly separated
