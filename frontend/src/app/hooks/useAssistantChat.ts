@@ -2145,6 +2145,80 @@ export function useAssistantChat({
               continue;
             }
 
+            if (data.type === "doc_finalized_start") {
+              pushEvent({
+                type: "doc_finalized",
+                filename: data.filename as string,
+                source_filename: data.filename as string,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "doc_finalized") {
+              const sourceFilename =
+                typeof data.source_filename === "string"
+                  ? (data.source_filename as string)
+                  : (data.filename as string);
+              const replaced = updateMatchingEvent(
+                (e) =>
+                  e.type === "doc_finalized" &&
+                  e.source_filename === sourceFilename &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "doc_finalized",
+                  filename: data.filename as string,
+                  source_filename: sourceFilename,
+                  document_id:
+                    typeof data.document_id === "string" && data.document_id
+                      ? (data.document_id as string)
+                      : undefined,
+                  version_id:
+                    typeof data.version_id === "string" && data.version_id
+                      ? (data.version_id as string)
+                      : undefined,
+                  version_number:
+                    typeof data.version_number === "number"
+                      ? (data.version_number as number)
+                      : null,
+                  source_document_id:
+                    typeof data.source_document_id === "string"
+                      ? (data.source_document_id as string)
+                      : undefined,
+                  download_url:
+                    typeof data.download_url === "string"
+                      ? (data.download_url as string)
+                      : undefined,
+                  accepted:
+                    typeof data.accepted === "number"
+                      ? (data.accepted as number)
+                      : undefined,
+                  comments_removed:
+                    typeof data.comments_removed === "number"
+                      ? (data.comments_removed as number)
+                      : undefined,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              if (!replaced) {
+                pushEvent({
+                  type: "doc_finalized",
+                  filename: data.filename as string,
+                  source_filename: sourceFilename,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                });
+              }
+              pushThinkingPlaceholder();
+              continue;
+            }
+
             if (data.type === "doc_replicate_start") {
               pushEvent({
                 type: "doc_replicated",

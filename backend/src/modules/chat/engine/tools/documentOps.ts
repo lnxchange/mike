@@ -3,6 +3,7 @@ import {
   downloadFile,
   extractedTextKey,
   generatedDocKey,
+  storageKey,
   uploadFile,
 } from "../../../../lib/storage";
 import { convertedPdfKey, docxToPdf } from "../../../../lib/convert";
@@ -11,9 +12,12 @@ import { enqueueDbJob, enqueueStorageCleanup } from "../../../../lib/dbq/enqueue
 import type { Db } from "../../../../lib/supabase";
 import { profileAttributionName } from "../../../../lib/userLookup";
 import {
+  acceptAllTrackedChanges,
   applyTrackedEdits,
   extractDocxBodyText,
+  listTrackedChanges,
   type EditInput,
+  type TrackedMarkupSummary,
 } from "../../../../lib/docxTrackedChanges";
 import { buildDownloadUrl } from "../../../../lib/downloadTokens";
 import {
@@ -1101,6 +1105,208 @@ export async function loadCurrentVersionBytes(
   return { bytes: Buffer.from(raw), storage_path: active.storage_path };
 }
 
+/** Pending changes listed per read; the rest is summarised as a count. */
+export const TRACKED_CHANGES_LIST_LIMIT = 60;
+
+/**
+ * What read_document appends below a Word document's body text so the model
+ * can tell existing redline from body text. The body above is the accepted
+ * view, so without this a pending insertion is indistinguishable from
+ * settled text and a pending deletion is invisible.
+ */
+export function formatTrackedChangesSection(
+  summary: TrackedMarkupSummary,
+): string {
+  const pending =
+    summary.changes.length + summary.moves + summary.propertyChanges;
+  if (pending === 0 && summary.comments === 0) {
+    return "\n\n--- TRACKED CHANGES: none. This document carries no redline or comments. ---";
+  }
+  const lines: string[] = [
+    "",
+    "",
+    `--- TRACKED CHANGES (${pending} pending${summary.comments ? `, ${summary.comments} comment${summary.comments === 1 ? "" : "s"}` : ""}) ---`,
+    "The body text above is the accepted view: pending insertions appear as body text and pending deletions are omitted. The redline still in the file, in document order:",
+  ];
+  const shown = summary.changes.slice(0, TRACKED_CHANGES_LIST_LIMIT);
+  shown.forEach((change, index) => {
+    const who = change.author ?? "unknown author";
+    const when = change.date ? `, ${change.date.slice(0, 10)}` : "";
+    const text = change.text.replace(/\s+/g, " ").trim();
+    const clipped = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+    lines.push(`${index + 1}. [${change.kind}] ${who}${when}: "${clipped}"`);
+  });
+  if (summary.changes.length > shown.length) {
+    lines.push(`… and ${summary.changes.length - shown.length} more insertions/deletions.`);
+  }
+  const extras: string[] = [];
+  if (summary.propertyChanges) {
+    extras.push(
+      `${summary.propertyChanges} formatting change${summary.propertyChanges === 1 ? "" : "s"}`,
+    );
+  }
+  if (summary.moves) extras.push(`${summary.moves} moved block${summary.moves === 1 ? "" : "s"}`);
+  if (summary.comments) extras.push(`${summary.comments} comment${summary.comments === 1 ? "" : "s"}`);
+  if (extras.length) lines.push(`Also present: ${extras.join(", ")}.`);
+  lines.push(
+    "To produce a clean copy with all of this accepted and comments removed, call finalize_document. To produce a markup that shows only your own changes, call finalize_document first and then edit_document on the clean copy.",
+  );
+  return lines.join("\n");
+}
+
+export type DocFinalizedResult = {
+  filename: string;
+  document_id: string;
+  version_id: string;
+  version_number: number;
+  source_document_id: string;
+  source_filename: string;
+  download_url: string;
+  accepted: number;
+  comments_removed: number;
+  error?: string;
+};
+
+/** The clean copy's name: caller's choice, or the source stem plus "(clean)". */
+export function cleanCopyFilename(
+  sourceFilename: string,
+  requested: string | null,
+): string {
+  const stem = (requested?.trim() || sourceFilename).replace(/\.[^./\\]+$/, "");
+  const base = requested?.trim() ? stem : `${stem} (clean)`;
+  return `${base}.docx`;
+}
+
+/**
+ * Accept every tracked change in the source's active version and save the
+ * result as a new document beside it. The source is left as it is, redline
+ * and all, so the markup and the execution copy can travel together.
+ */
+export async function runFinalizeDocument(params: {
+  sourceDocumentId: string;
+  sourceFilename: string;
+  userId: string;
+  projectId: string | null;
+  newFilename: string | null;
+  db: Db;
+}): Promise<
+  | ({ ok: true } & DocFinalizedResult)
+  | { ok: false; error: string }
+> {
+  const { sourceDocumentId, sourceFilename, userId, projectId, newFilename, db } =
+    params;
+  const current = await loadCurrentVersionBytes(sourceDocumentId, db);
+  if (!current) return { ok: false, error: "Could not load document bytes." };
+
+  let accepted: Awaited<ReturnType<typeof acceptAllTrackedChanges>>;
+  try {
+    accepted = await acceptAllTrackedChanges(current.bytes);
+  } catch (err) {
+    devLog("[finalize_document] accept-all failed", err);
+    return { ok: false, error: "The document's tracked changes could not be accepted." };
+  }
+
+  const filename = cleanCopyFilename(sourceFilename, newFilename);
+  const documentId = crypto.randomUUID();
+  const key = storageKey(userId, documentId, filename);
+  const clean = accepted.bytes;
+  const ab = clean.buffer.slice(
+    clean.byteOffset,
+    clean.byteOffset + clean.byteLength,
+  ) as ArrayBuffer;
+  await uploadFile(
+    key,
+    ab,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  );
+
+  let pdfKey: string | null = null;
+  let deferConversion = false;
+  if (process.env.ASYNC_DOCUMENT_CONVERSION === "true") {
+    deferConversion = true;
+  } else {
+    try {
+      const pdf = await docxToPdf(clean);
+      pdfKey = convertedPdfKey(userId, documentId);
+      await uploadFile(
+        pdfKey,
+        pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) as ArrayBuffer,
+        "application/pdf",
+      );
+    } catch (err) {
+      devLog(`[finalize_document] PDF rendition failed for ${filename}:`, err);
+      pdfKey = null;
+    }
+  }
+
+  const { error: docErr } = await db.from("documents").insert({
+    id: documentId,
+    project_id: projectId,
+    user_id: userId,
+    status: "ready",
+    library_kind: "file",
+    library_folder_id: null,
+  });
+  if (docErr) {
+    void enqueueStorageCleanup(db, [key, ...(pdfKey ? [pdfKey] : [])]).catch(
+      () => {},
+    );
+    return { ok: false, error: "Failed to record the clean copy." };
+  }
+  const { data: versionRow, error: verErr } = await createDocumentVersion(db, {
+    document_id: documentId,
+    storage_path: key,
+    pdf_storage_path: pdfKey,
+    source: "upload",
+    version_number: 1,
+    filename,
+    file_type: "docx",
+    size_bytes: clean.byteLength,
+    page_count: null,
+    content_sha256: contentSha256(clean),
+  });
+  if (verErr || !versionRow) {
+    await db.from("documents").delete().eq("id", documentId);
+    return { ok: false, error: "Failed to record the clean copy's version." };
+  }
+  if (deferConversion) {
+    try {
+      await enqueueConversion({
+        documentId,
+        versionId: versionRow.id,
+        userId,
+        storagePath: key,
+        fileType: "docx",
+        pdfKey: convertedPdfKey(userId, documentId),
+        finalizeDocumentStatus: false,
+      });
+    } catch (err) {
+      devLog(`[finalize_document] rendition enqueue failed for ${filename}:`, err);
+    }
+  }
+
+  // The assistant's own pending edit cards on the source are now settled in
+  // the clean copy; mark them so the UI stops offering Accept/Reject for it.
+  await db
+    .from("document_edits")
+    .update({ status: "accepted" })
+    .eq("document_id", sourceDocumentId)
+    .eq("status", "pending");
+
+  return {
+    ok: true,
+    filename,
+    document_id: documentId,
+    version_id: versionRow.id,
+    version_number: versionRow.version_number,
+    source_document_id: sourceDocumentId,
+    source_filename: sourceFilename,
+    download_url: buildDownloadUrl(key, filename),
+    accepted: accepted.accepted + accepted.propertyChangesAccepted,
+    comments_removed: accepted.commentsRemoved,
+  };
+}
+
 /**
  * Ensure the document has a document_versions row for the current upload.
  * Called before writing the first 'assistant_edit' row so the history is
@@ -1426,6 +1632,7 @@ export async function readDocumentContent(
     readIdentity?.versionId ?? docIndex?.[docLabel]?.version_id ?? null;
   const versionNumber =
     readIdentity?.versionNumber ?? docIndex?.[docLabel]?.version_number ?? null;
+  let trackedChangeCount: number | null = null;
   const emitDocRead = () => {
     if (!emitEvents) return;
     write(
@@ -1435,6 +1642,9 @@ export async function readDocumentContent(
         document_id: readIdentity?.documentId ?? documentId,
         version_id: versionId,
         version_number: versionNumber,
+        ...(trackedChangeCount !== null
+          ? { tracked_change_count: trackedChangeCount }
+          : {}),
       })}\n\n`,
     );
   };
@@ -1523,6 +1733,18 @@ export async function readDocumentContent(
       devLog(
         `[read_document] docx extractDocxBodyText length=${text.length} for filename="${docInfo.filename}"`,
       );
+      // Only the model-facing read carries the redline inventory;
+      // find_in_document searches the body text alone.
+      if (text && emitEvents) {
+        try {
+          const markup = await listTrackedChanges(Buffer.from(raw));
+          trackedChangeCount =
+            markup.changes.length + markup.moves + markup.propertyChanges;
+          text += formatTrackedChangesSection(markup);
+        } catch (err) {
+          devLog(`[read_document] tracked-change inventory failed`, err);
+        }
+      }
       if (!text) {
         devLog(
           `[read_document] docx accepted-view extractor returned empty, falling back to mammoth for filename="${docInfo.filename}"`,

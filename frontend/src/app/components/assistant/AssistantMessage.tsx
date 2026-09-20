@@ -24,6 +24,7 @@ import {
     DocCreatedBlock,
     DocDownloadBlock,
     DocEditBlock,
+    DocFinalizedBlock,
     DocFindBlock,
     DocReadBlock,
     DocReplicatedBlock,
@@ -562,6 +563,33 @@ export function AssistantMessage({
                                       documentId: event.document_id,
                                       filename: event.filename,
                                       versionId: event.version_id || null,
+                                      versionNumber:
+                                          event.version_number ?? null,
+                                  })
+                            : undefined
+                    }
+                />
+            );
+        }
+        if (event.type === "doc_finalized") {
+            return (
+                <DocFinalizedBlock
+                    key={globalIdx}
+                    filename={event.filename}
+                    sourceFilename={event.source_filename}
+                    accepted={event.accepted}
+                    isStreaming={event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                    onClick={
+                        !event.isStreaming &&
+                        event.document_id &&
+                        onOpenDocument
+                            ? () =>
+                                  onOpenDocument({
+                                      documentId: event.document_id!,
+                                      filename: event.filename,
+                                      versionId: event.version_id ?? null,
                                       versionNumber:
                                           event.version_number ?? null,
                                   })

@@ -17,6 +17,7 @@
 export const DOCUMENT_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "edit_document",
   "replicate_document",
+  "finalize_document",
   "generate_docx",
   "generate_excel",
   "generate_ppt",
@@ -515,6 +516,29 @@ export const TOOLS = [
           },
         },
         required: ["doc_id", "edits"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "finalize_document",
+      description:
+        "Accept every tracked change in a .docx and remove its comments, saving the result as a new clean document beside the source (the source keeps its redline). Use this for an execution-ready or clean version. To produce a markup that shows only your own changes on top of the other side's draft, call finalize_document on their draft first, then edit_document on the clean copy. read_document lists the pending changes in a TRACKED CHANGES section so you can see what will be accepted. Returns the new doc_id for read_document and edit_document.",
+      parameters: {
+        type: "object",
+        properties: {
+          doc_id: {
+            type: "string",
+            description: "Chat-local ID of the marked-up .docx (e.g. 'doc-0').",
+          },
+          new_filename: {
+            type: "string",
+            description:
+              "Filename for the clean copy. Defaults to the source name with ' (clean)' appended. The .docx extension is forced.",
+          },
+        },
+        required: ["doc_id"],
       },
     },
   },

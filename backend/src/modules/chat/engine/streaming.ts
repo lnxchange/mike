@@ -574,6 +574,7 @@ export async function runLLMStream(params: {
           docsReplicated,
           workflowsApplied,
           docsEdited,
+          docsFinalized,
           askInputsEvents,
           courtlistenerEvents,
           caseCitationEvents,
@@ -655,6 +656,20 @@ export async function runLLMStream(params: {
             version_number: e.version_number,
             download_url: e.download_url,
             annotations: e.annotations,
+          });
+        }
+        for (const f of docsFinalized) {
+          events.push({
+            type: "doc_finalized",
+            filename: f.filename,
+            document_id: f.document_id,
+            version_id: f.version_id,
+            version_number: f.version_number,
+            source_document_id: f.source_document_id,
+            source_filename: f.source_filename,
+            download_url: f.download_url,
+            accepted: f.accepted,
+            comments_removed: f.comments_removed,
           });
         }
         for (const askInputsEvent of askInputsEvents) {

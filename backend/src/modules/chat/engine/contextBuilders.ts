@@ -184,6 +184,11 @@ export async function enrichWithPriorEvents(
       );
     } else if (ev?.type === "doc_edited") {
       lines.push(`- edit_document → ${refFor(ev.document_id, ev.filename)}`);
+    } else if (ev?.type === "doc_finalized") {
+      const src = refFor(ev.source_document_id, ev.source_filename);
+      lines.push(
+        `- finalize_document → ${refFor(ev.document_id, ev.filename)} (clean copy of ${src}, all changes accepted)`,
+      );
     } else if (ev?.type === "doc_read") {
       // Live Word reads have no doc_id and belong to a different tool;
       // labeling them read_document would name a handle that doesn't exist.
@@ -807,7 +812,9 @@ export async function buildDocContext(
       if (!Array.isArray(content)) continue;
       for (const ev of content as Record<string, unknown>[]) {
         if (
-          (ev?.type === "doc_created" || ev?.type === "doc_edited") &&
+          (ev?.type === "doc_created" ||
+            ev?.type === "doc_edited" ||
+            ev?.type === "doc_finalized") &&
           typeof ev.document_id === "string"
         ) {
           documentIds.add(ev.document_id);

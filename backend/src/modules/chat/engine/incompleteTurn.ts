@@ -4,6 +4,7 @@ const DELIVERABLE_EVENT_TYPES = new Set([
   "doc_created",
   "doc_edited",
   "doc_replicated",
+  "doc_finalized",
   "ask_inputs",
 ]);
 

@@ -416,6 +416,22 @@ export type AssistantEvent =
       document_id?: string;
       version_id?: string | null;
       version_number?: number | null;
+      /** Pending redline found in a Word file at read time. */
+      tracked_change_count?: number;
+    }
+  | {
+      /** A clean copy of a marked-up Word file: all changes accepted, comments removed. */
+      type: "doc_finalized";
+      /** The clean copy's filename. */
+      filename: string;
+      document_id: string;
+      version_id: string;
+      version_number: number | null;
+      source_document_id: string;
+      source_filename: string;
+      download_url: string;
+      accepted: number;
+      comments_removed: number;
     }
   | {
       type: "doc_find";

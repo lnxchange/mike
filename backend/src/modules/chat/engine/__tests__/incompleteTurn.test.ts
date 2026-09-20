@@ -49,6 +49,26 @@ describe("isIncompleteDeliverableTurn", () => {
     ).toBe(false);
   });
 
+  it("accepts a turn that finalised a clean copy", () => {
+    expect(
+      isIncompleteDeliverableTurn([
+        read("msa.docx"),
+        {
+          type: "doc_finalized",
+          filename: "msa (clean).docx",
+          document_id: "clean",
+          version_id: "v1",
+          version_number: 1,
+          source_document_id: "src",
+          source_filename: "msa.docx",
+          download_url: "/x",
+          accepted: 4,
+          comments_removed: 0,
+        },
+      ]),
+    ).toBe(false);
+  });
+
   it("leaves ordinary chat turns alone", () => {
     expect(
       isIncompleteDeliverableTurn([

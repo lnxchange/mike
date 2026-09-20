@@ -280,6 +280,28 @@ export type AssistantEvent =
       isStreaming?: boolean;
     })
   | (Omit<
+      WireActivity<"doc_finalized">,
+      | "document_id"
+      | "version_id"
+      | "version_number"
+      | "source_document_id"
+      | "download_url"
+      | "accepted"
+      | "comments_removed"
+      | "error"
+      | "isStreaming"
+    > & {
+      document_id?: string;
+      version_id?: string;
+      version_number?: number | null;
+      source_document_id?: string;
+      download_url?: string;
+      accepted?: number;
+      comments_removed?: number;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
       WireActivity<"courtlistener_search_case_law">,
       "result_count" | "error" | "isStreaming"
     > & { result_count?: number; error?: string; isStreaming?: boolean })

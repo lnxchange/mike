@@ -711,6 +711,46 @@ export function CourtListenerBlock({
     );
 }
 
+export function DocFinalizedBlock({
+    filename,
+    sourceFilename,
+    accepted,
+    showConnector,
+    isStreaming,
+    hasError,
+    onClick,
+}: {
+    filename: string;
+    sourceFilename?: string;
+    accepted?: number;
+    showConnector?: boolean;
+    isStreaming?: boolean;
+    hasError?: boolean;
+    onClick?: () => void;
+}) {
+    const label = isStreaming
+        ? "Finalising"
+        : hasError
+          ? "Finalise failed"
+          : "Clean copy";
+    const detail =
+        !isStreaming && !hasError && typeof accepted === "number"
+            ? `${accepted} change${accepted === 1 ? "" : "s"} accepted from ${sourceFilename ?? "the marked-up file"}`
+            : undefined;
+
+    return (
+        <DocEditBlockUI
+            label={label}
+            filename={isStreaming ? sourceFilename ?? filename : filename}
+            detail={detail}
+            onClick={onClick}
+            showConnector={showConnector}
+            isStreaming={isStreaming}
+            dotColor={hasError ? "red" : "green"}
+        />
+    );
+}
+
 export function DocEditBlock({
     filename,
     showConnector,

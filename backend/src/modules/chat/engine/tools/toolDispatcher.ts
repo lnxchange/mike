@@ -85,8 +85,10 @@ import {
   findInDocumentContent,
   findTextMatches,
   runEditDocument,
+  runFinalizeDocument,
   safeGeneratedFilename,
   type DocEditedResult,
+  type DocFinalizedResult,
   type TurnEditState,
   type TurnReadState,
   type DocCreatedResult,
@@ -358,6 +360,7 @@ export async function runToolCalls(
   docsReplicated: DocReplicatedResult[];
   workflowsApplied: { workflow_id: string; title: string }[];
   docsEdited: DocEditedResult[];
+  docsFinalized: DocFinalizedResult[];
   askInputsEvents: AskInputsEvent[];
   courtlistenerEvents: CourtlistenerToolEvent[];
   caseCitationEvents: CaseCitationEvent[];
@@ -387,6 +390,7 @@ export async function runToolCalls(
   const docsReplicated: DocReplicatedResult[] = [];
   const workflowsApplied: { workflow_id: string; title: string }[] = [];
   const docsEdited: DocEditedResult[] = [];
+  const docsFinalized: DocFinalizedResult[] = [];
   const askInputsEvents: AskInputsEvent[] = [];
   const courtlistenerEvents: CourtlistenerToolEvent[] = [];
   const caseCitationEvents: CaseCitationEvent[] = [];
@@ -2952,6 +2956,112 @@ export async function runToolCalls(
           fail("replicate_document failed");
         }
       }
+    } else if (tc.function.name === "finalize_document" && docIndex) {
+      const rawDocId = args.doc_id as string;
+      const requestedFilename =
+        typeof args.new_filename === "string" && args.new_filename.trim()
+          ? args.new_filename.trim()
+          : null;
+      const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+      const docInfo = docStore.get(docId);
+      const indexed = docIndex[docId];
+      const sourceFilename = docInfo?.filename ?? rawDocId;
+
+      write(
+        `data: ${JSON.stringify({
+          type: "doc_finalized_start",
+          filename: sourceFilename,
+        })}\n\n`,
+      );
+      const fail = (error: string) => {
+        write(
+          `data: ${JSON.stringify({
+            type: "doc_finalized",
+            filename: sourceFilename,
+            document_id: "",
+            version_id: "",
+            version_number: null,
+            source_document_id: indexed?.document_id ?? "",
+            source_filename: sourceFilename,
+            download_url: "",
+            accepted: 0,
+            comments_removed: 0,
+            error,
+          })}\n\n`,
+        );
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: false, error }),
+        });
+      };
+
+      if (!docInfo || !indexed) {
+        fail(`Document '${rawDocId}' is not available in this chat.`);
+      } else if (docInfo.file_type?.toLowerCase() !== "docx") {
+        fail("finalize_document only supports .docx files.");
+      } else if (
+        docInfo.source_kind === "library_template" ||
+        docInfo.source_kind === "workflow_asset"
+      ) {
+        fail(
+          "Templates and workflow assets carry no redline to accept. Call replicate_document to work from a copy.",
+        );
+      } else {
+        const result = await runFinalizeDocument({
+          sourceDocumentId: indexed.document_id,
+          sourceFilename: docInfo.filename,
+          userId,
+          projectId: projectId ?? null,
+          newFilename: requestedFilename,
+          db,
+        });
+        if (!result.ok) {
+          fail(result.error);
+        } else {
+          const existingLabels = new Set(Object.keys(docIndex));
+          let nextLabelIdx = 0;
+          while (existingLabels.has(`doc-${nextLabelIdx}`)) nextLabelIdx++;
+          const slug = `doc-${nextLabelIdx}`;
+          docIndex[slug] = {
+            document_id: result.document_id,
+            filename: result.filename,
+            version_id: result.version_id,
+            version_number: result.version_number,
+          };
+          docStore.set(slug, {
+            storage_path: storageKey(userId, result.document_id, result.filename),
+            file_type: "docx",
+            filename: result.filename,
+            source_kind: "document",
+          });
+          const { ok: _ok, ...payload } = result;
+          void _ok;
+          docsFinalized.push(payload);
+          write(
+            `data: ${JSON.stringify({ type: "doc_finalized", ...payload })}\n\n`,
+          );
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: true,
+              doc_id: slug,
+              document_id: result.document_id,
+              version_id: result.version_id,
+              filename: result.filename,
+              accepted: result.accepted,
+              comments_removed: result.comments_removed,
+              saved_to: projectId ? "project_documents" : "library_files",
+              next_required_action: [
+                `The clean copy is available as doc_id "${slug}"; the source "${docId}" still carries its redline.`,
+                `To show only your own changes, call edit_document on "${slug}".`,
+                `Do not include download links or URLs in your prose response; the document card is shown automatically by the UI.`,
+              ].join(" "),
+            }),
+          });
+        }
+      }
     } else if (tc.function.name === "generate_docx") {
       const title = args.title as string;
       const landscape = !!args.landscape;
@@ -3048,6 +3158,7 @@ export async function runToolCalls(
     docsReplicated,
     workflowsApplied,
     docsEdited,
+    docsFinalized,
     askInputsEvents,
     courtlistenerEvents,
     caseCitationEvents,

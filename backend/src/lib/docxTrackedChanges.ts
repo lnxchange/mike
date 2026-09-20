@@ -766,6 +766,325 @@ export async function extractTrackedChangeIds(
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Tracked-change inventory and accept-all
+// ---------------------------------------------------------------------------
+
+export interface TrackedChangeSummary {
+    w_id: string;
+    kind: "ins" | "del";
+    author: string | null;
+    date: string | null;
+    /** Text inside the wrapper (inserted text, or the deleted text). */
+    text: string;
+}
+
+export interface TrackedMarkupSummary {
+    /** Insertions and deletions in reading order, document body first. */
+    changes: TrackedChangeSummary[];
+    /** Formatting/property change records (w:rPrChange, w:pPrChange, ...). */
+    propertyChanges: number;
+    /** Tracked moves (w:moveFrom / w:moveTo wrappers). */
+    moves: number;
+    /** Comment anchors in the body. */
+    comments: number;
+}
+
+/** Text of every w:t / w:delText below a node, in order. */
+function collectRunText(n: XNode): string {
+    let out = "";
+    const visit = (node: XNode) => {
+        const name = elName(node);
+        if (!name) return;
+        if (name === "w:t" || name === "w:delText") {
+            out += getTextContent(node);
+            return;
+        }
+        if (name === "w:tab") out += "\t";
+        if (name === "w:br") out += "\n";
+        for (const c of elChildren(node)) visit(c);
+    };
+    visit(n);
+    return out;
+}
+
+const PROPERTY_CHANGE_TAGS = new Set([
+    "w:rPrChange",
+    "w:pPrChange",
+    "w:sectPrChange",
+    "w:tblPrChange",
+    "w:tblPrExChange",
+    "w:trPrChange",
+    "w:tcPrChange",
+    "w:tblGridChange",
+    "w:numberingChange",
+]);
+
+const MOVE_RANGE_TAGS = new Set([
+    "w:moveFromRangeStart",
+    "w:moveFromRangeEnd",
+    "w:moveToRangeStart",
+    "w:moveToRangeEnd",
+]);
+
+const COMMENT_ANCHOR_TAGS = new Set([
+    "w:commentRangeStart",
+    "w:commentRangeEnd",
+    "w:commentReference",
+]);
+
+/** Story parts that can carry tracked changes. */
+const STORY_PART_PATTERN =
+    /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/;
+
+function storyPartNames(zip: JSZip): string[] {
+    return Object.keys(zip.files)
+        .map((name) => name.replace(/\\/g, "/"))
+        .filter((name) => STORY_PART_PATTERN.test(name))
+        .sort((a, b) =>
+            a === "word/document.xml" ? -1 : b === "word/document.xml" ? 1 : a.localeCompare(b),
+        );
+}
+
+/**
+ * What is still marked up in the file: every pending insertion and deletion
+ * with its author, plus counts of the markup kinds the body text cannot
+ * show. Lets a reader tell existing redline from body text before deciding
+ * what "the latest round of changes" means.
+ */
+export async function listTrackedChanges(
+    bytes: Buffer,
+): Promise<TrackedMarkupSummary> {
+    const zip = await JSZip.loadAsync(bytes);
+    const summary: TrackedMarkupSummary = {
+        changes: [],
+        propertyChanges: 0,
+        moves: 0,
+        comments: 0,
+    };
+    const parser = createParser();
+    for (const partName of storyPartNames(zip)) {
+        const file = getZipEntry(zip, partName);
+        if (!file) continue;
+        const tree = parser.parse(await file.async("string")) as XNode[];
+        const visit = (n: unknown, inRunProps: boolean) => {
+            const name = elName(n);
+            if (!name) return;
+            if ((name === "w:ins" || name === "w:del") && !inRunProps) {
+                const a = elAttrs(n);
+                summary.changes.push({
+                    w_id: String(a["@_w:id"] ?? ""),
+                    kind: name === "w:ins" ? "ins" : "del",
+                    author: a["@_w:author"] != null ? String(a["@_w:author"]) : null,
+                    date: a["@_w:date"] != null ? String(a["@_w:date"]) : null,
+                    text: collectRunText(n as XNode),
+                });
+            } else if (PROPERTY_CHANGE_TAGS.has(name)) {
+                summary.propertyChanges += 1;
+            } else if (name === "w:moveFrom" || name === "w:moveTo") {
+                summary.moves += 1;
+            } else if (name === "w:commentRangeStart") {
+                summary.comments += 1;
+            }
+            const nextInRunProps = inRunProps || name === "w:rPr";
+            for (const c of elChildren(n as XNode)) visit(c, nextInRunProps);
+        };
+        for (const top of tree) visit(top, false);
+    }
+    return summary;
+}
+
+export interface AcceptAllResult {
+    bytes: Buffer;
+    /** Insertions, deletions and moves collapsed. */
+    accepted: number;
+    propertyChangesAccepted: number;
+    commentsRemoved: number;
+}
+
+/**
+ * Accept every tracked change and strip comments so the file reads as an
+ * execution copy: insertions and moved-to text become body text, deletions
+ * and moved-from text disappear, formatting change records are dropped, and
+ * comment anchors plus the comments parts are removed from the package.
+ *
+ * A deleted paragraph mark (w:del inside the paragraph's w:rPr) is accepted
+ * by joining the paragraph with the one that follows it.
+ */
+export async function acceptAllTrackedChanges(
+    bytes: Buffer,
+): Promise<AcceptAllResult> {
+    const zip = await JSZip.loadAsync(bytes);
+    const parser = createParser();
+    const builder = createBuilder();
+    const result: AcceptAllResult = {
+        bytes,
+        accepted: 0,
+        propertyChangesAccepted: 0,
+        commentsRemoved: 0,
+    };
+
+    const rewrite = (kids: XNode[], parentName: string | null): XNode[] => {
+        const out: XNode[] = [];
+        const inRunProps = parentName === "w:rPr";
+        for (const n of kids) {
+            const name = elName(n);
+            if (!name) {
+                out.push(n);
+                continue;
+            }
+            if (inRunProps && name === "w:ins") {
+                // An inserted paragraph mark or run: accepting it is dropping
+                // the marker.
+                result.accepted += 1;
+                continue;
+            }
+            if (inRunProps && name === "w:del") {
+                // A deleted paragraph mark is accepted by joining paragraphs
+                // afterwards, so the marker stays for that pass.
+                out.push(n);
+                continue;
+            }
+            if (name === "w:del" || name === "w:moveFrom") {
+                result.accepted += 1;
+                continue;
+            }
+            if (name === "w:ins" || name === "w:moveTo") {
+                result.accepted += 1;
+                out.push(...rewrite(elChildren(n), parentName));
+                continue;
+            }
+            if (MOVE_RANGE_TAGS.has(name)) continue;
+            if (PROPERTY_CHANGE_TAGS.has(name)) {
+                result.propertyChangesAccepted += 1;
+                continue;
+            }
+            if (name === "w:commentRangeStart" || name === "w:commentRangeEnd") {
+                if (name === "w:commentRangeStart") result.commentsRemoved += 1;
+                continue;
+            }
+            if (name === "w:r") {
+                const runKids = elChildren(n);
+                if (runKids.some((k) => elName(k) === "w:commentReference")) {
+                    const kept = runKids.filter(
+                        (k) => elName(k) !== "w:commentReference",
+                    );
+                    if (kept.every((k) => elName(k) === "w:rPr")) continue;
+                    setChildren(n, rewrite(kept, name));
+                    out.push(n);
+                    continue;
+                }
+            }
+            const children = elChildren(n);
+            if (children.length) setChildren(n, rewrite(children, name));
+            out.push(n);
+        }
+        return out;
+    };
+
+    const paragraphMarkRunProps = (p: XNode): XNode | undefined => {
+        const pPr = elChildren(p).find((k) => elName(k) === "w:pPr");
+        return pPr
+            ? elChildren(pPr).find((k) => elName(k) === "w:rPr")
+            : undefined;
+    };
+
+    /** w:del on a paragraph mark: fold the following paragraph into it. */
+    const joinDeletedParagraphMarks = (kids: XNode[]): XNode[] => {
+        const merged: XNode[] = [];
+        for (let i = 0; i < kids.length; i += 1) {
+            const n = kids[i];
+            const name = elName(n);
+            if (name !== "w:p") {
+                const children = elChildren(n);
+                if (name && children.length) {
+                    setChildren(n, joinDeletedParagraphMarks(children));
+                }
+                merged.push(n);
+                continue;
+            }
+            for (;;) {
+                const rPr = paragraphMarkRunProps(n);
+                const markDeleted =
+                    !!rPr && elChildren(rPr).some((k) => elName(k) === "w:del");
+                if (!markDeleted || !rPr) break;
+                result.accepted += 1;
+                setChildren(
+                    rPr,
+                    elChildren(rPr).filter((k) => elName(k) !== "w:del"),
+                );
+                const next = kids[i + 1];
+                if (!next || elName(next) !== "w:p") break;
+                const body = elChildren(next).filter((k) => elName(k) !== "w:pPr");
+                setChildren(n, [...elChildren(n), ...body]);
+                i += 1;
+                // The joined paragraph may itself carry a deleted mark.
+                const nextRPr = paragraphMarkRunProps(next);
+                if (
+                    nextRPr &&
+                    elChildren(nextRPr).some((k) => elName(k) === "w:del") &&
+                    rPr
+                ) {
+                    setChildren(rPr, [...elChildren(rPr), makeEl("w:del", [])]);
+                }
+            }
+            merged.push(n);
+        }
+        return merged;
+    };
+
+    for (const partName of storyPartNames(zip)) {
+        const file = getZipEntry(zip, partName);
+        if (!file) continue;
+        const tree = parser.parse(await file.async("string")) as XNode[];
+        for (const top of tree) {
+            const name = elName(top);
+            const children = elChildren(top);
+            if (!name || !children.length) continue;
+            setChildren(top, joinDeletedParagraphMarks(rewrite(children, name)));
+        }
+        setZipEntry(zip, partName, ensureXmlDeclaration(builder.build(tree)));
+    }
+
+    // Drop the comments parts and their wiring so nothing dangles.
+    const commentParts = Object.keys(zip.files).filter((name) =>
+        /^word\/comments(Extended|Ids|Extensible)?\.xml$/.test(
+            name.replace(/\\/g, "/"),
+        ),
+    );
+    for (const part of commentParts) zip.remove(part);
+    const rels = getZipEntry(zip, "word/_rels/document.xml.rels");
+    if (rels && commentParts.length) {
+        const relsXml = await rels.async("string");
+        setZipEntry(
+            zip,
+            "word/_rels/document.xml.rels",
+            relsXml.replace(
+                /<Relationship\b[^>]*Type="[^"]*\/comments(Extended|Ids|Extensible)?"[^>]*\/>/g,
+                "",
+            ),
+        );
+    }
+    const contentTypes = getZipEntry(zip, "[Content_Types].xml");
+    if (contentTypes && commentParts.length) {
+        const xml = await contentTypes.async("string");
+        setZipEntry(
+            zip,
+            "[Content_Types].xml",
+            xml.replace(
+                /<Override\b[^>]*PartName="\/word\/comments(Extended|Ids|Extensible)?\.xml"[^>]*\/>/g,
+                "",
+            ),
+        );
+    }
+
+    result.bytes = await zip.generateAsync({
+        type: "nodebuffer",
+        compression: "DEFLATE",
+    });
+    return result;
+}
+
 export async function applyTrackedEdits(
     bytes: Buffer,
     edits: EditInput[],

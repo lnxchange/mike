@@ -555,6 +555,12 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     edited.add(
                         `${ev.document_id}:${ev.version_id ?? ""}:${ev.version_number ?? ""}`,
                     );
+                    continue;
+                }
+                if (ev.type === "doc_finalized" && ev.document_id) {
+                    created.push(
+                        `${ev.document_id}:${ev.version_id ?? ""}:${ev.filename}`,
+                    );
                 }
             }
         }

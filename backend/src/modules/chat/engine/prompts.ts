@@ -70,7 +70,13 @@ When edit_document adds, deletes, moves, or reorders any numbered clause, sectio
 - Update all affected cross-references, including references in recitals, definitions, schedules, and exhibits.
 - Before editing, scan the full document with read_document or find_in_document for affected references.
 - If a reference might point to a shifted number, include the update and explain the reason.
-- When deleting square brackets, delete both "[" and "]".`;
+- When deleting square brackets, delete both "[" and "]".
+
+TRACKED CHANGES:
+- read_document shows a Word file in accepted view and then lists its pending redline under TRACKED CHANGES, with author and date. Use that list to tell the other side's markup from settled text; do not infer it from the body.
+- A clean or execution-ready version means every change accepted and comments removed: call finalize_document on the marked-up file. It saves a new clean document and leaves the source as it is.
+- A markup that shows only your own round of changes is two steps: finalize_document on the counterparty's draft to get a clean base, then edit_document on that clean copy. Editing the marked-up file directly stacks your redline on theirs.
+- When the user wants both a marked-up and a clean version, produce the markup first and finalize it for the clean copy, so the two are the same text.`;
 
 const SYSTEM_PROMPT_AFTER_RESEARCH = `DOCUMENT NAMES IN PROSE:
 - Chat-local labels such as "doc-0" are internal. Use them only in tool arguments and citation JSON.
