@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 function backendOrigin() {
     const configuredUrl = process.env.API_BASE_URL?.trim();

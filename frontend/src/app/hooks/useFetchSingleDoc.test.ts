@@ -9,6 +9,8 @@ const pdf = () =>
     new Response(new Uint8Array([1, 2]), {
         headers: { "Content-Type": "application/pdf" },
     });
+const pdfMagic = () =>
+    new Response(Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]));
 
 it("does not refetch stable inputs, refreshes revisions, and clears a closed document", async () => {
     vi.mocked(authenticatedFetch).mockImplementation(async () => pdf());
@@ -58,4 +60,11 @@ it("aborts superseded downloads and ignores late results", async () => {
     const latestSignal = vi.mocked(authenticatedFetch).mock.calls[1][1]?.signal;
     unmount();
     expect(latestSignal?.aborted).toBe(true);
+});
+
+it("treats a PDF magic header as a PDF when Content-Type is missing", async () => {
+    vi.mocked(authenticatedFetch).mockResolvedValue(pdfMagic());
+    const { result } = renderHook(() => useFetchSingleDoc("d1"));
+    await waitFor(() => expect(result.current.result?.type).toBe("pdf"));
+    expect(result.current.error).toBeNull();
 });
