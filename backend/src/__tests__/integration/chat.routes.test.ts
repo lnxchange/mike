@@ -48,6 +48,11 @@ const {
         // the eq/not/order/limit chain genuinely applied (a mini query
         // engine), so tests can prove which assistant row a query picks.
         assistantMessageRows: null as Record<string, unknown>[] | null,
+        // When set, claim_chat_turn reports another turn holding the chat.
+        turnInProgress: null as {
+            assistantMessageId: string;
+            startedAt: string;
+        } | null,
     },
 }));
 
@@ -229,6 +234,22 @@ function mockSupabase() {
     from: vi.fn((table: string) => makeQuery(table)),
     rpc: vi.fn((name: string, args: unknown) => {
       dbRpcCalls.push({ name, args });
+      if (name === "claim_chat_turn") {
+        const busy = dbControl.turnInProgress;
+        return Promise.resolve({
+          data: busy
+            ? [
+                {
+                  claimed: false,
+                  active_turn_id: "turn-existing",
+                  active_turn_message_id: busy.assistantMessageId,
+                  active_turn_started_at: busy.startedAt,
+                },
+              ]
+            : [{ claimed: true }],
+          error: null,
+        });
+      }
       return Promise.resolve({
         data: name.startsWith("append_chat_") ? "appended" : null,
         error: null,
@@ -358,11 +379,77 @@ describe("POST /chat — streaming endpoint", () => {
         dbControl.terminalUpdateGate = null;
         dbControl.wordChatMissing = false;
         dbControl.assistantMessageRows = null;
+        dbControl.turnInProgress = null;
         runLLMStream.mockResolvedValue({
             fullText: "hi there",
             events: [],
             citations: [],
         });
+    });
+
+    it("claims the chat for the turn and releases it when the stream ends", async () => {
+        const res = await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        const claim = dbRpcCalls.find((call) => call.name === "claim_chat_turn");
+        const release = dbRpcCalls.find(
+            (call) => call.name === "release_chat_turn",
+        );
+        expect(claim).toBeDefined();
+        expect(release).toBeDefined();
+        const claimArgs = claim!.args as Record<string, unknown>;
+        const releaseArgs = release!.args as Record<string, unknown>;
+        expect(claimArgs.p_chat_id).toBe("chat-1");
+        expect(typeof claimArgs.p_turn_id).toBe("string");
+        expect(claimArgs.p_assistant_message_id).toBe(
+            findAssistantReservation()!.value &&
+                (findAssistantReservation()!.value as { id: string }).id,
+        );
+        expect(releaseArgs.p_turn_id).toBe(claimArgs.p_turn_id);
+        expect(dbRpcCalls.indexOf(claim!)).toBeLessThan(
+            dbRpcCalls.indexOf(release!),
+        );
+    });
+
+    it("answers 409 turn_in_progress and discards the new user row while a turn holds the chat", async () => {
+        dbControl.turnInProgress = {
+            assistantMessageId: "asst-running",
+            startedAt: "2026-09-20T07:08:49.000Z",
+        };
+
+        const res = await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send({ ...VALID_BODY, chat_id: "chat-1" });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({
+            code: "turn_in_progress",
+            detail: "A reply is still being written in this chat.",
+            assistant_message_id: "asst-running",
+            started_at: "2026-09-20T07:08:49.000Z",
+        });
+        expect(runLLMStream).not.toHaveBeenCalled();
+        expect(findAssistantReservation()).toBeUndefined();
+        const mockedCreate = vi.mocked(createServerSupabase);
+        const dbs = mockedCreate.mock.results.map((r) => r.value as {
+            from: ReturnType<typeof vi.fn>;
+        });
+        const deleteCalled = dbs.some((db) =>
+            db.from.mock.results.some(
+                (r) =>
+                    (r.value as { delete: ReturnType<typeof vi.fn> }).delete.mock
+                        .calls.length > 0,
+            ),
+        );
+        expect(deleteCalled).toBe(true);
+        expect(
+            dbRpcCalls.some((call) => call.name === "release_chat_turn"),
+        ).toBe(false);
+        expect(releaseMemoryConversationTurn).toHaveBeenCalled();
     });
 
     it("streams SSE with a chat_id event on the happy path", async () => {

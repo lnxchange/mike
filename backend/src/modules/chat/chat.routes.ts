@@ -56,6 +56,10 @@ import {
     revokeChatAccess,
     updateChatSettings,
     updateChatTitle,
+    claimChatTurn,
+    discardChatInputMessage,
+    releaseChatTurn,
+    type ChatTurnLease,
 } from "./chat.service";
 
 export const chatRouter = Router();
@@ -509,6 +513,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     let chatTitle = prep.prepared.chatTitle;
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
     let memoryTurnScheduled = false;
+    let turnLease: ChatTurnLease | null = null;
 
     devLog("[chat/stream] starting LLM stream", {
         apiMessageCount: apiMessages.length,
@@ -517,6 +522,27 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     });
 
     try {
+        // One turn per chat. A second request while a turn is running would
+        // otherwise cancel it and run blind to its edits.
+        const turnMessageId =
+            assistantMessageId ?? askInputsResponse?.assistant_message_id ?? null;
+        if (turnMessageId) {
+            const claim = await claimChatTurn(db, {
+                chatId,
+                assistantMessageId: turnMessageId,
+            });
+            if (!claim.ok) {
+                await discardChatInputMessage(db, { chatId, inputMessageId });
+                return void res.status(409).json({
+                    code: "turn_in_progress",
+                    detail: "A reply is still being written in this chat.",
+                    assistant_message_id: claim.active.assistantMessageId,
+                    started_at: claim.active.startedAt,
+                });
+            }
+            turnLease = claim.lease;
+        }
+
         // Make the advertised identity durable before the response becomes an
         // SSE stream. If this reservation fails, return a normal HTTP error
         // while headers are still mutable; clients must never receive an ID
@@ -845,6 +871,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             stream.finish();
         }
     } finally {
+        if (turnLease) await releaseChatTurn(db, turnLease);
         if (memoryTurn && !memoryTurnScheduled) {
             try {
                 await releaseMemoryConversationTurn({

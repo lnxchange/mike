@@ -20,6 +20,19 @@ export {
 } from "./chat.sharing";
 export { updateChatSettings } from "./chat.settings";
 export { updateChatTitle, generateChatTitle } from "./chat.titles";
+export {
+  activeTurnFromChatRow,
+  claimChatTurn,
+  discardChatInputMessage,
+  heartbeatChatTurn,
+  releaseChatTurn,
+  requestChatTurnCancel,
+  CHAT_TURN_HEARTBEAT_MS,
+  CHAT_TURN_STALE_AFTER_SECONDS,
+  type ActiveChatTurn,
+  type ChatTurnLease,
+  type ClaimChatTurnResult,
+} from "./chat.turns";
 export { type PreparedChatStream, prepareChatStream } from "./chat.prepare";
 export {
   devLog,

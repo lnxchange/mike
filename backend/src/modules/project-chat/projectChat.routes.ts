@@ -30,6 +30,10 @@ import {
     parseOptionalDisplayedDoc,
     parseOptionalModel,
     parseOptionalReasoning,
+    claimChatTurn,
+    discardChatInputMessage,
+    releaseChatTurn,
+    type ChatTurnLease,
 } from "../chat/chat.service";
 import { generateAssistantChatTitle } from "../chat/chat.service";
 import { titleModelForChat } from "../../lib/modelSelection";
@@ -150,8 +154,30 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     let chatTitle = prep.prepared.chatTitle;
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
     let memoryTurnScheduled = false;
+    let turnLease: ChatTurnLease | null = null;
 
     try {
+        // One turn per chat. A second request while a turn is running would
+        // otherwise cancel it and run blind to its edits.
+        const turnMessageId =
+            assistantMessageId ?? askInputsResponse?.assistant_message_id ?? null;
+        if (turnMessageId) {
+            const claim = await claimChatTurn(db, {
+                chatId,
+                assistantMessageId: turnMessageId,
+            });
+            if (!claim.ok) {
+                await discardChatInputMessage(db, { chatId, inputMessageId });
+                return void res.status(409).json({
+                    code: "turn_in_progress",
+                    detail: "A reply is still being written in this chat.",
+                    assistant_message_id: claim.active.assistantMessageId,
+                    started_at: claim.active.startedAt,
+                });
+            }
+            turnLease = claim.lease;
+        }
+
         // The same SSE setup the chat and word-chat routes use: headers,
         // flush, an abort controller wired to the client hanging up, and a
         // write that drops a line raised after the response has ended.
@@ -425,6 +451,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             stream.finish();
         }
     } finally {
+        if (turnLease) await releaseChatTurn(db, turnLease);
         if (memoryTurn && !memoryTurnScheduled) {
             try {
                 await releaseMemoryConversationTurn({
