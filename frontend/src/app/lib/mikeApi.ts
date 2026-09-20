@@ -81,6 +81,9 @@ interface ServerMessage {
     workflow?: { id: string; title: string } | null;
     citations?: Citation[] | null;
     created_at: string;
+    /** "running" on the one assistant row the server is still writing. */
+    status?: "running";
+    started_at?: string | null;
 }
 interface ServerChatDetailOut {
     chat: Chat;
@@ -2099,6 +2102,9 @@ export async function getChat(chatId: string): Promise<ChatDetailOut> {
                     .join("") ?? "",
             citations: m.citations ?? undefined,
             events,
+            ...(m.status === "running"
+                ? { status: "running" as const, started_at: m.started_at ?? null }
+                : {}),
         };
     });
     return {
@@ -2255,6 +2261,37 @@ export async function streamChat(payload: {
         body: JSON.stringify(body),
         signal,
     });
+}
+
+/**
+ * Reattach to a turn the server is still running: replays the frames streamed
+ * so far, then tails the rest. A 202 body `{ status: "running" | "finished" }`
+ * means nothing to attach to here; poll `getChat` instead.
+ */
+export async function streamChatTurn(payload: {
+    chatId: string;
+    assistantMessageId: string;
+    signal?: AbortSignal;
+}): Promise<Response> {
+    return apiFetch(
+        `${API_BASE}/chat/${payload.chatId}/turns/${payload.assistantMessageId}/stream`,
+        {
+            method: "GET",
+            headers: { Accept: "text/event-stream" },
+            signal: payload.signal,
+        },
+    );
+}
+
+/** Ask the server to stop a running turn. The stream ends with the cancel frames. */
+export async function cancelChatTurn(payload: {
+    chatId: string;
+    assistantMessageId: string;
+}): Promise<{ cancelled: boolean }> {
+    return apiRequest<{ cancelled: boolean }>(
+        `/chat/${payload.chatId}/turns/${payload.assistantMessageId}/cancel`,
+        { method: "POST", keepalive: true },
+    );
 }
 
 type StreamChatMessage = {

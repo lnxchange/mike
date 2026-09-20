@@ -2,7 +2,13 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { streamChat, streamProjectChat } from "@/app/lib/mikeApi";
+import {
+  cancelChatTurn,
+  getChat,
+  streamChat,
+  streamChatTurn,
+  streamProjectChat,
+} from "@/app/lib/mikeApi";
 import { assistantHistoryContent } from "@/app/lib/assistantHistoryContent";
 import { readSseFrames } from "@/app/lib/sse";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
@@ -19,6 +25,17 @@ interface UseAssistantChatOptions {
   projectId?: string;
   /** Adopts the server id as soon as it arrives, without navigation. */
   onChatCreated?: (chatId: string) => void;
+}
+
+/** How often a detached turn is re-read while no live stream is attachable. */
+export const RUNNING_TURN_POLL_MS = 5_000;
+
+/** The one assistant row the server reports as still being written. */
+export function findRunningTurn(messages: Message[]): Message | undefined {
+  return messages.find(
+    (message) =>
+      message.role === "assistant" && message.status === "running" && !!message.id,
+  );
 }
 
 function readableStreamError(value: unknown, safeToDisplay: boolean): string {
@@ -98,16 +115,26 @@ export function useAssistantChat({
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const requestGenerationRef = useRef(0);
+  // The server-side turn this hook is currently showing. Stop sends the
+  // cancel there; detaching from the socket alone no longer ends the turn.
+  const activeTurnRef = useRef<{
+    chatId: string;
+    assistantMessageId: string;
+  } | null>(null);
 
-  // Invalidate the previous request before a new thread can receive updates.
+  // Detach the previous request before a new thread can receive updates.
   //
   // Keyed on the thread itself, never on effect lifecycle. StrictMode replays
   // create/destroy/create on mount without the thread changing, and doing this
-  // in a cleanup aborted a request the host had just started: a first message
-  // auto-sent from a mount effect was killed mid-flight, and because the catch
-  // ignores a superseded request the turn stalled on its empty placeholder with
-  // no error. A layout effect still runs inside the switching commit, so no
+  // in a cleanup detached a request the host had just started: a first message
+  // auto-sent from a mount effect stalled on its empty placeholder with no
+  // error. A layout effect still runs inside the switching commit, so no
   // async continuation from the old request can land in the new thread first.
+  //
+  // Detach, not abort: the server owns the turn and keeps writing it to the
+  // transcript. Bumping the generation makes the old read loop exit at its
+  // next frame, which closes this viewer's connection and nothing more; the
+  // turn is picked up again from GET /chat when the user comes back.
   const threadKey = `${projectId ?? ""}:${initialChatId ?? ""}`;
   const threadKeyRef = useRef(threadKey);
   const adoptedThreadKeyRef = useRef<string | null>(null);
@@ -119,8 +146,8 @@ export function useAssistantChat({
     // A new chat receiving its persisted id is still the same live turn.
     if (isAdoptedThread) return;
     requestGenerationRef.current += 1;
-    abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    activeTurnRef.current = null;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset request status when the host selects another thread
     setIsResponseLoading(false);
     setIsLoadingCitations(false);
@@ -212,6 +239,12 @@ export function useAssistantChat({
   const cancel = () => {
     const controller = abortControllerRef.current;
     if (!controller) return;
+    // Tell the server first: closing our connection no longer stops the turn.
+    const activeTurn = activeTurnRef.current;
+    activeTurnRef.current = null;
+    if (activeTurn) {
+      void cancelChatTurn(activeTurn).catch(() => {});
+    }
     requestGenerationRef.current += 1;
     controller.abort();
     abortControllerRef.current = null;
@@ -290,6 +323,49 @@ export function useAssistantChat({
     return true;
   };
 
+  /**
+   * A turn is still running but no live stream is attachable from here (it
+   * finished a moment ago, or another server instance owns it). Re-read the
+   * transcript until the running row resolves, then show what was saved.
+   */
+  const pollRunningTurn = async (
+    targetChatId: string,
+    generation: number,
+    signal: AbortSignal,
+  ) => {
+    const isCurrentRequest = () => requestGenerationRef.current === generation;
+    for (;;) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, RUNNING_TURN_POLL_MS);
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      if (!isCurrentRequest() || signal.aborted) return;
+      let loaded: Awaited<ReturnType<typeof getChat>>;
+      try {
+        loaded = await getChat(targetChatId);
+      } catch {
+        continue;
+      }
+      if (!isCurrentRequest() || signal.aborted) return;
+      if (findRunningTurn(loaded.messages)) continue;
+      setMessages(loaded.messages);
+      setIsResponseLoading(false);
+      setIsLoadingCitations(false);
+      activeTurnRef.current = null;
+      if (abortControllerRef.current?.signal === signal) {
+        abortControllerRef.current = null;
+      }
+      return;
+    }
+  };
+
   const handleChat = async (
     message: Message,
     opts?: {
@@ -298,17 +374,25 @@ export function useAssistantChat({
         AssistantEvent,
         { type: "ask_inputs_response" }
       >;
+      /**
+       * Reattach to a turn the server is already running instead of
+       * starting one. The message argument is ignored.
+       */
+      resumeTurn?: { assistantMessageId: string };
     },
   ): Promise<string | null> => {
-    if (!message.content.trim()) return null;
+    const resumeTurn = opts?.resumeTurn ?? null;
+    if (!resumeTurn && !message.content.trim()) return null;
+    if (resumeTurn && !chatId) return null;
 
     setIsResponseLoading(true);
 
     const lastMessage = messages[messages.length - 1];
     const isMessageAlreadyAdded =
-      lastMessage &&
-      lastMessage.role === "user" &&
-      lastMessage.content === message.content;
+      !!resumeTurn ||
+      (lastMessage &&
+        lastMessage.role === "user" &&
+        lastMessage.content === message.content);
 
     const apiMessagesForTurn: Message[] = isMessageAlreadyAdded
       ? messages
@@ -344,33 +428,72 @@ export function useAssistantChat({
         })()
       : apiMessagesForTurn;
 
-    setMessages(
-      optimisticResponseEvent
-        ? displayMessages
-        : [
-            ...displayMessages,
-            {
-              role: "assistant",
-              content: "",
-              citations: [],
-              events: [],
-            },
-          ],
-    );
+    if (resumeTurn) {
+      // The running row from GET /chat becomes the live placeholder; its
+      // events are rebuilt from the replayed frames. Functional update: the
+      // host usually calls this right after setMessages(loaded), before
+      // this closure has seen that render.
+      setMessages((prev) =>
+        prev.some((item) => item.id === resumeTurn.assistantMessageId)
+          ? prev.map((item) =>
+              item.id === resumeTurn.assistantMessageId
+                ? {
+                    ...item,
+                    content: "",
+                    citations: [],
+                    events: [],
+                    status: undefined,
+                  }
+                : item,
+            )
+          : [
+              ...prev,
+              {
+                id: resumeTurn.assistantMessageId,
+                role: "assistant",
+                content: "",
+                citations: [],
+                events: [],
+              },
+            ],
+      );
+    } else {
+      setMessages(
+        optimisticResponseEvent
+          ? displayMessages
+          : [
+              ...displayMessages,
+              {
+                role: "assistant",
+                content: "",
+                citations: [],
+                events: [],
+              },
+            ],
+      );
+    }
 
     let streamedChatId: string | null = null;
 
-    eventsRef.current = optimisticResponseEvent
-      ? ([...displayMessages]
-          .reverse()
-          .find((item) => item.role === "assistant")?.events ?? [])
-      : [];
+    eventsRef.current =
+      optimisticResponseEvent && !resumeTurn
+        ? ([...displayMessages]
+            .reverse()
+            .find((item) => item.role === "assistant")?.events ?? [])
+        : [];
 
     const generation = ++requestGenerationRef.current;
-    abortControllerRef.current?.abort();
+    // A previous viewer loop on this hook exits on its next frame; the turn
+    // it was showing belongs to the server and is not cancelled here.
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const isCurrentRequest = () => requestGenerationRef.current === generation;
+    if (resumeTurn && chatId) {
+      activeTurnRef.current = {
+        chatId,
+        assistantMessageId: resumeTurn.assistantMessageId,
+      };
+    }
 
     try {
       const apiMessages = apiMessagesForTurn.map((currentMessage) => ({
@@ -400,36 +523,75 @@ export function useAssistantChat({
         document_id: f.document_id as string,
       }));
 
-      const response = await (projectId
-        ? streamProjectChat({
-            projectId,
-            messages: apiMessages,
-            chat_id: chatId,
-            model,
-            reasoning,
-            displayed_doc: displayedDoc
-              ? {
-                  filename: displayedDoc.filename,
-                  document_id: displayedDoc.documentId,
-                }
-              : undefined,
-            attached_documents:
-              attachedDocs.length > 0 ? attachedDocs : undefined,
-            ask_inputs_response: opts?.askInputsResponse,
+      const response = await (resumeTurn && chatId
+        ? streamChatTurn({
+            chatId,
+            assistantMessageId: resumeTurn.assistantMessageId,
             signal: controller.signal,
           })
-        : streamChat({
-            messages: apiMessages,
-            chat_id: chatId,
-            model,
-            reasoning,
-            ask_inputs_response: opts?.askInputsResponse,
-            signal: controller.signal,
-          }));
+        : projectId
+          ? streamProjectChat({
+              projectId,
+              messages: apiMessages,
+              chat_id: chatId,
+              model,
+              reasoning,
+              displayed_doc: displayedDoc
+                ? {
+                    filename: displayedDoc.filename,
+                    document_id: displayedDoc.documentId,
+                  }
+                : undefined,
+              attached_documents:
+                attachedDocs.length > 0 ? attachedDocs : undefined,
+              ask_inputs_response: opts?.askInputsResponse,
+              signal: controller.signal,
+            })
+          : streamChat({
+              messages: apiMessages,
+              chat_id: chatId,
+              model,
+              reasoning,
+              ask_inputs_response: opts?.askInputsResponse,
+              signal: controller.signal,
+            }));
 
       if (!isCurrentRequest()) {
         await response.body?.cancel().catch(() => {});
         return null;
+      }
+      if (resumeTurn && response.status === 202 && chatId) {
+        // Nothing to attach to here: the turn finished a moment ago or runs
+        // on another instance. Poll the transcript until it settles.
+        await response.body?.cancel().catch(() => {});
+        await pollRunningTurn(chatId, generation, controller.signal);
+        return chatId;
+      }
+      if (response.status === 409 && !resumeTurn) {
+        // Another turn already holds this chat. Show that one rather than an
+        // error; the server dropped the user row this request added.
+        const body = (await response.json().catch(() => null)) as {
+          code?: string;
+          assistant_message_id?: string | null;
+        } | null;
+        if (
+          body?.code === "turn_in_progress" &&
+          typeof body.assistant_message_id === "string" &&
+          chatId &&
+          isCurrentRequest()
+        ) {
+          // Drop the optimistic user row and placeholder this send added; the
+          // recursive resume call appends the running turn in their place.
+          if (!optimisticResponseEvent) {
+            const dropped = isMessageAlreadyAdded ? 1 : 2;
+            setMessages((prev) => prev.slice(0, prev.length - dropped));
+          }
+          abortControllerRef.current = null;
+          return handleChat(message, {
+            resumeTurn: { assistantMessageId: body.assistant_message_id },
+          });
+        }
+        throw new Error(`Chat request failed with status ${response.status}`);
       }
       if (!response.ok) {
         await response.body?.cancel().catch(() => {});
@@ -462,6 +624,10 @@ export function useAssistantChat({
               }
               const assistantMessageId = data.assistantMessageId;
               if (typeof assistantMessageId === "string") {
+                activeTurnRef.current = {
+                  chatId: streamed,
+                  assistantMessageId,
+                };
                 updateLatestAssistantMessage((message) => ({
                   ...message,
                   id: assistantMessageId,
@@ -2106,6 +2272,7 @@ export function useAssistantChat({
       finalizeStreamingReasoning();
       setIsResponseLoading(false);
       setIsLoadingCitations(false);
+      activeTurnRef.current = null;
 
       const finalChatId = streamedChatId || chatId || null;
       if (finalChatId && finalChatId !== chatId) {
@@ -2130,6 +2297,7 @@ export function useAssistantChat({
       return streamedChatId || null;
     } catch (error: unknown) {
       if (!isCurrentRequest()) return null;
+      activeTurnRef.current = null;
       finalizeStreamingContent();
       if (error instanceof Error && error.name === "AbortError") {
         finalizeStreamingReasoning();
@@ -2174,6 +2342,17 @@ export function useAssistantChat({
     return newChatId;
   };
 
+  /**
+   * Reattach to a turn the server is still writing (GET /chat reported an
+   * assistant row with status "running"). Shows it as working, disables the
+   * composer through isResponseLoading, and lets Stop cancel it.
+   */
+  const attachToTurn = (assistantMessageId: string): Promise<string | null> =>
+    handleChat(
+      { role: "user", content: "" },
+      { resumeTurn: { assistantMessageId } },
+    );
+
   return {
     messages,
     isResponseLoading,
@@ -2181,6 +2360,7 @@ export function useAssistantChat({
     isLoadingCitations,
     handleChat,
     handleNewChat,
+    attachToTurn,
     setMessages,
     cancel,
     resetChat: () => {

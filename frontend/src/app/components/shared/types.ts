@@ -528,6 +528,14 @@ export interface Message {
   events?: AssistantEvent[];
   /** Set when streaming failed; rendered as a red error block. */
   error?: string;
+  /**
+   * "running" marks an assistant turn the server is still writing. The
+   * transcript loader sets it so the page can reattach to the live stream
+   * instead of treating the question as unanswered.
+   */
+  status?: "running";
+  /** When the running turn started, from the server lease. */
+  started_at?: string | null;
 }
 
 export type MessageFile = {

@@ -37,7 +37,7 @@ import {
     moveSubfolderToFolder,
     resolveProjectFolderPath,
 } from "@/app/lib/mikeApi";
-import { useAssistantChat } from "@/app/hooks/useAssistantChat";
+import { findRunningTurn, useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useAssistantMessageLayout } from "@/app/hooks/useAssistantMessageLayout";
 import { useProjectPicker } from "@/app/hooks/useProjectPicker";
 import {
@@ -394,6 +394,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         messages,
         isResponseLoading,
         handleChat,
+        attachToTurn,
         setMessages,
         cancel,
         resetChat,
@@ -611,6 +612,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 setChatModel(chat.model ?? null);
                 setChatReasoningLevel(chat.reasoning_level ?? null);
                 setMessages(loaded);
+                // A turn the server is still writing (the user navigated away
+                // mid-turn) is shown live again rather than as unanswered.
+                const running = findRunningTurn(loaded);
+                if (running?.id) void attachToTurn(running.id);
                 setProjectChats((current) => {
                     if (!current) return current;
                     const nextChat = { ...chat, project_id: projectId };

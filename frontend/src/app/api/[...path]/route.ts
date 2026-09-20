@@ -50,6 +50,10 @@ async function proxy(request: NextRequest, context: RouteContext) {
             headers,
             cache: "no-store",
             redirect: "manual",
+            // A client that stops reading (Stop, navigation) frees the upstream
+            // connection promptly. Express no longer treats that as cancel for
+            // chat turns; it only stops writing frames nobody is reading.
+            signal: request.signal,
         };
         if (request.method !== "GET" && request.method !== "HEAD") {
             init.body = request.body;
