@@ -3060,7 +3060,16 @@ export function DocTable({
                                                 onClick={(e) => e.stopPropagation()}
                                             />
                                         ) : (
-                                            <span className="text-xs text-gray-800 truncate">{folder.name}</span>
+                                            <>
+                                                <span className="text-xs text-gray-800 truncate">{folder.name}</span>
+                                                {"source_label" in folder &&
+                                                folder.source_label &&
+                                                !("virtual" in folder && folder.virtual) ? (
+                                                    <span className="ml-2 shrink-0 text-xs text-gray-500">
+                                                        {folder.source_label}
+                                                    </span>
+                                                ) : null}
+                                            </>
                                         )}
                                     </div>
                                 </div>
@@ -3076,6 +3085,7 @@ export function DocTable({
                                     )}
                                 </div>
                                 <div className="w-8 shrink-0 flex justify-end" onClick={(e) => e.stopPropagation()}>
+                                    {"virtual" in folder && folder.virtual ? null : (
                                     <RowActions
                                         onView={() => openFolderView(folder.id)}
                                         viewLabel="Open"
@@ -3085,6 +3095,7 @@ export function DocTable({
                                         }}
                                         onDelete={() => requestDeleteFolder(folder.id)}
                                     />
+                                    )}
                                 </div>
                             </div>
                             {isExpanded && renderLevel(folder.id, depth + 1)}
@@ -4356,9 +4367,16 @@ export function DocTable({
                                                                             }
                                                                         />
                                                                     ) : (
-                                                                        <span className="text-xs text-gray-800 truncate">
-                                                                            {docName}
-                                                                        </span>
+                                                                        <>
+                                                                            <span className="text-xs text-gray-800 truncate">
+                                                                                {docName}
+                                                                            </span>
+                                                                            {doc.source_label ? (
+                                                                                <span className="ml-2 shrink-0 text-xs text-gray-500">
+                                                                                    {doc.source_label}
+                                                                                </span>
+                                                                            ) : null}
+                                                                        </>
                                                                     )}
                                                                 </div>
                                                             </div>

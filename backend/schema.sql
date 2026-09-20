@@ -686,14 +686,20 @@ create index if not exists idx_project_subfolders_project
 
 create table if not exists public.library_folders (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  -- Creator; nullable so an org shelf survives the account that first
+  -- created a folder. Personal folders must keep a user_id (see check).
+  user_id uuid references auth.users(id) on delete set null,
+  org_id uuid references public.organizations(id) on delete cascade,
   library_kind text not null default 'file',
   name text not null,
   parent_folder_id uuid references public.library_folders(id) on delete cascade,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint library_folders_kind_check
-    check (library_kind in ('file', 'template'))
+    check (library_kind in ('file', 'template')),
+  constraint library_folders_owner_check check (
+    org_id is not null or user_id is not null
+  )
 );
 
 create index if not exists idx_library_folders_user_kind
@@ -701,6 +707,10 @@ create index if not exists idx_library_folders_user_kind
 
 create index if not exists idx_library_folders_parent
   on public.library_folders(parent_folder_id);
+
+create index if not exists idx_library_folders_org_kind
+  on public.library_folders(org_id, library_kind)
+  where org_id is not null;
 
 create table if not exists public.documents (
   id uuid primary key default gen_random_uuid(),
@@ -740,6 +750,10 @@ create index if not exists idx_documents_project_folder
 create index if not exists idx_documents_library_kind_folder
   on public.documents(user_id, library_kind, library_folder_id)
   where project_id is null;
+
+create index if not exists idx_documents_org_library_kind_folder
+  on public.documents(org_id, library_kind, library_folder_id)
+  where project_id is null and org_id is not null;
 
 create index if not exists idx_documents_org
   on public.documents(org_id);
@@ -2984,12 +2998,14 @@ create or replace function public.search_library_documents(
   p_search_term text default null,
   p_file_type text default null,
   p_sort_key text default 'updated',
-  p_sort_direction text default 'desc'
+  p_sort_direction text default 'desc',
+  p_org_ids uuid[] default '{}'
 )
 returns table (
   id uuid,
   project_id uuid,
   user_id text,
+  org_id uuid,
   status text,
   folder_id uuid,
   library_kind text,
@@ -3012,6 +3028,7 @@ as $$
     d.id,
     d.project_id,
     d.user_id::text as user_id,
+    d.org_id,
     d.status,
     d.folder_id,
     d.library_kind,
@@ -3030,8 +3047,11 @@ as $$
   left join public.document_versions v
     on v.id = d.current_version_id
    and v.deleted_at is null
-  where d.user_id::text = p_user_id
-    and d.project_id is null
+  where d.project_id is null
+    and (
+      (d.org_id is null and d.user_id::text = p_user_id)
+      or (cardinality(coalesce(p_org_ids, '{}')) > 0 and d.org_id = any(p_org_ids))
+    )
     and (
       (p_library_kind = 'file' and coalesce(d.library_kind, 'file') = 'file')
       or d.library_kind = p_library_kind
@@ -3068,7 +3088,8 @@ $$;
 
 create or replace function public.get_library_filter_options(
   p_user_id text,
-  p_library_kind text
+  p_library_kind text,
+  p_org_ids uuid[] default '{}'
 )
 returns table (file_types text[])
 language sql
@@ -3083,8 +3104,11 @@ as $$
   left join public.document_versions v
     on v.id = d.current_version_id
    and v.deleted_at is null
-  where d.user_id::text = p_user_id
-    and d.project_id is null
+  where d.project_id is null
+    and (
+      (d.org_id is null and d.user_id::text = p_user_id)
+      or (cardinality(coalesce(p_org_ids, '{}')) > 0 and d.org_id = any(p_org_ids))
+    )
     and (
       (p_library_kind = 'file' and coalesce(d.library_kind, 'file') = 'file')
       or d.library_kind = p_library_kind
@@ -3862,22 +3886,27 @@ create or replace function public.get_library_document_ids(
   p_search_term text,
   p_file_type text,
   p_limit integer,
-  p_offset integer
+  p_offset integer,
+  p_org_ids uuid[] default '{}'
 )
 returns table (
   id uuid,
-  user_id text
+  user_id text,
+  org_id uuid
 )
 language sql
 stable
 as $$
-  select d.id, d.user_id::text as user_id
+  select d.id, d.user_id::text as user_id, d.org_id
   from public.documents d
   left join public.document_versions v
     on v.id = d.current_version_id
    and v.deleted_at is null
-  where d.user_id::text = p_user_id
-    and d.project_id is null
+  where d.project_id is null
+    and (
+      (d.org_id is null and d.user_id::text = p_user_id)
+      or (cardinality(coalesce(p_org_ids, '{}')) > 0 and d.org_id = any(p_org_ids))
+    )
     and (
       (p_library_kind = 'file' and coalesce(d.library_kind, 'file') = 'file')
       or d.library_kind = p_library_kind
@@ -4018,7 +4047,8 @@ create or replace function public.resolve_library_folder_path(
   target_library_kind text,
   base_folder_id uuid,
   path_segments text[],
-  conflict_resolution text default 'error'
+  conflict_resolution text default 'error',
+  target_org_id uuid default null
 )
 returns jsonb
 language plpgsql
@@ -4049,15 +4079,21 @@ begin
   if base_folder_id is not null and not exists (
     select 1 from public.library_folders
     where id = base_folder_id
-      and user_id = target_user_id
       and library_kind = target_library_kind
+      and org_id is not distinct from target_org_id
+      and (
+        target_org_id is not null
+        or user_id = target_user_id
+      )
   ) then
     raise exception 'Parent folder not found';
   end if;
 
   perform pg_advisory_xact_lock(
     hashtextextended(
-      'library-folder-path:' || target_user_id::text || ':' || target_library_kind,
+      'library-folder-path:'
+        || coalesce(target_org_id::text, target_user_id::text)
+        || ':' || target_library_kind,
       0
     )
   );
@@ -4071,8 +4107,12 @@ begin
 
     select * into folder_row
     from public.library_folders
-    where user_id = target_user_id
-      and library_kind = target_library_kind
+    where library_kind = target_library_kind
+      and org_id is not distinct from target_org_id
+      and (
+        target_org_id is not null
+        or user_id = target_user_id
+      )
       and parent_folder_id is not distinct from current_parent_id
       and lower(btrim(name)) = lower(segment)
     order by created_at, id
@@ -4084,8 +4124,12 @@ begin
         candidate_name := segment || ' (' || suffix || ')';
         exit when not exists (
           select 1 from public.library_folders
-          where user_id = target_user_id
-            and library_kind = target_library_kind
+          where library_kind = target_library_kind
+            and org_id is not distinct from target_org_id
+            and (
+              target_org_id is not null
+              or user_id = target_user_id
+            )
             and parent_folder_id is not distinct from current_parent_id
             and lower(btrim(name)) = lower(candidate_name)
         );
@@ -4107,9 +4151,9 @@ begin
 
     if folder_row.id is null then
       insert into public.library_folders (
-        user_id, library_kind, name, parent_folder_id
+        user_id, org_id, library_kind, name, parent_folder_id
       ) values (
-        target_user_id, target_library_kind, resolved_name, current_parent_id
+        target_user_id, target_org_id, target_library_kind, resolved_name, current_parent_id
       ) returning * into folder_row;
     end if;
 
@@ -4135,9 +4179,9 @@ revoke all on function public.resolve_project_folder_path(uuid, uuid, uuid, text
 grant execute on function public.resolve_project_folder_path(uuid, uuid, uuid, text[], text)
   to service_role;
 
-revoke all on function public.resolve_library_folder_path(uuid, text, uuid, text[], text)
+revoke all on function public.resolve_library_folder_path(uuid, text, uuid, text[], text, uuid)
   from public, anon, authenticated;
-grant execute on function public.resolve_library_folder_path(uuid, text, uuid, text[], text)
+grant execute on function public.resolve_library_folder_path(uuid, text, uuid, text[], text, uuid)
   to service_role;
 
 create or replace function public.create_upload_session(

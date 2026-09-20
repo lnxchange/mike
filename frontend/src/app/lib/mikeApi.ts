@@ -1586,10 +1586,19 @@ export async function renameProjectDocument(
 
 export type LibraryKind = "files" | "templates";
 
+export interface LibrarySource {
+    id: string | null;
+    key: string;
+    label: string;
+    access_role: ProjectRole;
+    folder_id: string;
+}
+
 export interface LibraryCollection {
     documents: Document[];
     folders: LibraryFolder[];
     documentsHasMore: boolean;
+    sources?: LibrarySource[];
 }
 
 interface LibraryPagination {
@@ -1608,6 +1617,7 @@ interface LibrarySearchParams extends LibraryPagination {
 interface LibrarySearchResults {
     documents: Document[];
     documentsHasMore: boolean;
+    sources?: LibrarySource[];
 }
 
 function libraryPaginationQuery(pagination?: LibraryPagination): string {
@@ -1658,6 +1668,7 @@ export async function getLibraryLevels(
     levels: { parentId: string | null; limit: number }[],
 ): Promise<{
     levels: Array<LibraryCollection & { parentId: string | null }>;
+    sources?: LibrarySource[];
 }> {
     return apiRequest(`/library/${kind}/levels`, {
         method: "POST",
@@ -1686,8 +1697,8 @@ export async function searchLibraryDocuments(
 
 export async function getLibraryFilterOptions(
     kind: LibraryKind,
-): Promise<{ fileTypes: string[] }> {
-    return apiRequest<{ fileTypes: string[] }>(
+): Promise<{ fileTypes: string[]; sources?: LibrarySource[] }> {
+    return apiRequest<{ fileTypes: string[]; sources?: LibrarySource[] }>(
         `/library/${kind}/filter-options`,
     );
 }
@@ -1724,25 +1735,45 @@ export async function uploadLibraryDocument(
     kind: LibraryKind,
     file: File,
     folderId?: string | null,
-    options?: UploadRequestOptions<Document>,
+    options?: UploadRequestOptions<Document> & { orgId?: string | null },
 ): Promise<Document> {
     return firstUploadResult(
         await uploadLibraryDocuments(kind, [{ file, folderId }], options),
     );
 }
 
+function libraryUploadOrgId(
+    folderId: string | null | undefined,
+    orgId?: string | null,
+): string | null {
+    if (orgId) return orgId;
+    if (folderId?.startsWith("source:") && folderId !== "source:personal") {
+        return folderId.slice("source:".length);
+    }
+    return null;
+}
+
+function libraryUploadFolderId(folderId: string | null | undefined): string | null {
+    if (!folderId || folderId.startsWith("source:")) return null;
+    return folderId;
+}
+
 export async function uploadLibraryDocuments(
     kind: LibraryKind,
     files: UploadSessionInput[],
-    options?: UploadRequestOptions<Document>,
+    options?: UploadRequestOptions<Document> & { orgId?: string | null },
 ): Promise<UploadOutcome<Document>[]> {
     return uploadFilesWithSession<Document>({
         purpose: "document_create",
         destination: {
             scope: "library",
             library_kind: kind === "files" ? "file" : "template",
+            org_id: libraryUploadOrgId(undefined, options?.orgId),
         },
-        files,
+        files: files.map((file) => ({
+            ...file,
+            folderId: libraryUploadFolderId(file.folderId),
+        })),
         onProgress: options?.onProgress,
         signal: options?.signal,
     });
@@ -1752,13 +1783,15 @@ export async function createLibraryFolder(
     kind: LibraryKind,
     name: string,
     parentFolderId?: string | null,
+    orgId?: string | null,
 ): Promise<LibraryFolder> {
     return apiRequest<LibraryFolder>(`/library/${kind}/folders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             name,
-            parent_folder_id: parentFolderId ?? null,
+            parent_folder_id: libraryUploadFolderId(parentFolderId),
+            org_id: libraryUploadOrgId(parentFolderId, orgId),
         }),
     });
 }
@@ -1768,6 +1801,7 @@ export async function resolveLibraryFolderPath(
     segments: string[],
     baseFolderId: string | null,
     conflictResolution: FolderConflictResolution = "error",
+    orgId?: string | null,
 ): Promise<FolderPathResolution<LibraryFolder>> {
     return apiRequest<FolderPathResolution<LibraryFolder>>(
         `/library/${kind}/folder-paths/resolve`,
@@ -1776,7 +1810,8 @@ export async function resolveLibraryFolderPath(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 segments,
-                base_folder_id: baseFolderId,
+                base_folder_id: libraryUploadFolderId(baseFolderId),
+                org_id: libraryUploadOrgId(baseFolderId, orgId),
                 conflict_resolution: conflictResolution,
             }),
         },

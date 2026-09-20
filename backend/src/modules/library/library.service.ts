@@ -1,12 +1,19 @@
 // Business logic + data access for the library module.
 //
-// The library organises a user's standalone (project_id === null) documents
-// into two collections — "files" and "templates" — each with an optional
-// folder tree (library_folders). These functions take an explicit Supabase
-// client (`db`) plus request-derived primitives and RETURN typed results;
-// the thin route handlers in library.routes.ts map them onto HTTP responses.
+// The library is a union of the caller's personal shelf and every
+// organisation they belong to. Each shelf has its own folder tree and
+// write policy. These functions take an explicit Supabase client (`db`)
+// plus request-derived primitives and RETURN typed results; the thin
+// route handlers in library.routes.ts map them onto HTTP responses.
 
 import { parseFolderPath, validateFolderMove, collectFolderSubtree } from "../../lib/folderTree";
+import {
+  librarySourceFor,
+  resolveLibraryActor,
+  type LibraryActor,
+  type LibrarySource,
+} from "../../lib/access";
+import { can, type ProjectRole } from "../../lib/permissions";
 import { renameDocument, deleteCollectionDocuments } from "../documents/documents.service";
 import type { Db } from "../../lib/supabase";
 import {
@@ -16,10 +23,20 @@ import {
 import type { PaginationParams } from "../../lib/pagination";
 
 export type LibraryKind = "file" | "template";
+export type { LibraryActor, LibrarySource };
+
+export {
+  resolveLibraryActor,
+  librarySourceFor,
+} from "../../lib/access";
 
 const LIBRARY_IDS_PAGE_SIZE = 1000;
 const LIBRARY_IDS_MAX_PAGES = 50;
 const LIBRARY_BULK_DELETE_BATCH_SIZE = 100;
+const SOURCE_FOLDER_PREFIX = "source:";
+const PERSONAL_SOURCE_KEY = "personal";
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function normalizeLibraryKind(value: unknown): LibraryKind | null {
   if (value === "file" || value === "files") return "file";
@@ -27,51 +44,176 @@ export function normalizeLibraryKind(value: unknown): LibraryKind | null {
   return null;
 }
 
-function mapLibraryDocument<T extends Record<string, unknown>>(doc: T) {
+export function isLibrarySourceFolderId(folderId: string): boolean {
+  return folderId.startsWith(SOURCE_FOLDER_PREFIX);
+}
+
+export function sourceFolderId(orgId: string | null): string {
+  return `${SOURCE_FOLDER_PREFIX}${orgId ?? PERSONAL_SOURCE_KEY}`;
+}
+
+/** `null` is personal; a uuid is that org; `undefined` is not a source key. */
+export function parseLibrarySourceKey(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value == null || value === "" || value === PERSONAL_SOURCE_KEY) return null;
+  if (value.startsWith(SOURCE_FOLDER_PREFIX)) {
+    return parseLibrarySourceKey(value.slice(SOURCE_FOLDER_PREFIX.length));
+  }
+  return UUID_RE.test(value) ? value : undefined;
+}
+
+function sourceLabel(actor: LibraryActor, orgId: string | null | undefined): string {
+  return librarySourceFor(actor, orgId ?? null)?.label ?? (orgId ? "Organisation" : "Personal");
+}
+
+function sourceRole(
+  actor: LibraryActor,
+  orgId: string | null | undefined,
+): ProjectRole | null {
+  return librarySourceFor(actor, orgId ?? null)?.access_role ?? null;
+}
+
+function canWriteSource(
+  actor: LibraryActor,
+  orgId: string | null | undefined,
+): boolean {
+  return can(sourceRole(actor, orgId), "docs.organize");
+}
+
+function serializeSource(source: LibrarySource) {
   return {
-    ...doc,
-    folder_id: (doc.library_folder_id as string | null | undefined) ?? null,
+    id: source.id,
+    key: source.id ?? PERSONAL_SOURCE_KEY,
+    label: source.label,
+    access_role: source.access_role,
+    folder_id: sourceFolderId(source.id),
   };
 }
 
-async function loadLibraryFolder(
-  db: Db,
-  userId: string,
+function virtualSourceFolder(
+  actor: LibraryActor,
+  source: LibrarySource,
   kind: LibraryKind,
-  folderId: string,
-): Promise<{ id: string; parent_folder_id: string | null } | null> {
-  const { data } = await db
-    .from("library_folders")
-    .select("id, parent_folder_id")
-    .eq("id", folderId)
-    .eq("user_id", userId)
-    .eq("library_kind", kind)
-    .maybeSingle();
-  return (data as { id: string; parent_folder_id: string | null } | null) ?? null;
+) {
+  return {
+    id: sourceFolderId(source.id),
+    user_id: actor.userId,
+    org_id: source.id,
+    library_kind: kind,
+    name: source.label,
+    parent_folder_id: null,
+    created_at: null,
+    updated_at: null,
+    virtual: true,
+    source_label: source.label,
+    access_role: source.access_role,
+  };
 }
 
-async function deleteLibraryDocumentsAndVersionFiles(
-  db: Db,
-  userId: string,
-  kind: LibraryKind,
-  documentIds: string[],
+function decorateFolder(
+  actor: LibraryActor,
+  folder: Record<string, unknown>,
 ) {
-  const result = await deleteCollectionDocuments(
-    db, { kind: "library", userId, libraryKind: kind }, documentIds,
-  );
-  return result.ok
-    ? { error: null, deletedIds: result.data.deletedIds }
-    : {
-        error: result.kind === "error" ? result.error : result.detail,
-        deletedIds: [],
-      };
+  const orgId = (folder.org_id as string | null | undefined) ?? null;
+  const source = librarySourceFor(actor, orgId);
+  return {
+    ...folder,
+    source_label: source?.label ?? sourceLabel(actor, orgId),
+    access_role: source?.access_role ?? "viewer",
+    virtual: false,
+  };
+}
+
+function mapLibraryDocument(
+  actor: LibraryActor,
+  doc: Record<string, unknown>,
+) {
+  const orgId = (doc.org_id as string | null | undefined) ?? null;
+  const source = librarySourceFor(actor, orgId);
+  return {
+    ...doc,
+    folder_id: (doc.library_folder_id as string | null | undefined) ?? null,
+    org_id: orgId,
+    source_label: source?.label ?? sourceLabel(actor, orgId),
+    access_role: source?.access_role ?? "viewer",
+  };
+}
+
+type LoadedFolder = {
+  id: string;
+  parent_folder_id: string | null;
+  org_id: string | null;
+  virtual?: boolean;
+};
+
+async function loadLibraryFolder(
+  db: Db,
+  actor: LibraryActor,
+  kind: LibraryKind,
+  folderId: string,
+): Promise<LoadedFolder | null> {
+  if (isLibrarySourceFolderId(folderId)) {
+    const orgId = parseLibrarySourceKey(folderId);
+    if (orgId === undefined) return null;
+    const source = librarySourceFor(actor, orgId);
+    if (!source) return null;
+    return {
+      id: folderId,
+      parent_folder_id: null,
+      org_id: orgId,
+      virtual: true,
+    };
+  }
+  const { data } = await db
+    .from("library_folders")
+    .select("id, parent_folder_id, org_id, user_id")
+    .eq("id", folderId)
+    .eq("library_kind", kind)
+    .maybeSingle();
+  const folder = data as {
+    id: string;
+    parent_folder_id: string | null;
+    org_id?: string | null;
+    user_id?: string | null;
+  } | null;
+  if (!folder) return null;
+  const orgId = folder.org_id ?? null;
+  if (!librarySourceFor(actor, orgId)) return null;
+  if (!orgId && folder.user_id !== actor.userId) return null;
+  return {
+    id: folder.id,
+    parent_folder_id: folder.parent_folder_id,
+    org_id: orgId,
+  };
+}
+
+function applyDocumentShelf(
+  query: ReturnType<Db["from"]>,
+  actor: LibraryActor,
+  kind: LibraryKind,
+  orgId: string | null,
+) {
+  let next = query.is("project_id", null);
+  if (orgId) next = next.eq("org_id", orgId);
+  else next = next.eq("user_id", actor.userId).is("org_id", null);
+  return kind === "file"
+    ? next.or("library_kind.eq.file,library_kind.is.null")
+    : next.eq("library_kind", kind);
+}
+
+function applyFolderShelf(
+  query: ReturnType<Db["from"]>,
+  actor: LibraryActor,
+  kind: LibraryKind,
+  orgId: string | null,
+) {
+  let next = query.eq("library_kind", kind);
+  if (orgId) return next.eq("org_id", orgId);
+  return next.eq("user_id", actor.userId).is("org_id", null);
 }
 
 export type ServiceOk<T> = { ok: true; data: T };
-// Two shapes of failure, because the HTTP layer answers them differently:
-// "status" carries a caller-facing status + detail (bad input, missing row);
-// "internal" carries the raw driver error, which the route hands to
-// sendInternalError so the message is logged rather than echoed to the client.
 export type ServiceErr =
   | { ok: false; failure: "status"; status: number; detail: string }
   | { ok: false; failure: "internal"; error: unknown };
@@ -90,41 +232,43 @@ const internalErr = (error: unknown): ServiceErr => ({
   error,
 });
 
-// Folders per level are assumed to stay small (organizational containers,
-// not user data that grows unbounded) and are always returned in full.
-// Documents are the part that can grow into the thousands, so only they're
-// paginated — one extra row is fetched over `limit` to detect `hasMore`
-// without a separate count query.
+function writeDenied(): ServiceErr {
+  return err(403, "You do not have permission to change this library.");
+}
+
+function libraryMeta(actor: LibraryActor) {
+  return { sources: actor.sources.map(serializeSource) };
+}
+
 async function loadLibraryLevel(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   parentFolderId: string | null,
+  orgId: string | null,
   pagination: PaginationParams,
 ) {
-  let documentsQuery = db
-    .from("documents")
-    .select("*")
-    .eq("user_id", userId)
-    .is("project_id", null);
+  let documentsQuery = applyDocumentShelf(
+    db.from("documents").select("*"),
+    actor,
+    kind,
+    orgId,
+  );
   documentsQuery =
     parentFolderId === null
       ? documentsQuery.is("library_folder_id", null)
       : documentsQuery.eq("library_folder_id", parentFolderId);
-  documentsQuery =
-    kind === "file"
-      ? documentsQuery.or("library_kind.eq.file,library_kind.is.null")
-      : documentsQuery.eq("library_kind", kind);
   documentsQuery = documentsQuery.range(
     pagination.offset,
     pagination.offset + pagination.limit,
   );
 
-  let foldersQuery = db
-    .from("library_folders")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("library_kind", kind);
+  let foldersQuery = applyFolderShelf(
+    db.from("library_folders").select("*"),
+    actor,
+    kind,
+    orgId,
+  );
   foldersQuery =
     parentFolderId === null
       ? foldersQuery.is("parent_folder_id", null)
@@ -153,24 +297,28 @@ async function loadLibraryLevel(
   const rawDocs = docs ?? [];
   const documentsHasMore = rawDocs.length > pagination.limit;
   const pageDocs = documentsHasMore ? rawDocs.slice(0, pagination.limit) : rawDocs;
-
-  const docsTyped = pageDocs.map(mapLibraryDocument) as {
-    id: string;
-    current_version_id?: string | null;
-  }[];
+  const docsTyped = pageDocs.map((doc) =>
+    mapLibraryDocument(actor, doc as Record<string, unknown>),
+  ) as { id: string; current_version_id?: string | null }[];
   await attachLatestVersionNumbers(db, docsTyped);
   await attachActiveVersionPaths(db, docsTyped);
   return {
     error: null,
     documents: docsTyped,
-    folders: folders ?? [],
+    folders: (folders ?? []).map((folder) =>
+      decorateFolder(actor, folder as Record<string, unknown>),
+    ),
     documentsHasMore,
   };
 }
 
+function unionRootFolders(actor: LibraryActor, kind: LibraryKind) {
+  return actor.sources.map((source) => virtualSourceFolder(actor, source, kind));
+}
+
 export async function getLibrary(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   parentFolderId: string | null,
   pagination: PaginationParams,
@@ -179,32 +327,61 @@ export async function getLibrary(
     documents: unknown[];
     folders: unknown[];
     documentsHasMore: boolean;
+    sources: ReturnType<typeof serializeSource>[];
   }>
 > {
-  if (parentFolderId) {
-    const folder = await loadLibraryFolder(db, userId, kind, parentFolderId);
-    if (!folder) return err(404, "Folder not found");
+  if (!parentFolderId && actor.sources.length > 1) {
+    return ok({
+      documents: [],
+      folders: unionRootFolders(actor, kind),
+      documentsHasMore: false,
+      ...libraryMeta(actor),
+    });
   }
-  const result = await loadLibraryLevel(db, userId, kind, parentFolderId, pagination);
+
+  let orgId: string | null = null;
+  let realParentId: string | null = parentFolderId;
+  if (parentFolderId) {
+    const folder = await loadLibraryFolder(db, actor, kind, parentFolderId);
+    if (!folder) return err(404, "Folder not found");
+    orgId = folder.org_id;
+    realParentId = folder.virtual ? null : folder.id;
+  }
+
+  const result = await loadLibraryLevel(
+    db,
+    actor,
+    kind,
+    realParentId,
+    orgId,
+    pagination,
+  );
   if (result.error) return err(500, result.error);
   return ok({
     documents: result.documents,
     folders: result.folders,
     documentsHasMore: result.documentsHasMore,
+    ...libraryMeta(actor),
   });
 }
 
 export async function searchLibraryDocuments(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   searchTerm: string | null,
   fileType: string | null,
   sort: { key: string; direction: "asc" | "desc" },
   pagination: PaginationParams,
-): Promise<ServiceResult<{ documents: unknown[]; documentsHasMore: boolean }>> {
+): Promise<
+  ServiceResult<{
+    documents: unknown[];
+    documentsHasMore: boolean;
+    sources: ReturnType<typeof serializeSource>[];
+  }>
+> {
   const { data, error } = await db.rpc("search_library_documents", {
-    p_user_id: userId,
+    p_user_id: actor.userId,
     p_library_kind: kind,
     p_limit: pagination.limit + 1,
     p_offset: pagination.offset,
@@ -212,19 +389,23 @@ export async function searchLibraryDocuments(
     p_file_type: fileType,
     p_sort_key: sort.key,
     p_sort_direction: sort.direction,
+    p_org_ids: actor.sources.flatMap((source) => (source.id ? [source.id] : [])),
   });
   if (error) return internalErr(error);
 
   const rows = (data ?? []) as Record<string, unknown>[];
   return ok({
-    documents: rows.slice(0, pagination.limit).map(mapLibraryDocument),
+    documents: rows
+      .slice(0, pagination.limit)
+      .map((row) => mapLibraryDocument(actor, row)),
     documentsHasMore: rows.length > pagination.limit,
+    ...libraryMeta(actor),
   });
 }
 
 export async function getLibraryLevels(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   levels: Array<{ parentId: string | null; limit: number }>,
 ): Promise<
@@ -235,11 +416,14 @@ export async function getLibraryLevels(
       folders: unknown[];
       documentsHasMore: boolean;
     }>;
+    sources: ReturnType<typeof serializeSource>[];
   }>
 > {
   const results: Array<{
     parentId: string | null;
-    result: Awaited<ReturnType<typeof loadLibraryLevel>>;
+    result: Awaited<ReturnType<typeof loadLibraryLevel>> & {
+      virtualRoot?: boolean;
+    };
   }> = new Array(levels.length);
   let nextLevelIndex = 0;
   await Promise.all(
@@ -247,9 +431,41 @@ export async function getLibraryLevels(
       while (nextLevelIndex < levels.length) {
         const index = nextLevelIndex++;
         const level = levels[index];
+        if (!level.parentId && actor.sources.length > 1) {
+          results[index] = {
+            parentId: level.parentId,
+            result: {
+              error: null,
+              documents: [],
+              folders: unionRootFolders(actor, kind),
+              documentsHasMore: false,
+              virtualRoot: true,
+            },
+          };
+          continue;
+        }
+        let orgId: string | null = null;
+        let realParentId: string | null = level.parentId;
+        if (level.parentId) {
+          const folder = await loadLibraryFolder(db, actor, kind, level.parentId);
+          if (!folder) {
+            results[index] = {
+              parentId: level.parentId,
+              result: {
+                error: "Folder not found",
+                documents: [],
+                folders: [],
+                documentsHasMore: false,
+              },
+            };
+            continue;
+          }
+          orgId = folder.org_id;
+          realParentId = folder.virtual ? null : folder.id;
+        }
         results[index] = {
           parentId: level.parentId,
-          result: await loadLibraryLevel(db, userId, kind, level.parentId, {
+          result: await loadLibraryLevel(db, actor, kind, realParentId, orgId, {
             limit: level.limit,
             offset: 0,
           }),
@@ -257,6 +473,8 @@ export async function getLibraryLevels(
       }
     }),
   );
+  const missing = results.find(({ result }) => result.error === "Folder not found");
+  if (missing) return err(404, "Folder not found");
   const failed = results.find(({ result }) => result.error);
   if (failed?.result.error) return err(500, failed.result.error);
   return ok({
@@ -266,32 +484,33 @@ export async function getLibraryLevels(
       folders: result.folders,
       documentsHasMore: result.documentsHasMore,
     })),
+    ...libraryMeta(actor),
   });
 }
 
 export async function getLibraryFilterOptions(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
-): Promise<ServiceResult<{ fileTypes: string[] }>> {
+): Promise<ServiceResult<{ fileTypes: string[]; sources: ReturnType<typeof serializeSource>[] }>> {
   const { data, error } = await db.rpc("get_library_filter_options", {
-    p_user_id: userId,
+    p_user_id: actor.userId,
     p_library_kind: kind,
+    p_org_ids: actor.sources.flatMap((source) => (source.id ? [source.id] : [])),
   });
   if (error) return internalErr(error);
   const row = (data?.[0] ?? {}) as { file_types?: unknown };
   return ok({
     fileTypes: Array.isArray(row.file_types)
-      ? row.file_types.filter(
-          (value): value is string => typeof value === "string",
-        )
+      ? row.file_types.filter((value): value is string => typeof value === "string")
       : [],
+    ...libraryMeta(actor),
   });
 }
 
 export async function getLibraryDocumentIds(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   searchTerm: string | null,
   fileType: string | null,
@@ -300,12 +519,13 @@ export async function getLibraryDocumentIds(
   let offset = 0;
   for (let page = 0; page < LIBRARY_IDS_MAX_PAGES; page++) {
     const { data, error } = await db.rpc("get_library_document_ids", {
-      p_user_id: userId,
+      p_user_id: actor.userId,
       p_library_kind: kind,
       p_search_term: searchTerm,
       p_file_type: fileType,
       p_limit: LIBRARY_IDS_PAGE_SIZE,
       p_offset: offset,
+      p_org_ids: actor.sources.flatMap((source) => (source.id ? [source.id] : [])),
     });
     if (error) return internalErr(error);
     const rows = (data ?? []) as { id: string }[];
@@ -318,10 +538,13 @@ export async function getLibraryDocumentIds(
 
 export async function bulkDeleteLibraryDocuments(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   ids: string[],
 ): Promise<ServiceResult<{ deletedIds: string[] }>> {
+  const writableOrgIds = actor.sources
+    .filter((source) => source.id && canWriteSource(actor, source.id))
+    .map((source) => source.id as string);
   const deletedIds: string[] = [];
   for (
     let offset = 0;
@@ -329,35 +552,61 @@ export async function bulkDeleteLibraryDocuments(
     offset += LIBRARY_BULK_DELETE_BATCH_SIZE
   ) {
     const batch = ids.slice(offset, offset + LIBRARY_BULK_DELETE_BATCH_SIZE);
-    const result = await deleteLibraryDocumentsAndVersionFiles(
+    const result = await deleteCollectionDocuments(
       db,
-      userId,
-      kind,
+      {
+        kind: "library",
+        userId: actor.userId,
+        libraryKind: kind,
+        writableOrgIds,
+      },
       batch,
     );
-    if (result.error) return internalErr(result.error);
-    deletedIds.push(...result.deletedIds);
+    if (!result.ok) {
+      return result.kind === "error"
+        ? internalErr(result.error)
+        : err(500, result.detail);
+    }
+    deletedIds.push(...result.data.deletedIds);
   }
   return ok({ deletedIds });
 }
 
 export async function getLibraryFolderPath(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   folderId: string,
-): Promise<ServiceResult<{ folders: unknown[] }>> {
-  const { data, error } = await db
-    .from("library_folders")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("library_kind", kind);
-  if (error) return internalErr(error);
+): Promise<ServiceResult<{ folders: unknown[]; sources: ReturnType<typeof serializeSource>[] }>> {
+  if (isLibrarySourceFolderId(folderId)) {
+    const orgId = parseLibrarySourceKey(folderId);
+    if (orgId === undefined) return err(404, "Folder not found");
+    const source = librarySourceFor(actor, orgId);
+    if (!source) return err(404, "Folder not found");
+    return ok({
+      folders: [virtualSourceFolder(actor, source, kind)],
+      ...libraryMeta(actor),
+    });
+  }
 
-  const folders = data ?? [];
-  const foldersById = new Map(
-    folders.map((folder) => [folder.id as string, folder]),
-  );
+  const orgIds = actor.sources
+    .map((source) => source.id)
+    .filter((id): id is string => !!id);
+  const [personalResult, orgResult] = await Promise.all([
+    applyFolderShelf(
+      db.from("library_folders").select("*"),
+      actor,
+      kind,
+      null,
+    ),
+    orgIds.length > 0
+      ? db.from("library_folders").select("*").eq("library_kind", kind).in("org_id", orgIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (personalResult.error) return internalErr(personalResult.error);
+  if (orgResult.error) return internalErr(orgResult.error);
+  const folders = [...(personalResult.data ?? []), ...(orgResult.data ?? [])];
+  const foldersById = new Map(folders.map((folder) => [folder.id as string, folder]));
   const path: typeof folders = [];
   const visited = new Set<string>();
   let current = foldersById.get(folderId);
@@ -365,26 +614,57 @@ export async function getLibraryFolderPath(
 
   while (current && !visited.has(current.id as string)) {
     visited.add(current.id as string);
-    path.unshift(current);
+    path.unshift(decorateFolder(actor, current as Record<string, unknown>));
     current = current.parent_folder_id
       ? foldersById.get(current.parent_folder_id as string)
       : undefined;
   }
 
-  return ok({ folders: path });
+  const rootOrgId = ((path[0] as { org_id?: string | null } | undefined)?.org_id) ?? null;
+  if (actor.sources.length > 1) {
+    const source = librarySourceFor(actor, rootOrgId);
+    if (source) path.unshift(virtualSourceFolder(actor, source, kind));
+  }
+
+  return ok({ folders: path, ...libraryMeta(actor) });
 }
 
-// Folder-tree upsert for uploads that carry a relative path (drag-and-drop of
-// a whole directory): the RPC walks/creates each segment in one round trip so
-// concurrent uploads of overlapping paths can't race each other into
-// duplicate folders. `conflict_resolution` decides what an existing folder at
-// a segment means — reuse it, create a renamed sibling, or fail.
+export async function resolveLibraryWriteTarget(
+  db: Db,
+  actor: LibraryActor,
+  kind: LibraryKind,
+  body: { folder_id?: string | null; org_id?: string | null },
+): Promise<ServiceResult<{ orgId: string | null; folderId: string | null }>> {
+  let orgId = body.org_id ?? null;
+  let folderId = body.folder_id ?? null;
+  if (folderId && isLibrarySourceFolderId(folderId)) {
+    const parsed = parseLibrarySourceKey(folderId);
+    if (parsed === undefined) return err(404, "Folder not found");
+    orgId = parsed;
+    folderId = null;
+  } else if (folderId) {
+    const folder = await loadLibraryFolder(db, actor, kind, folderId);
+    if (!folder || folder.virtual) return err(404, "Folder not found");
+    orgId = folder.org_id;
+  } else if (body.org_id !== undefined) {
+    const parsed = parseLibrarySourceKey(
+      body.org_id === null ? PERSONAL_SOURCE_KEY : body.org_id,
+    );
+    if (parsed === undefined) return err(400, "Invalid library source");
+    orgId = parsed;
+  }
+  if (!librarySourceFor(actor, orgId)) return err(404, "Library not found");
+  if (!canWriteSource(actor, orgId)) return writeDenied();
+  return ok({ orgId, folderId });
+}
+
 export async function resolveLibraryFolderPath(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   body: {
     base_folder_id?: string | null;
+    org_id?: string | null;
     segments?: unknown;
     conflict_resolution?: unknown;
   },
@@ -392,18 +672,19 @@ export async function resolveLibraryFolderPath(
   const path = parseFolderPath(body);
   if (!path) return err(400, "Invalid folder path");
   const { segments, conflictResolution, baseFolderId } = path;
-
-  if (baseFolderId) {
-    const parent = await loadLibraryFolder(db, userId, kind, baseFolderId);
-    if (!parent) return err(404, "Parent folder not found");
-  }
+  const target = await resolveLibraryWriteTarget(db, actor, kind, {
+    folder_id: baseFolderId,
+    org_id: body.org_id ?? null,
+  });
+  if (!target.ok) return target;
 
   const { data, error } = await db.rpc("resolve_library_folder_path", {
-    target_user_id: userId,
+    target_user_id: actor.userId,
     target_library_kind: kind,
-    base_folder_id: baseFolderId,
+    base_folder_id: target.data.folderId,
     path_segments: segments,
     conflict_resolution: conflictResolution,
+    target_org_id: target.data.orgId,
   });
   if (error) return internalErr(error);
   return ok(data);
@@ -411,41 +692,47 @@ export async function resolveLibraryFolderPath(
 
 export async function createLibraryFolder(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
-  body: { name?: string; parent_folder_id?: string | null },
+  body: {
+    name?: string;
+    parent_folder_id?: string | null;
+    org_id?: string | null;
+  },
 ): Promise<ServiceResult<unknown>> {
-  const { name, parent_folder_id } = body;
-  if (!name?.trim()) return err(400, "name is required");
-
-  if (parent_folder_id) {
-    const parent = await loadLibraryFolder(db, userId, kind, parent_folder_id);
-    if (!parent) return err(404, "Parent folder not found");
-  }
+  const name = body.name?.trim();
+  if (!name) return err(400, "name is required");
+  const target = await resolveLibraryWriteTarget(db, actor, kind, {
+    folder_id: body.parent_folder_id ?? null,
+    org_id: body.org_id ?? null,
+  });
+  if (!target.ok) return target;
 
   const { data, error } = await db
     .from("library_folders")
     .insert({
-      user_id: userId,
+      user_id: actor.userId,
+      org_id: target.data.orgId,
       library_kind: kind,
-      name: name.trim(),
-      parent_folder_id: parent_folder_id ?? null,
+      name,
+      parent_folder_id: target.data.folderId,
     })
     .select("*")
     .single();
   if (error) return internalErr(error);
-  return ok(data);
+  return ok(decorateFolder(actor, data as Record<string, unknown>));
 }
 
 export async function updateLibraryFolder(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   folderId: string,
   body: { name?: string; parent_folder_id?: string | null },
 ): Promise<ServiceResult<unknown>> {
-  const folder = await loadLibraryFolder(db, userId, kind, folderId);
-  if (!folder) return err(404, "Folder not found");
+  const folder = await loadLibraryFolder(db, actor, kind, folderId);
+  if (!folder || folder.virtual) return err(404, "Folder not found");
+  if (!canWriteSource(actor, folder.org_id)) return writeDenied();
 
   const updates: Record<string, unknown> = {
     updated_at: new Date().toISOString(),
@@ -457,127 +744,190 @@ export async function updateLibraryFolder(
   }
   if ("parent_folder_id" in body) {
     if (body.parent_folder_id) {
-      const moveError = await validateFolderMove(
-        folderId, body.parent_folder_id,
-        (id) => loadLibraryFolder(db, userId, kind, id),
-      );
-      if (moveError === "cycle")
-        return err(400, "Cannot move a folder into itself or a descendant");
-      if (moveError) return err(404, "Parent folder not found");
+      if (isLibrarySourceFolderId(body.parent_folder_id)) {
+        const destOrg = parseLibrarySourceKey(body.parent_folder_id);
+        if (destOrg === undefined) return err(404, "Parent folder not found");
+        if (destOrg !== folder.org_id) {
+          return err(400, "Cannot move a folder into a different library");
+        }
+        updates.parent_folder_id = null;
+      } else {
+        const moveError = await validateFolderMove(
+          folderId,
+          body.parent_folder_id,
+          (id) => loadLibraryFolder(db, actor, kind, id),
+        );
+        if (moveError === "cycle")
+          return err(400, "Cannot move a folder into itself or a descendant");
+        if (moveError) return err(404, "Parent folder not found");
+        const dest = await loadLibraryFolder(db, actor, kind, body.parent_folder_id);
+        if (!dest) return err(404, "Parent folder not found");
+        if (dest.org_id !== folder.org_id) {
+          return err(400, "Cannot move a folder into a different library");
+        }
+        updates.parent_folder_id = dest.virtual ? null : dest.id;
+      }
+    } else {
+      updates.parent_folder_id = null;
     }
-    updates.parent_folder_id = body.parent_folder_id ?? null;
   }
 
-  const { data, error } = await db
+  let query = db
     .from("library_folders")
     .update(updates)
     .eq("id", folderId)
-    .eq("user_id", userId)
-    .eq("library_kind", kind)
-    .select("*")
-    .single();
+    .eq("library_kind", kind);
+  query = folder.org_id
+    ? query.eq("org_id", folder.org_id)
+    : query.eq("user_id", actor.userId).is("org_id", null);
+  const { data, error } = await query.select("*").single();
   if (error || !data) return err(404, "Folder not found");
-  return ok(data);
+  return ok(decorateFolder(actor, data as Record<string, unknown>));
 }
 
 export async function deleteLibraryFolder(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   folderId: string,
 ): Promise<ServiceResult<null>> {
-  const { data: allFolders, error: foldersError } = await db
-    .from("library_folders")
-    .select("id, parent_folder_id")
-    .eq("user_id", userId)
-    .eq("library_kind", kind);
+  const folder = await loadLibraryFolder(db, actor, kind, folderId);
+  if (!folder || folder.virtual) return err(404, "Folder not found");
+  if (!canWriteSource(actor, folder.org_id)) return writeDenied();
+
+  const { data: allFolders, error: foldersError } = await applyFolderShelf(
+    db.from("library_folders").select("id, parent_folder_id"),
+    actor,
+    kind,
+    folder.org_id,
+  );
   if (foldersError) return internalErr(foldersError);
-  if (!(allFolders ?? []).some((folder) => folder.id === folderId)) {
+  if (!(allFolders ?? []).some((row) => row.id === folderId)) {
     return err(404, "Folder not found");
   }
 
   const folderIds = collectFolderSubtree(folderId, allFolders ?? []);
-
-  let documentsInFolderQuery = db
-    .from("documents")
-    .select("id")
-    .eq("user_id", userId)
-    .is("project_id", null);
-  documentsInFolderQuery =
-    kind === "file"
-      ? documentsInFolderQuery.or("library_kind.eq.file,library_kind.is.null")
-      : documentsInFolderQuery.eq("library_kind", kind);
-  const { data: docs, error: docsError } = await documentsInFolderQuery.in(
-    "library_folder_id",
-    [...folderIds],
-  );
+  const { data: docs, error: docsError } = await applyDocumentShelf(
+    db.from("documents").select("id"),
+    actor,
+    kind,
+    folder.org_id,
+  ).in("library_folder_id", [...folderIds]);
   if (docsError) return internalErr(docsError);
 
   const docIds = (docs ?? []).map((doc) => doc.id as string);
-  const deleteDocsResult = await deleteLibraryDocumentsAndVersionFiles(
+  const deleteDocsResult = await deleteCollectionDocuments(
     db,
-    userId,
-    kind,
+    {
+      kind: "library",
+      userId: actor.userId,
+      libraryKind: kind,
+      writableOrgIds: folder.org_id ? [folder.org_id] : [],
+    },
     docIds,
   );
-  if (deleteDocsResult.error) return internalErr(deleteDocsResult.error);
+  if (!deleteDocsResult.ok) {
+    return deleteDocsResult.kind === "error"
+      ? internalErr(deleteDocsResult.error)
+      : err(500, deleteDocsResult.detail);
+  }
 
-  const { error } = await db
+  let deleteQuery = db
     .from("library_folders")
     .delete()
     .eq("id", folderId)
-    .eq("user_id", userId)
     .eq("library_kind", kind);
+  deleteQuery = folder.org_id
+    ? deleteQuery.eq("org_id", folder.org_id)
+    : deleteQuery.eq("user_id", actor.userId).is("org_id", null);
+  const { error } = await deleteQuery;
   if (error) return internalErr(error);
   return ok(null);
 }
 
 export async function moveLibraryDocument(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   documentId: string,
   folder_id: string | null,
 ): Promise<ServiceResult<unknown>> {
+  const { data: existing, error: existingError } = await db
+    .from("documents")
+    .select("id, org_id, user_id")
+    .eq("id", documentId)
+    .is("project_id", null)
+    .maybeSingle();
+  if (existingError) return internalErr(existingError);
+  const doc = existing as {
+    id: string;
+    org_id?: string | null;
+    user_id?: string | null;
+  } | null;
+  if (!doc) return err(404, "Document not found");
+  const orgId = doc.org_id ?? null;
+  if (!librarySourceFor(actor, orgId)) return err(404, "Document not found");
+  if (!orgId && doc.user_id !== actor.userId) return err(404, "Document not found");
+  if (!canWriteSource(actor, orgId)) return writeDenied();
+
+  let destFolderId: string | null = folder_id;
   if (folder_id) {
-    const folder = await loadLibraryFolder(db, userId, kind, folder_id);
+    const folder = await loadLibraryFolder(db, actor, kind, folder_id);
     if (!folder) return err(404, "Folder not found");
+    if (folder.org_id !== orgId) {
+      return err(400, "Cannot move a document into a different library");
+    }
+    destFolderId = folder.virtual ? null : folder.id;
   }
 
-  let moveQuery = db
-    .from("documents")
-    .update({
-      library_folder_id: folder_id ?? null,
+  const { data, error } = await applyDocumentShelf(
+    db.from("documents").update({
+      library_folder_id: destFolderId,
       updated_at: new Date().toISOString(),
-    })
+    }),
+    actor,
+    kind,
+    orgId,
+  )
     .eq("id", documentId)
-    .eq("user_id", userId)
-    .is("project_id", null);
-  moveQuery =
-    kind === "file"
-      ? moveQuery.or("library_kind.eq.file,library_kind.is.null")
-      : moveQuery.eq("library_kind", kind);
-  const { data, error } = await moveQuery
     .select("*")
     .single();
   if (error || !data) return err(404, "Document not found");
-  return ok(mapLibraryDocument(data));
+  return ok(mapLibraryDocument(actor, data as Record<string, unknown>));
 }
 
 export async function renameLibraryDocument(
   db: Db,
-  userId: string,
+  actor: LibraryActor,
   kind: LibraryKind,
   documentId: string,
   rawFilename: unknown,
 ): Promise<ServiceResult<unknown>> {
+  const { data: existing, error: existingError } = await db
+    .from("documents")
+    .select("id, org_id, user_id")
+    .eq("id", documentId)
+    .is("project_id", null)
+    .maybeSingle();
+  if (existingError) return internalErr(existingError);
+  const doc = existing as {
+    id: string;
+    org_id?: string | null;
+    user_id?: string | null;
+  } | null;
+  if (!doc) return err(404, "Document not found");
+  const orgId = doc.org_id ?? null;
+  if (!librarySourceFor(actor, orgId)) return err(404, "Document not found");
+  if (!orgId && doc.user_id !== actor.userId) return err(404, "Document not found");
+  if (!canWriteSource(actor, orgId)) return writeDenied();
+
   const result = await renameDocument(db, {
-    userId,
+    userId: actor.userId,
     documentId,
     filename: rawFilename,
-    scope: { kind: "library", libraryKind: kind },
+    scope: { kind: "library", libraryKind: kind, orgId },
   });
-  if (result.ok) return ok(mapLibraryDocument(result.data));
+  if (result.ok) return ok(mapLibraryDocument(actor, result.data));
   if (result.kind === "error") return internalErr(result.error);
   return err(result.kind === "validation" ? 400 : 404, result.detail);
 }

@@ -28,11 +28,15 @@ export interface Folder {
 export interface LibraryFolder {
   id: string;
   user_id: string;
+  org_id?: string | null;
   library_kind: "file" | "template";
   name: string;
   parent_folder_id: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at: string | null;
+  updated_at: string | null;
+  source_label?: string;
+  access_role?: "owner" | "editor" | "viewer";
+  virtual?: boolean;
 }
 
 export type ResourceAccessScope = "private" | "shared" | "organization";
@@ -96,6 +100,9 @@ export interface Document {
   folder_id?: string | null;
   library_kind?: "file" | "template" | "workflow_asset";
   library_folder_id?: string | null;
+  org_id?: string | null;
+  source_label?: string;
+  access_role?: "owner" | "editor" | "viewer";
   filename: string;
   owner_email?: string | null;
   owner_display_name?: string | null;

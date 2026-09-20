@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import type { Db } from "../../../lib/supabase";
 import { attachActiveVersionPaths } from "../../../lib/documentVersions";
+import { ensureDocAccess } from "../../../lib/access";
 import {
   type DocStore,
   type DocIndex,
@@ -838,12 +839,26 @@ export async function buildDocContext(
   if (ids.length > 0) {
     const { data: docs } = await db
       .from("documents")
-      .select("id, current_version_id, status, library_kind")
+      .select("id, current_version_id, status, library_kind, user_id, project_id, org_id, workflow_id")
       .in("id", ids)
-      .eq("user_id", userId)
       .eq("status", "ready");
 
-    const docList = (docs ?? []) as unknown as {
+    const accessibleDocs = [];
+    for (const doc of docs ?? []) {
+      const access = await ensureDocAccess(
+        doc as {
+          user_id: string | null;
+          project_id: string | null;
+          org_id?: string | null;
+          workflow_id?: string | null;
+        },
+        userId,
+        undefined,
+        db,
+      );
+      if (access.ok) accessibleDocs.push(doc);
+    }
+    const docList = accessibleDocs as unknown as {
       id: string;
       filename?: string | null;
       file_type?: string | null;

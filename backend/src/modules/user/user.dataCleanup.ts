@@ -315,7 +315,7 @@ async function detachOrgProjectContent(
 
     // Org-tagged content that sits outside any project still belongs to the
     // organization; `org_id` is the whole claim.
-    for (const table of ["documents", "tabular_reviews"] as const) {
+    for (const table of ["documents", "tabular_reviews", "library_folders"] as const) {
         const { error } = await (db as any)
             .from(table)
             .update({ user_id: null })
@@ -836,6 +836,7 @@ export async function deleteUserAccountData(
         db.from("chats").delete().eq("user_id", userId),
         db.from("word_documents").delete().eq("user_id", userId),
         db.from("project_subfolders").delete().eq("user_id", userId),
+        db.from("library_folders").delete().eq("user_id", userId).is("org_id", null),
         db.from("hidden_workflows").delete().eq("user_id", userId),
         db
             .from("workflow_open_source_submissions")

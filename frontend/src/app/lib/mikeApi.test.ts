@@ -1776,12 +1776,25 @@ describe("query and payload defaults", () => {
         expect(JSON.parse(lastFetchCall().init.body as string)).toEqual({
             name: "Precedents",
             parent_folder_id: "parent-1",
+            org_id: null,
         });
 
         await createLibraryFolder("files", "Root folder");
         expect(JSON.parse(lastFetchCall().init.body as string)).toEqual({
             name: "Root folder",
             parent_folder_id: null,
+            org_id: null,
+        });
+
+        await createLibraryFolder(
+            "files",
+            "Firm precedents",
+            "source:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        );
+        expect(JSON.parse(lastFetchCall().init.body as string)).toEqual({
+            name: "Firm precedents",
+            parent_folder_id: null,
+            org_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         });
     });
 
@@ -1817,6 +1830,7 @@ describe("query and payload defaults", () => {
         expect(JSON.parse(call.init.body as string)).toEqual({
             segments: ["Executed", "2026"],
             base_folder_id: "parent-1",
+            org_id: null,
             conflict_resolution: "reuse",
         });
     });

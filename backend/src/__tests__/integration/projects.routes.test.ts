@@ -551,9 +551,21 @@ describe("projects.routes", () => {
             id: "d1",
             filename: "Agreement.docx",
             folder_id: null,
+            org_id: null,
+            source_label: "Personal",
+            access_role: "owner",
           },
         ],
         documentsHasMore: true,
+        sources: [
+          {
+            id: null,
+            key: "personal",
+            label: "Personal",
+            access_role: "owner",
+            folder_id: "source:personal",
+          },
+        ],
       });
       expect(captured.name).toBe("search_library_documents");
       expect(captured.args).toEqual({
@@ -565,6 +577,7 @@ describe("projects.routes", () => {
         p_file_type: "docx",
         p_sort_key: "name",
         p_sort_direction: "asc",
+        p_org_ids: [],
       });
     });
 
@@ -588,11 +601,23 @@ describe("projects.routes", () => {
         .set(...AUTH);
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ fileTypes: ["docx", "pdf"] });
+      expect(res.body).toEqual({
+        fileTypes: ["docx", "pdf"],
+        sources: [
+          {
+            id: null,
+            key: "personal",
+            label: "Personal",
+            access_role: "owner",
+            folder_id: "source:personal",
+          },
+        ],
+      });
       expect(captured.name).toBe("get_library_filter_options");
       expect(captured.args).toEqual({
         p_user_id: "u1",
         p_library_kind: "file",
+        p_org_ids: [],
       });
     });
   });

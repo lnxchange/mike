@@ -21,6 +21,10 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { resolveContentOrgId } from "../../lib/access";
+import {
+  resolveLibraryActor,
+  resolveLibraryWriteTarget,
+} from "../library/library.service";
 import { recordAudit } from "../../lib/audit";
 import { enqueueStorageCleanup } from "../../lib/dbq/enqueue";
 import { convertedPdfKey } from "../../lib/convert";
@@ -377,6 +381,19 @@ async function processCreatedDocument(
   const resolvedOrg = await resolveContentOrgId(db, { projectId });
   if (!resolvedOrg.ok) throw new Error(resolvedOrg.detail);
   let orgId = resolvedOrg.orgId;
+  if (!orgId && scope === "library") {
+    const actor = await resolveLibraryActor(db, session.user_id);
+    const target = await resolveLibraryWriteTarget(db, actor, libraryKind, {
+      folder_id: libraryFolderId,
+      org_id: (destination.org_id as string | null | undefined) ?? null,
+    });
+    if (!target.ok) {
+      throw new Error(
+        target.failure === "status" ? target.detail : "Library destination is not writable",
+      );
+    }
+    orgId = target.data.orgId;
+  }
   if (!orgId && workflowId) {
     // A workflow asset belongs to its workflow's tenant: an org workflow's
     // assets must survive their uploader's account the way the workflow does.

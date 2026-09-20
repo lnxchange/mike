@@ -77,6 +77,7 @@ const documentDestinationSchema = z.discriminatedUnion("scope", [
       scope: z.literal("library"),
       library_kind: z.enum(["file", "template"]),
       folder_id: z.string().uuid().nullable().optional(),
+      org_id: z.string().uuid().nullable().optional(),
     })
     .strict(),
   z

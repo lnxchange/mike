@@ -1,8 +1,22 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Library is a union, not org-instead-of-personal
+
+Yule stopped the first org-library design. `/library` is a **union**: every user keeps today's personal Files + Templates, and also sees every organisation they belong to. Multi-org users see each shelf, labelled and grouped (Personal / Attune Legal / …). Writes stay on one shelf. Personal writes stay personal. Org writes follow `libraryRoleFromOrgRole` (admin → owner, member → viewer) via existing `can()`. Members read and `replicate_document` org templates; only admins mutate the org shelf. Chat template immutability is unchanged. Having an org membership must not hide the personal library.
+
+Implementation is local only: migration `20260921_03_org_library.sql` (not applied), schema RPCs take `p_org_ids uuid[]` (personal `user_id` + `org_id is null`, or `org_id = any(p_org_ids)`). Virtual `source:personal` / `source:<orgUuid>` folders at the union root when there is more than one source. A user with no orgs still sees the flat personal tree. Cross-shelf move is refused. Uploads and folder creates take explicit `org_id` (null = personal). Did not apply the migration to `gttnqqwqoirwbvalqfce`. Did not seed Attune folders. Did not archive Firm Library `383f34de-…`. Did not apply migration 08, did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`, did not deploy the dirty filer. No commit/push.
+
+## 2026-09-21 — Untitled-document fix and org memory shipped
+
+Pushed `d753c7b8` (matter list filenames + org-scoped memory). Railway auto-deploy did not fire; `railway redeploy --from-source` on `mike` → `26a6de70` SUCCESS, SHA `d753c7b8`, https://mike-production-68f2.up.railway.app `/health` 200. That bounce restarted the upload-worker. Vercel preview `dpl_DFVdx2nH8m6cGeLsrdcVrWQHjsdk` READY; promoted to production `dpl_3sSbjYbFgKAEe9mRbzcJmR3nmuoH` READY + aliased to https://libris-colleague.vercel.app (`/` and `/login` 200). Did not apply migration 08, did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`, did not deploy the dirty filer tree. Org-memory migration `20260921_02` was already live on `gttnqqwqoirwbvalqfce`.
+
+Yule: hard-refresh S155. If Firm Library `383f34de-de29-45e3-89ab-31e09276c006` is still empty, upload Masters from OneDrive `Cowork - Cowork Library` (Templates `916ebaa7`, Commercial `fb616e60`, IP & Technology `40d04801`, ESOP `035e7df5`).
+
+Left uncommitted: Zoho/SharePoint fill-on-status leftovers (`httpUrl.ts`, integrations service/tests, ProjectWorkspace). `schema.sql` and `mikeApi.ts` in this SHA are org-memory only.
+
 ## 2026-09-21 — Untitled documents fix and Attune org setup
 
-Two workstreams. Not committed, not pushed, not deployed. Did not apply migration 08. Did not deploy the dirty filer.
+Two workstreams. Shipped as `d753c7b8` (see ship entry above). Did not apply migration 08. Did not deploy the dirty filer.
 
 ### Workstream 1 (code, local)
 
@@ -11,7 +25,7 @@ Two workstreams. Not committed, not pushed, not deployed. Did not apply migratio
 ### Workstream 2 (product hook + this-instance tenant data)
 
 - Migration `20260921_02_org_memory_files.sql` applied to production `gttnqqwqoirwbvalqfce` via Supabase MCP. Org memory columns are live. Attune house file is on org `587af71c-e526-4b0e-971e-7e2d285ddac8` (revision 2, 1452 bytes). Org memory is admin-edited only and is not curated from chats.
-- App code injects org memory when the project's `org_id` matches (precedence: conversation > project > org > app). Organization workspace has an Organization memory editor for admins. This code is local until deploy.
+- App code injects org memory when the project's `org_id` matches (precedence: conversation > project > org > app). Organization workspace has an Organization memory editor for admins. Live on `d753c7b8`.
 - Six Attune-org workflows created (not in DEFAULT_WORKFLOWS): House style and legal voice, Draft on letterhead, Find a precedent, New job request, Matter setup and naming, Retainer work note.
 - Firm Library project `383f34de-de29-45e3-89ab-31e09276c006` (`Attune - Firm Library`) with folders Templates, Precedents / Commercial, IP & Technology, ESOP & Equity. Memory off. **No files uploaded** (no user credentials for Mike upload).
 - S155 project memory filled with a working set (revision 39). Northeon already had a brief; its `org_id` was set to Attune Legal so org memory will inject after deploy. Empty project `c55d2d65` left alone.
@@ -19,7 +33,7 @@ Two workstreams. Not committed, not pushed, not deployed. Did not apply migratio
 
 ### What Yule must do next
 
-1. Deploy the Mike backend (Railway) and frontend (Vercel) so the list join fix and org-memory injection go live. Then hard-refresh S155.
+1. Hard-refresh S155 so the list join and org-memory injection show. Deploy is done (`d753c7b8`).
 2. Upload Masters into Firm Library from OneDrive `Cowork - Cowork Library` (same bytes as the zip):
    - Templates: `Attune Legal Letterhead and Contract Template.docx`, `Attune Legal - presentation template.pptx` into folder `916ebaa7-42af-457b-810b-c86d2207e7fc`.
    - Precedents/Commercial (`fb616e60-bf05-47cd-8962-ac45a6af7eeb`): Confidentiality Agreement (One-Way), Privacy Policy, SaaS Terms of Service, Website Terms and Conditions.

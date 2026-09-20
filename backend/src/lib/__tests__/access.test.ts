@@ -7,9 +7,11 @@ import {
     ensureDocAccess,
     ensureReviewAccess,
     filterAccessibleDocumentIds,
+    libraryRoleFromOrgRole,
     listAccessibleProjectIds,
     orgRoleToProjectRole,
     resolveContentOrgId,
+    resolveLibraryActor,
 } from "../access";
 
 type Row = Record<string, unknown>;
@@ -316,6 +318,62 @@ describe("org role inheritance", () => {
         expect(orgRoleToProjectRole("member")).toBe("editor");
     });
 
+    it("maps org Admin to library Owner and org Member to library Viewer", () => {
+        expect(libraryRoleFromOrgRole("admin")).toBe("owner");
+        expect(libraryRoleFromOrgRole("member")).toBe("viewer");
+    });
+
+    it("keeps the personal shelf and adds every org membership", async () => {
+        await expect(resolveLibraryActor(makeDb({}), "u")).resolves.toEqual({
+            userId: "u",
+            sources: [
+                {
+                    id: null,
+                    label: "Personal",
+                    access_role: "owner",
+                    org_role: null,
+                },
+            ],
+        });
+        await expect(
+            resolveLibraryActor(
+                makeDb({
+                    org_members: [
+                        { org_id: "org-b", user_id: "u", role: "member" },
+                        { org_id: "org-a", user_id: "u", role: "admin" },
+                    ],
+                    organizations: [
+                        { id: "org-a", name: "Attune Legal" },
+                        { id: "org-b", name: "Lex Nova" },
+                    ],
+                }),
+                "u",
+            ),
+        ).resolves.toEqual({
+            userId: "u",
+            sources: [
+                {
+                    id: null,
+                    label: "Personal",
+                    access_role: "owner",
+                    org_role: null,
+                },
+                {
+                    id: "org-a",
+                    label: "Attune Legal",
+                    access_role: "owner",
+                    org_role: "admin",
+                },
+                {
+                    id: "org-b",
+                    label: "Lex Nova",
+                    access_role: "viewer",
+                    org_role: "member",
+                },
+            ],
+        });
+    });
+
     const db = makeDb({
         projects: [
             { id: "org-project", user_id: "founder", org_id: "org-1" },
@@ -500,6 +558,33 @@ describe("org role inheritance", () => {
                 db,
             ),
         ).resolves.toEqual({ ok: false });
+    });
+
+    it("treats standalone org documents as a firm shelf (member reads, admin writes)", async () => {
+        await expect(
+            ensureDocAccess(
+                {
+                    user_id: "someone",
+                    project_id: null,
+                    org_id: "org-1",
+                },
+                "staffer",
+                "staffer@firm.example",
+                db,
+            ),
+        ).resolves.toMatchObject({ projectRole: "viewer", orgRole: "member" });
+        await expect(
+            ensureDocAccess(
+                {
+                    user_id: "someone",
+                    project_id: null,
+                    org_id: "org-1",
+                },
+                "boss",
+                "boss@firm.example",
+                db,
+            ),
+        ).resolves.toMatchObject({ projectRole: "owner", orgRole: "admin" });
     });
 
     it("inherits only the project verdict when a document belongs to a project", async () => {
