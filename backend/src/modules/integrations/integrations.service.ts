@@ -70,6 +70,8 @@ const FORBIDDEN_MESSAGE =
   "Only members of the matter-sync organisation can pull matters from Zoho.";
 const FILER_UNREACHABLE_MESSAGE =
   "The matter sync service did not respond. Please try again shortly.";
+export const PROJECT_NOT_READY_MESSAGE =
+  "The matter could not be created in Libris Colleague. Please try again shortly.";
 export const FOLDER_NOT_READY_MESSAGE =
   "The SharePoint folder for this matter has not been created yet. It will sync automatically once it appears.";
 
@@ -261,11 +263,20 @@ export async function pullZohoMatter(
     return failure("not_found", "That matter was not found in Zoho.");
   if (call.status === 409)
     return failure("conflict", FOLDER_NOT_READY_MESSAGE, "awaiting_folder");
-  if (call.status !== 200) return internalFailure(filerStatusError(call.status));
+  if (call.status !== 200) {
+    logError("integrations/filer", "pull unavailable", {
+      status: call.status,
+    });
+    return failure("unavailable", FILER_UNREACHABLE_MESSAGE);
+  }
 
   const projectId = stringOrNull(call.body.projectId);
-  if (!projectId)
-    return internalFailure(new Error("filer pull answered without projectId"));
+  if (!projectId) {
+    logError("integrations/filer", "pull answered without projectId", {
+      status: call.status,
+    });
+    return failure("unavailable", PROJECT_NOT_READY_MESSAGE);
+  }
   return ok({
     projectId,
     created: call.body.created === true,
@@ -303,7 +314,12 @@ export async function getMatterSyncStatus(
     fetchImpl,
   );
   if (!call.ok) return failure("unavailable", FILER_UNREACHABLE_MESSAGE);
-  if (call.status !== 200) return internalFailure(filerStatusError(call.status));
+  if (call.status !== 200) {
+    logError("integrations/filer", "status unavailable", {
+      status: call.status,
+    });
+    return failure("unavailable", FILER_UNREACHABLE_MESSAGE);
+  }
   if (call.body.found !== true) return ok({ found: false });
   return ok({
     found: true,

@@ -209,6 +209,28 @@ describe("integrations routes", () => {
     expect(JSON.stringify(response.body)).not.toContain("easysharepoint");
   });
 
+  it("maps a filer 200 without projectId to 503 and does not 500", async () => {
+    mocks.fetch.mockResolvedValue(
+      filerResponse(200, {
+        folderResolved: true,
+        driveId: "b!drive",
+        folderItemId: "01FOLDER",
+        created: false,
+      }),
+    );
+
+    const response = await request(app)
+      .post("/integrations/matters/pull")
+      .send({ matterId: "deal-1" });
+
+    expect(response.status).toBe(503);
+    expect(response.body.detail).toBe(
+      "The matter could not be created in Libris Colleague. Please try again shortly.",
+    );
+    expect(JSON.stringify(response.body)).not.toContain("folderResolved");
+    expect(JSON.stringify(response.body)).not.toContain("projectId");
+  });
+
   it("maps the filer's 404 and 400 onto intentional messages", async () => {
     mocks.fetch.mockResolvedValueOnce(
       filerResponse(404, { error: "Deal not found: stack trace here" }),
