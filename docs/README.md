@@ -16,6 +16,14 @@
   asynchronous learning, deletion, and operations
 - [CourtListener integration](courtlistener.md) — live US case-law tools and
   optional bulk data
+- [Australian Commonwealth legislation](au-legislation.md) — live Federal
+  Register of Legislation tools
+- [Australian energy law](au-energy.md) — ESC instruments, national energy
+  Laws and adoption Acts, AEMC rules, AER guidelines, and AEMO procedures
+- [Victorian legislation](au-vic-legislation.md) — live
+  legislation.vic.gov.au authorised compilations
+- [Australian case law](au-case-law.md) — High Court, Federal Court, NSW
+  Caselaw, and recent VSC PDFs (no AustLII)
 - [Microsoft Word add-in](../word-addin/README.md) — concise setup and command
   reference
 - [Word add-in development and deployment](word-addin-development.md) — manual

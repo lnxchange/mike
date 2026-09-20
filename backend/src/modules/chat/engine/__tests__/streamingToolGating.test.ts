@@ -23,12 +23,18 @@ const { streamChatWithTools, runToolCalls } = vi.hoisted(() => ({
     askInputsEvents: [],
     courtlistenerEvents: [],
     caseCitationEvents: [],
+    auLegislationEvents: [],
+    auEnergyEvents: [],
+    auVicLegislationEvents: [],
+    auCaseLawEvents: [],
+    legislationCitationEvents: [],
     mcpEvents: [],
   })),
 }));
 
 vi.mock("../../../../lib/llm", async () => ({
   ...(await vi.importActual<Record<string, unknown>>("../../../../lib/llm/models")),
+  DEFAULT_STREAM_MAX_ITERATIONS: 16,
   streamChatWithTools: (params: StreamChatCall) => streamChatWithTools(params),
 }));
 
@@ -122,6 +128,11 @@ describe("runLLMStream document-mutation gating", () => {
       askInputsEvents: [askInputsEvent],
       courtlistenerEvents: [],
       caseCitationEvents: [],
+      auLegislationEvents: [],
+      auEnergyEvents: [],
+      auVicLegislationEvents: [],
+      auCaseLawEvents: [],
+      legislationCitationEvents: [],
       mcpEvents: [],
     } as never);
     streamChatWithTools.mockImplementationOnce(
@@ -219,5 +230,101 @@ describe("runLLMStream document-mutation gating", () => {
       (call) => call.function.name,
     );
     expect(dispatched).toEqual(["edit_document"]);
+  });
+});
+
+describe("runLLMStream research-tool gating", () => {
+  it("advertises US tools by default and withholds AU tools", async () => {
+    await runLLMStream(baseParams());
+    const names = advertisedToolNames();
+    expect(names).toContain("courtlistener_verify_citations");
+    expect(names).not.toContain("au_search_legislation");
+  });
+
+  it("withholds US tools when includeUsResearchTools is false", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).not.toContain("au_search_legislation");
+  });
+
+  it("advertises AU tools only when includeAuResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).toContain("au_search_legislation");
+    expect(names).toContain("au_get_legislation");
+    expect(names).toContain("au_get_legislation_as_at");
+    expect(names).toContain("au_legislation_versions");
+    expect(names).toContain("au_find_in_legislation");
+    expect(names).not.toContain("au_search_energy");
+  });
+
+  it("can advertise both research surfaces independently", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: true,
+      includeAuResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).toContain("courtlistener_verify_citations");
+    expect(names).toContain("au_search_legislation");
+    expect(names).not.toContain("au_search_energy");
+  });
+
+  it("advertises AU energy tools only when includeAuEnergyResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: false,
+      includeAuEnergyResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).not.toContain("au_search_legislation");
+    expect(names).toContain("au_search_energy");
+    expect(names).toContain("au_get_energy");
+    expect(names).toContain("au_get_energy_as_at");
+    expect(names).toContain("au_energy_versions");
+    expect(names).toContain("au_find_in_energy");
+  });
+
+  it("advertises Victorian legislation tools only when includeAuVicResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: false,
+      includeAuEnergyResearchTools: false,
+      includeAuVicResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("au_search_legislation");
+    expect(names).not.toContain("au_search_energy");
+    expect(names).toContain("au_search_vic_legislation");
+    expect(names).toContain("au_get_vic_legislation");
+    expect(names).toContain("au_get_vic_legislation_as_at");
+    expect(names).toContain("au_vic_legislation_versions");
+    expect(names).toContain("au_find_in_vic_legislation");
+  });
+
+  it("advertises Australian case-law tools only when includeAuCasesResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: false,
+      includeAuCasesResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).toContain("au_search_case_law");
+    expect(names).toContain("au_get_case");
+    expect(names).toContain("au_find_in_case");
   });
 });

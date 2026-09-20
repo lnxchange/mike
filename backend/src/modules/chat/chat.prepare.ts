@@ -57,6 +57,10 @@ export type PreparedChatStream = {
     apiMessages: ReturnType<typeof buildMessages>;
     workflowStore: Awaited<ReturnType<typeof buildWorkflowStore>>;
     legalResearchUs: boolean;
+    legalResearchAu: boolean;
+    legalResearchAuEnergy: boolean;
+    legalResearchAuVic: boolean;
+    legalResearchAuCases: boolean;
     apiKeys: Awaited<ReturnType<typeof getUserModelSettings>>["api_keys"];
     titleModel: Awaited<
         ReturnType<typeof getUserModelSettings>
@@ -357,6 +361,10 @@ export async function prepareChatStream(
         const {
             api_keys: apiKeys,
             legal_research_us: legalResearchUs,
+            legal_research_au: legalResearchAu,
+            legal_research_au_energy: legalResearchAuEnergy,
+            legal_research_au_vic: legalResearchAuVic,
+            legal_research_au_cases: legalResearchAuCases,
             title_model: titleModel,
             personalisation,
         } = modelSettings;
@@ -369,7 +377,13 @@ export async function prepareChatStream(
             docAvailability,
             personalisationPrompt || undefined,
             undefined,
-            legalResearchUs,
+            {
+                us: legalResearchUs,
+                au: legalResearchAu,
+                energy: legalResearchAuEnergy,
+                vic: legalResearchAuVic,
+                cases: legalResearchAuCases,
+            },
             nonce,
         );
 
@@ -393,6 +407,10 @@ export async function prepareChatStream(
                 apiMessages,
                 workflowStore,
                 legalResearchUs,
+                legalResearchAu,
+                legalResearchAuEnergy,
+                legalResearchAuVic,
+                legalResearchAuCases,
                 apiKeys,
                 titleModel,
                 selectedModel,

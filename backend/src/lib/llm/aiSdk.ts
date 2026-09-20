@@ -2,13 +2,14 @@ import type { LanguageModel, ToolSet } from "ai" with {
   "resolution-mode": "import",
 };
 import type * as AiSdk from "ai" with { "resolution-mode": "import" };
-import type {
-  NormalizedToolCall,
-  NormalizedToolResult,
-  OpenAIToolSchema,
-  Provider,
-  StreamChatParams,
-  StreamChatResult,
+import {
+  DEFAULT_STREAM_MAX_ITERATIONS,
+  type NormalizedToolCall,
+  type NormalizedToolResult,
+  type OpenAIToolSchema,
+  type Provider,
+  type StreamChatParams,
+  type StreamChatResult,
 } from "./types";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 
@@ -255,6 +256,37 @@ function usesCourtlistenerTool(
   );
 }
 
+export const LAST_STEP_WRITE_REMINDER = `LAST STEP: Do not call any tools. Write the user-facing answer now from the documents and notes already in this response. If you cannot finish every attachment or edit, write what you have and state what remains.`;
+
+export type StreamStepState = {
+  toolCalls: Array<{ toolName: string }>;
+};
+
+export function prepareAssistantStreamStep(args: {
+  steps: StreamStepState[];
+  maxIterations: number;
+  systemPrompt: string;
+  courtlistenerReminder?: boolean;
+}):
+  | { system?: string; activeTools?: []; toolChoice?: "none" }
+  | undefined {
+  const maxIterations = Math.max(1, args.maxIterations);
+  const lastStep = args.steps.length >= maxIterations - 1;
+  const courtlistener =
+    args.courtlistenerReminder === true && usesCourtlistenerTool(args.steps);
+  if (!lastStep && !courtlistener) return undefined;
+  const extras = [
+    courtlistener ? COURTLISTENER_CITATION_REMINDER : "",
+    lastStep ? LAST_STEP_WRITE_REMINDER : "",
+  ].filter(Boolean);
+  return {
+    ...(lastStep ? { activeTools: [] as [], toolChoice: "none" as const } : {}),
+    system: extras.length
+      ? `${args.systemPrompt}\n\n${extras.join("\n\n")}`
+      : args.systemPrompt,
+  };
+}
+
 export async function streamAiSdk(
   params: StreamChatParams,
   config: AiSdkAdapterConfig,
@@ -269,6 +301,8 @@ export async function streamAiSdk(
   let iteration = 0;
   const openReasoningBlocks = new Set<string>();
 
+  const maxIterations = params.maxIterations ?? DEFAULT_STREAM_MAX_ITERATIONS;
+
   try {
     const result = sdk.streamText({
       model: config.model,
@@ -276,7 +310,7 @@ export async function streamAiSdk(
       messages: params.messages,
       tools,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
-      stopWhen: sdk.stepCountIs(params.maxIterations ?? 10),
+      stopWhen: sdk.stepCountIs(maxIterations),
       abortSignal: params.abortSignal,
       reasoning:
         config.supportsReasoning === false
@@ -289,20 +323,17 @@ export async function streamAiSdk(
               | Exclude<NonNullable<StreamChatParams["reasoning"]>, "max">
               | undefined),
       include: { rawChunks: true },
-      ...(config.courtlistenerCitationReminder
-        ? {
-            prepareStep: ({
-              steps,
-            }: {
-              steps: Array<{ toolCalls: Array<{ toolName: string }> }>;
-            }) =>
-              usesCourtlistenerTool(steps)
-                ? {
-                    system: `${params.systemPrompt}\n\n${COURTLISTENER_CITATION_REMINDER}`,
-                  }
-                : undefined,
-          }
-        : {}),
+      prepareStep: ({
+        steps,
+      }: {
+        steps: Array<{ toolCalls: Array<{ toolName: string }> }>;
+      }) =>
+        prepareAssistantStreamStep({
+          steps,
+          maxIterations,
+          systemPrompt: params.systemPrompt,
+          courtlistenerReminder: config.courtlistenerCitationReminder,
+        }),
     });
 
     for await (const part of result.stream) {

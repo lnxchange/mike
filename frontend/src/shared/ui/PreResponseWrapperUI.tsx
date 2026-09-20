@@ -10,6 +10,7 @@ export interface PreResponseWrapperUIProps {
     shouldMinimize: boolean;
     isStreaming: boolean;
     forceOpen?: boolean;
+    incomplete?: boolean;
 }
 
 /**
@@ -23,6 +24,7 @@ export function PreResponseWrapperUI({
     shouldMinimize,
     isStreaming,
     forceOpen = false,
+    incomplete = false,
 }: PreResponseWrapperUIProps) {
     const [userToggled, setUserToggled] = useState(false);
     const [isOpen, setIsOpen] = useState(!shouldMinimize);
@@ -44,7 +46,9 @@ export function PreResponseWrapperUI({
     const stepWord = `step${stepCount === 1 ? "" : "s"}`;
     const label = isStreaming
         ? "Working"
-        : `Completed in ${stepCount} ${stepWord}`;
+        : incomplete
+          ? `Stopped after ${stepCount} ${stepWord}`
+          : `Completed in ${stepCount} ${stepWord}`;
 
     return (
         <GlassCardUI>

@@ -342,11 +342,158 @@ export type AssistantEvent =
       isStreaming?: boolean;
     })
   | (Omit<
+      WireActivity<"au_search_legislation">,
+      "result_count" | "error" | "isStreaming"
+    > & { result_count?: number; error?: string; isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"au_get_legislation">,
+      "name" | "section" | "as_at" | "error" | "isStreaming"
+    > & {
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_get_legislation_as_at">,
+      "name" | "section" | "error" | "isStreaming"
+    > & {
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_legislation_versions">,
+      "version_count" | "error" | "isStreaming"
+    > & { version_count?: number; error?: string; isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"au_find_in_legislation">,
+      | "total_matches"
+      | "name"
+      | "searches"
+      | "error"
+      | "isStreaming"
+    > & {
+      total_matches?: number;
+      name?: string | null;
+      searches?: {
+        title_id: string | null;
+        query: string;
+        total_matches?: number;
+        name?: string | null;
+        error?: string;
+      }[];
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_search_energy">,
+      "result_count" | "error" | "isStreaming"
+    > & { result_count?: number; error?: string; isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"au_get_energy">,
+      "name" | "section" | "as_at" | "error" | "isStreaming"
+    > & {
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_get_energy_as_at">,
+      "name" | "section" | "error" | "isStreaming"
+    > & {
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_energy_versions">,
+      "version_count" | "error" | "isStreaming"
+    > & { version_count?: number; error?: string; isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"au_find_in_energy">,
+      "total_matches" | "name" | "error" | "isStreaming"
+    > & {
+      total_matches?: number;
+      name?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_search_vic_legislation">,
+      "result_count" | "error" | "isStreaming"
+    > & { result_count?: number; error?: string; isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"au_get_vic_legislation">,
+      "name" | "section" | "as_at" | "error" | "isStreaming"
+    > & {
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_get_vic_legislation_as_at">,
+      "name" | "section" | "error" | "isStreaming"
+    > & {
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_vic_legislation_versions">,
+      "version_count" | "error" | "isStreaming"
+    > & { version_count?: number; error?: string; isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"au_find_in_vic_legislation">,
+      "total_matches" | "name" | "error" | "isStreaming"
+    > & {
+      total_matches?: number;
+      name?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_search_case_law">,
+      "result_count" | "error" | "isStreaming"
+    > & { result_count?: number; error?: string; isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"au_get_case">,
+      "name" | "section" | "error" | "isStreaming"
+    > & {
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
+      WireActivity<"au_find_in_case">,
+      "total_matches" | "name" | "error" | "isStreaming"
+    > & {
+      total_matches?: number;
+      name?: string | null;
+      error?: string;
+      isStreaming?: boolean;
+    })
+  | (Omit<
       WireActivity<"case_citation">,
       "pdfUrl" | "dateFiled" | "document"
     > & {
       pdfUrl?: string | null;
       dateFiled?: string | null;
+      document?: PanelDocument;
+    })
+  | (Omit<
+      WireActivity<"legislation_citation">,
+      "document"
+    > & {
       document?: PanelDocument;
     })
   | (Omit<WireActivity<"case_opinions">, "document"> & {
@@ -358,6 +505,12 @@ export type CaseCitationQuote = {
   opinionId: number | null;
   type: string | null;
   author: string | null;
+  quote: string;
+  verification?: QuoteVerification;
+};
+
+export type LegislationCitationQuote = {
+  section: string | null;
   quote: string;
   verification?: QuoteVerification;
 };
@@ -444,12 +597,26 @@ export type CaseCitation = {
   document?: PanelDocument;
 };
 
+export type LegislationCitation = {
+  type: "citation_data";
+  kind: "legislation";
+  ref: number;
+  title_id: string;
+  name?: string | null;
+  as_at?: string | null;
+  url?: string | null;
+  quotes: LegislationCitationQuote[];
+  /** True only when every quote was matched against fetched register text. */
+  verified?: boolean;
+  document?: PanelDocument;
+};
+
 /**
  * A citation emitted by the assistant. Document citations have doc/page
- * anchors. Case citations anchor to a CourtListener cluster and include a
- * quoted opinion passage.
+ * anchors. Case citations anchor to a CourtListener cluster. Legislation
+ * citations anchor to a Federal Register title and a quoted provision.
  */
-export type Citation = DocumentCitation | CaseCitation;
+export type Citation = DocumentCitation | CaseCitation | LegislationCitation;
 
 export function panelDocumentType(filename: string): PanelDocumentType {
   const extension = filename.split(".").pop()?.toLowerCase();
@@ -471,7 +638,7 @@ export function panelDocumentFromCitation(
   if (citation.document) {
     if (!includeQuotes) return { ...citation.document, quotes: [] };
     const citationQuotes =
-      citation.kind === "case"
+      citation.kind === "case" || citation.kind === "legislation"
         ? citation.quotes
         : getDocumentCitationQuotes(citation);
     return {
@@ -488,6 +655,41 @@ export function panelDocumentFromCitation(
             }
           : quote;
       }),
+    };
+  }
+  if (citation.kind === "legislation") {
+    const title = citation.name?.trim() || citation.title_id;
+    return {
+      document_id: `legislation:${citation.title_id}${
+        citation.as_at ? `:${citation.as_at}` : ""
+      }`,
+      title: title || "Legislation",
+      type: "legislation",
+      metadata: [
+        { label: "Title ID", value: citation.title_id },
+        ...(citation.as_at
+          ? [{ label: "As at", value: citation.as_at, format: "date" as const }]
+          : []),
+      ],
+      actions: citation.url
+        ? [
+            {
+              type: "link" as const,
+              url: citation.url,
+              label: "Register",
+              title: "Federal Register of Legislation",
+            },
+          ]
+        : [],
+      quotes: includeQuotes
+        ? citation.quotes.map((quote) => ({
+            quote: quote.quote,
+            ...(quote.verification ? { verification: quote.verification } : {}),
+            target: quote.section
+              ? { subdocument_id: quote.section }
+              : {},
+          }))
+        : [],
     };
   }
   if (citation.kind === "case") {
@@ -628,7 +830,7 @@ export function expandDocumentQuoteEntry(entry: {
 }
 
 function getDocumentCitationQuotes(a: Citation): DocumentCitationQuote[] {
-  if (a.kind === "case") return [];
+  if (a.kind === "case" || a.kind === "legislation") return [];
   if (Array.isArray(a.quotes) && a.quotes.length) {
     return a.quotes.filter((entry) => entry.quote.trim().length > 0);
   }
@@ -641,7 +843,7 @@ function getDocumentCitationQuotes(a: Citation): DocumentCitationQuote[] {
  * cross-page citation with page "N-M" and a `[[PAGE_BREAK]]` split yields two.
  */
 export function expandCitationToEntries(a: Citation): CitationQuote[] {
-  if (a.kind === "case") return [];
+  if (a.kind === "case" || a.kind === "legislation") return [];
   return getDocumentCitationQuotes(a).flatMap(expandDocumentQuoteEntry);
 }
 
@@ -653,6 +855,13 @@ export function expandCitationToEntries(a: Citation): CitationQuote[] {
 export function formatCitationPage(a: Citation): string {
   if (a.kind === "case") {
     return a.citation || a.case_name || `Case ${a.cluster_id}`;
+  }
+  if (a.kind === "legislation") {
+    const sections = Array.from(
+      new Set(a.quotes.map((quote) => quote.section).filter(Boolean)),
+    );
+    if (sections.length) return `s ${sections.join(", ")}`;
+    return a.name || a.title_id;
   }
   const quotes = getDocumentCitationQuotes(a);
   // Spreadsheets are located by cell, e.g. "Sheet1!B7" (or several).
@@ -682,7 +891,7 @@ function cleanCitationQuoteText(rawQuote: string): string {
 
 /** Produce a reader-friendly version of the quote (replaces [[PAGE_BREAK]] with "..."). */
 export function displayCitationQuote(a: Citation): string {
-  if (a.kind === "case") {
+  if (a.kind === "case" || a.kind === "legislation") {
     return a.quotes
       .map((q) => q.quote.replaceAll(PAGE_BREAK_SENTINEL, "..."))
       .join(" / ");

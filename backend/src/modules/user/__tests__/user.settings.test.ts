@@ -227,7 +227,68 @@ describe("getUserModelSettings on an un-migrated database", () => {
         );
 
         expect(settings.legal_research_us).toBe(true);
+        expect(settings.legal_research_au).toBe(false);
+        expect(settings.legal_research_au_energy).toBe(false);
+        expect(settings.legal_research_au_vic).toBe(false);
+        expect(settings.legal_research_au_cases).toBe(false);
         expect(settings.title_model).toBeNull();
         expect(settings.tabular_model).toBeNull();
+    });
+});
+
+describe("getUserModelSettings Australian legal research", () => {
+    it("defaults AU research on when jurisdiction is Australia and the column is unset", async () => {
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                title_model: "claude-haiku-4-5",
+                tabular_model: "claude-sonnet-5",
+                legal_research_us: true,
+                jurisdiction: "Australia",
+            }),
+        );
+
+        expect(settings.legal_research_au).toBe(true);
+        expect(settings.legal_research_au_energy).toBe(true);
+        expect(settings.legal_research_au_vic).toBe(true);
+        expect(settings.legal_research_au_cases).toBe(true);
+    });
+
+    it("keeps an explicit AU off choice even for an Australian jurisdiction", async () => {
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                title_model: "claude-haiku-4-5",
+                tabular_model: "claude-sonnet-5",
+                legal_research_us: true,
+                legal_research_au: false,
+                legal_research_au_energy: false,
+                legal_research_au_vic: false,
+                legal_research_au_cases: false,
+                jurisdiction: "Australia",
+            }),
+        );
+
+        expect(settings.legal_research_au).toBe(false);
+        expect(settings.legal_research_au_energy).toBe(false);
+        expect(settings.legal_research_au_vic).toBe(false);
+        expect(settings.legal_research_au_cases).toBe(false);
+    });
+
+    it("defaults AU research off when jurisdiction is not Australia", async () => {
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                title_model: "claude-haiku-4-5",
+                tabular_model: "claude-sonnet-5",
+                legal_research_us: true,
+                jurisdiction: "Singapore",
+            }),
+        );
+
+        expect(settings.legal_research_au).toBe(false);
+        expect(settings.legal_research_au_energy).toBe(false);
+        expect(settings.legal_research_au_vic).toBe(false);
+        expect(settings.legal_research_au_cases).toBe(false);
     });
 });

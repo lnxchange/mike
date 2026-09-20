@@ -58,4 +58,24 @@ describe("PreResponseWrapperUI", () => {
 
         expect(await screen.findByText("Read agreement")).toBeVisible();
     });
+
+    it("labels an interrupted turn as stopped rather than completed", () => {
+        render(
+            <PreResponseWrapperUI
+                stepCount={12}
+                shouldMinimize={false}
+                isStreaming={false}
+                incomplete
+            >
+                <div>Read agreement</div>
+            </PreResponseWrapperUI>,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "Stopped after 12 steps" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Completed in 12 steps" }),
+        ).toBeNull();
+    });
 });

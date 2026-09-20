@@ -4,6 +4,8 @@ import {
   type LlmMessage,
   type OpenAIToolSchema,
 } from "../../../lib/llm";
+import { DEFAULT_STREAM_MAX_ITERATIONS } from "../../../lib/llm/types";
+import { withIncompleteTurnEvent } from "./incompleteTurn";
 import { resolveRequestedModel } from "../../../lib/routerModels";
 import { UserFacingError } from "../../../lib/userFacingError";
 import type { Db } from "../../../lib/supabase";
@@ -14,6 +16,10 @@ import {
   type CaseCitationEvent,
   type CourtlistenerToolEvent,
 } from "./tools/courtlistenerTools";
+import { AU_LEGISLATION_TOOLS } from "./tools/auLegislationTools";
+import { AU_ENERGY_TOOLS } from "./tools/auEnergyTools";
+import { AU_VIC_LEGISLATION_TOOLS } from "./tools/auVicLegislationTools";
+import { AU_CASE_LAW_TOOLS } from "./tools/auCaseLawTools";
 import {
   type DocStore,
   type DocIndex,
@@ -43,6 +49,10 @@ import {
   getCachedCaseOpinionTexts,
   type CourtlistenerTurnState,
 } from "./tools/courtlistenerTurnState";
+import {
+  getCachedLegislationText,
+  type AuLegislationTurnState,
+} from "./tools/auLegislationTurnState";
 import {
   readDocumentContent,
   type TurnEditState,
@@ -164,7 +174,13 @@ export async function runLLMStream(params: {
   db: Db;
   write: (s: string) => void;
   extraTools?: unknown[];
+  /** US case-law tools (CourtListener). Kept as the legacy alias. */
   includeResearchTools?: boolean;
+  includeUsResearchTools?: boolean;
+  includeAuResearchTools?: boolean;
+  includeAuEnergyResearchTools?: boolean;
+  includeAuVicResearchTools?: boolean;
+  includeAuCasesResearchTools?: boolean;
   /** Expose ask_inputs only to clients that can render and answer it. */
   includeAskInputs?: boolean;
   /**
@@ -184,9 +200,10 @@ export async function runLLMStream(params: {
   /** Tools executed by the connected client (Word add-in) instead of here. */
   clientTools?: ClientToolsAdapter;
   /**
-   * Tool-loop iteration budget (default 10). Surfaces whose tools are built
-   * around retry round-trips (Word client edits: propose → fail → re-read →
-   * retry) need headroom, or the loop ends before the model's summary.
+   * Tool-loop iteration budget (default 16, last step reserved for writing).
+   * Surfaces whose tools are built around retry round-trips (Word client
+   * edits: propose → fail → re-read → retry) need headroom, or the loop ends
+   * before the model's summary.
    */
   maxIterations?: number;
   buildCitations?: (fullText: string) => unknown[];
@@ -226,6 +243,11 @@ export async function runLLMStream(params: {
     db,
     write: unsafeWrite,
     extraTools,
+    includeUsResearchTools,
+    includeAuResearchTools = false,
+    includeAuEnergyResearchTools = false,
+    includeAuVicResearchTools = false,
+    includeAuCasesResearchTools = false,
     includeResearchTools = true,
     includeAskInputs = true,
     allowDocumentMutation = true,
@@ -244,7 +266,14 @@ export async function runLLMStream(params: {
   } = params;
   const write = (chunk: string) =>
     unsafeWrite(sanitizeAssistantSseChunk(chunk));
-  const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
+  const usResearch = includeUsResearchTools ?? includeResearchTools;
+  const researchTools = [
+    ...(usResearch ? COURTLISTENER_TOOLS : []),
+    ...(includeAuResearchTools ? AU_LEGISLATION_TOOLS : []),
+    ...(includeAuEnergyResearchTools ? AU_ENERGY_TOOLS : []),
+    ...(includeAuVicResearchTools ? AU_VIC_LEGISLATION_TOOLS : []),
+    ...(includeAuCasesResearchTools ? AU_CASE_LAW_TOOLS : []),
+  ];
   const mcpTools = await buildUserMcpTools(userId, db);
   const conversationTools = includeAskInputs
     ? TOOLS
@@ -307,6 +336,9 @@ export async function runLLMStream(params: {
   const courtlistenerTurnState: CourtlistenerTurnState = {
     casesByClusterId: new Map(),
   };
+  const auLegislationTurnState: AuLegislationTurnState = {
+    titlesByCacheKey: new Map(),
+  };
   let fullText = "";
   let iterText = "";
   let iterVisibleText = "";
@@ -338,6 +370,7 @@ export async function runLLMStream(params: {
         docIndex,
         courtlistenerTurnState.casesByClusterId,
         docStore,
+        auLegislationTurnState.titlesByCacheKey,
       ),
     );
     emitCitationStreamSnapshot("partial", citations);
@@ -455,7 +488,7 @@ export async function runLLMStream(params: {
       systemPrompt,
       messages: chatMessages,
       tools: activeTools as OpenAIToolSchema[],
-      maxIterations: params.maxIterations ?? 10,
+      maxIterations: params.maxIterations ?? DEFAULT_STREAM_MAX_ITERATIONS,
       apiKeys,
       reasoning: params.reasoning ?? "high",
       abortSignal: signal,
@@ -544,6 +577,11 @@ export async function runLLMStream(params: {
           askInputsEvents,
           courtlistenerEvents,
           caseCitationEvents,
+          auLegislationEvents,
+          auEnergyEvents,
+          auVicLegislationEvents,
+          auCaseLawEvents,
+          legislationCitationEvents,
           mcpEvents,
         } = await runToolCalls(
           toolCalls,
@@ -560,6 +598,7 @@ export async function runLLMStream(params: {
           courtlistenerTurnState,
           apiKeys,
           nonce,
+          auLegislationTurnState,
         );
         throwIfAborted(signal);
         for (const r of docsRead) {
@@ -625,10 +664,25 @@ export async function runLLMStream(params: {
         for (const event of courtlistenerEvents) {
           events.push(event);
         }
+        for (const event of auLegislationEvents) {
+          events.push(event);
+        }
+        for (const event of auEnergyEvents) {
+          events.push(event);
+        }
+        for (const event of auVicLegislationEvents) {
+          events.push(event);
+        }
+        for (const event of auCaseLawEvents) {
+          events.push(event);
+        }
         for (const event of mcpEvents) {
           events.push(event);
         }
         for (const event of caseCitationEvents) {
+          events.push(event);
+        }
+        for (const event of legislationCitationEvents) {
           events.push(event);
         }
 
@@ -693,6 +747,13 @@ export async function runLLMStream(params: {
 
   flushText();
 
+  const incompleteEvents = withIncompleteTurnEvent(events);
+  if (incompleteEvents.length > events.length) {
+    const extra = incompleteEvents[incompleteEvents.length - 1]!;
+    events.push(extra);
+    write(`data: ${JSON.stringify(extra)}\n\n`);
+  }
+
   // Parse and emit citations from <CITATIONS> block
   const { citations: parsedCitations, diagnostics: citationDiagnostics } =
     parseCitationsWithDiagnostics(fullText);
@@ -707,6 +768,7 @@ export async function runLLMStream(params: {
         docIndex,
         courtlistenerTurnState.casesByClusterId,
         docStore,
+        auLegislationTurnState.titlesByCacheKey,
       ),
     );
     // Server-side quote verification. Fetch each document's extracted source
@@ -732,6 +794,8 @@ export async function runLLMStream(params: {
       getSourceText,
       async (clusterId) =>
         getCachedCaseOpinionTexts(courtlistenerTurnState, clusterId),
+      async (titleId, asAt) =>
+        getCachedLegislationText(auLegislationTurnState, titleId, asAt),
     );
   }
   devLog("[chat/stream] final citations", {

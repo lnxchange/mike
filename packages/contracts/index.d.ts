@@ -233,6 +233,160 @@ export type CaseCitationEvent = {
   document: SourceDocument;
 };
 
+export type AuLegislationToolEvent =
+  | {
+      type: "au_search_legislation";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_legislation";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_get_legislation_as_at";
+      title_id: string;
+      date: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_legislation_versions";
+      title_id: string;
+      version_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_legislation";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      searches?: {
+        title_id: string | null;
+        query: string;
+        total_matches: number;
+        name?: string | null;
+        error?: string;
+      }[];
+      error?: string;
+    };
+
+export type AuVicLegislationToolEvent =
+  | {
+      type: "au_search_vic_legislation";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_vic_legislation";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_get_vic_legislation_as_at";
+      title_id: string;
+      date: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_vic_legislation_versions";
+      title_id: string;
+      version_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_vic_legislation";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      error?: string;
+    };
+
+export type AuCaseLawToolEvent =
+  | {
+      type: "au_search_case_law";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_case";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_case";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      error?: string;
+    };
+
+export type AuEnergyToolEvent =
+  | {
+      type: "au_search_energy";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_energy";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_get_energy_as_at";
+      title_id: string;
+      date: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_energy_versions";
+      title_id: string;
+      version_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_energy";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      error?: string;
+    };
+
+export type LegislationCitationEvent = {
+  type: "legislation_citation";
+  title_id: string;
+  name: string | null;
+  as_at: string | null;
+  compilation_number: string | null;
+  url: string;
+  document: SourceDocument;
+};
+
 export type McpToolEvent = {
   type: "mcp_tool_call";
   connector_id: string;
@@ -304,7 +458,12 @@ export type AssistantEvent =
       annotations: EditAnnotation[];
     }
   | CaseCitationEvent
+  | LegislationCitationEvent
   | CourtlistenerToolEvent
+  | AuLegislationToolEvent
+  | AuEnergyToolEvent
+  | AuVicLegislationToolEvent
+  | AuCaseLawToolEvent
   | McpToolEvent
   | {
       type: "case_opinions";

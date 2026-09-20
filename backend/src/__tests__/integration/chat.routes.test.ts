@@ -292,6 +292,10 @@ vi.mock("../../modules/chat/engine/index", async (importOriginal) => {
 vi.mock("../../modules/user/user.settings", () => ({
     getUserModelSettings: vi.fn(async () => ({
         legal_research_us: false,
+        legal_research_au: false,
+        legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
         title_model: "test-model",
         tabular_model: "test-model",
         last_selected_chat_model: null,
@@ -517,6 +521,10 @@ describe("POST /chat — streaming endpoint", () => {
         const userSettings = await import("../../modules/user/user.settings.js");
         vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
             legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             title_model: null,
             memory_curator_model: null,
             last_selected_reasoning_level: null,
@@ -746,6 +754,10 @@ describe("POST /chat — streaming endpoint", () => {
         const userSettings = await import("../../modules/user/user.settings.js");
         vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
             legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             title_model: null,
             memory_curator_model: null,
             last_selected_reasoning_level: null,
@@ -1019,6 +1031,10 @@ describe("POST /chat — streaming endpoint", () => {
             content: expect.arrayContaining([
                 { type: "content", text: "partial" },
                 { type: "content", text: "Cancelled by user." },
+                expect.objectContaining({
+                    type: "error",
+                    safe_to_display: true,
+                }),
             ]),
         });
     expect(releaseMemoryConversationTurn).toHaveBeenCalledWith({
@@ -1296,6 +1312,10 @@ describe("POST /chat — streaming endpoint", () => {
             tabular_model: "test-model",
             last_selected_chat_model: null,
             legal_research_us: true,
+            legal_research_au: true,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             api_keys: {
                 gemini: "test-key",
                 courtlistener: "configured-but-unused",
@@ -1316,12 +1336,59 @@ describe("POST /chat — streaming endpoint", () => {
         expect(buildMessagesCall[4]).toBe(false);
         expect(buildMessagesCall[6]).toBe("replace");
         expect(runLLMStream).toHaveBeenCalledWith(
-            expect.objectContaining({ includeResearchTools: false }),
+            expect.objectContaining({
+                includeResearchTools: false,
+                includeAuResearchTools: false,
+                includeAuEnergyResearchTools: false,
+                includeAuVicResearchTools: false,
+                includeAuCasesResearchTools: false,
+            }),
         );
         const streamArgs = runLLMStream.mock.calls[0]?.[0] as {
             apiKeys?: { courtlistener?: string };
         };
         expect(streamArgs.apiKeys?.courtlistener).toBeUndefined();
+    });
+
+    it("passes independent US and AU research flags into chat", async () => {
+        const chatLib = await import("../../modules/chat/engine/index.js");
+        const userSettings = await import("../../modules/user/user.settings.js");
+        vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
+            title_model: "test-model",
+            memory_curator_model: null,
+            last_selected_reasoning_level: null,
+            tabular_model: "test-model",
+            last_selected_chat_model: null,
+            legal_research_us: false,
+            legal_research_au: true,
+            legal_research_au_energy: true,
+            legal_research_au_vic: true,
+            legal_research_au_cases: true,
+            api_keys: { gemini: "test-key" },
+        });
+
+        const res = await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        expect(vi.mocked(chatLib.buildMessages).mock.calls[0]?.[4]).toEqual({
+            us: false,
+            au: true,
+            energy: true,
+            vic: true,
+            cases: true,
+        });
+        expect(runLLMStream).toHaveBeenCalledWith(
+            expect.objectContaining({
+                includeUsResearchTools: false,
+                includeAuResearchTools: true,
+                includeAuEnergyResearchTools: true,
+                includeAuVicResearchTools: true,
+                includeAuCasesResearchTools: true,
+            }),
+        );
     });
 });
 
@@ -1662,6 +1729,10 @@ async function seedResolvableModel() {
     const userSettings = await import("../../modules/user/user.settings.js");
     vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
         legal_research_us: false,
+        legal_research_au: false,
+        legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
         title_model: null,
         memory_curator_model: null,
         last_selected_reasoning_level: null,

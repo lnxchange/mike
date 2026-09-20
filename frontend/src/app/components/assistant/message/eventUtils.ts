@@ -32,6 +32,32 @@ export function toolCallLabel(name: string): string {
     if (name === "courtlistener_read_case") return "Reading case...";
     if (name === "courtlistener_verify_citations")
         return "Verifying citations...";
+    if (name === "au_search_legislation")
+        return "Searching the Federal Register...";
+    if (name === "au_get_legislation") return "Reading legislation...";
+    if (name === "au_get_legislation_as_at")
+        return "Reading legislation as at date...";
+    if (name === "au_legislation_versions") return "Listing compilations...";
+    if (name === "au_find_in_legislation") return "Searching legislation...";
+    if (name === "au_search_energy") return "Searching energy instruments...";
+    if (name === "au_get_energy") return "Reading energy instrument...";
+    if (name === "au_get_energy_as_at")
+        return "Reading energy instrument as at date...";
+    if (name === "au_energy_versions") return "Listing energy versions...";
+    if (name === "au_find_in_energy") return "Searching energy instrument...";
+    if (name === "au_search_vic_legislation")
+        return "Searching Victorian legislation...";
+    if (name === "au_get_vic_legislation")
+        return "Reading Victorian legislation...";
+    if (name === "au_get_vic_legislation_as_at")
+        return "Reading Victorian legislation as at date...";
+    if (name === "au_vic_legislation_versions")
+        return "Listing Victorian versions...";
+    if (name === "au_find_in_vic_legislation")
+        return "Searching Victorian legislation...";
+    if (name === "au_search_case_law") return "Searching Australian cases...";
+    if (name === "au_get_case") return "Reading Australian case...";
+    if (name === "au_find_in_case") return "Searching Australian case...";
     if (name.startsWith("mcp_")) return "Using connector...";
     return name ? `Running ${name}...` : "Working...";
 }

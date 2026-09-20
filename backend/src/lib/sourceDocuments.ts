@@ -213,6 +213,73 @@ export function normalizeCaseDocument(args: {
   };
 }
 
+export function legislationDocumentId(
+  titleId: string,
+  asAt?: string | null,
+): string {
+  const id = titleId.trim().toUpperCase();
+  return asAt ? `legislation:${id}:${asAt}` : `legislation:${id}`;
+}
+
+export function normalizeLegislationDocument(args: {
+  titleId: string;
+  name?: string | null;
+  asAt?: string | null;
+  compilationNumber?: string | null;
+  url?: string | null;
+  quotes?: unknown[];
+}): SourceDocument {
+  const titleId = args.titleId.trim();
+  const documentId = legislationDocumentId(titleId, args.asAt);
+  const title = stringValue(args.name) ?? titleId;
+  const metadata: SourceDocumentMetadata[] = [
+    { label: "Title ID", value: titleId },
+  ];
+  const compilation = stringValue(args.compilationNumber);
+  if (compilation) {
+    metadata.push({ label: "Compilation", value: compilation });
+  }
+  const asAt = stringValue(args.asAt);
+  if (asAt) {
+    metadata.push({ label: "As at", value: asAt, format: "date" });
+  }
+  const actions: SourceDocumentAction[] = [];
+  const sourceUrl = stringValue(args.url);
+  if (sourceUrl) {
+    actions.push({
+      type: "link",
+      url: sourceUrl,
+      label: "Register",
+      title: "Federal Register of Legislation",
+    });
+  }
+  const quotes: SourceDocumentQuote[] = (args.quotes ?? [])
+    .map((value): SourceDocumentQuote | null => {
+      const quote = record(value);
+      const text = stringValue(quote?.quote);
+      if (!quote || !text) return null;
+      const verification = quoteVerificationValue(quote.verification);
+      const section = stringValue(quote.section);
+      return {
+        quote: text,
+        ...(verification ? { verification } : {}),
+        target: {
+          ...(section ? { subdocument_id: section } : {}),
+        },
+      };
+    })
+    .filter((quote): quote is SourceDocumentQuote => !!quote);
+
+  return {
+    document_id: documentId,
+    title,
+    type: "legislation",
+    metadata,
+    ...(actions.length ? { actions } : {}),
+    quotes,
+  };
+}
+
 export function sourceDocumentType(filename: string): SourceDocumentType {
   const extension = filename.split(".").pop()?.toLowerCase();
   if (extension === "docx" || extension === "doc") return "docx";

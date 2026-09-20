@@ -22,12 +22,25 @@ export type UserProfileRow = {
     last_selected_reasoning_level?: string | null;
     mfa_on_login: boolean | null;
     legal_research_us: boolean | null;
+    legal_research_au?: boolean | null;
+    legal_research_au_energy?: boolean | null;
+    legal_research_au_vic?: boolean | null;
+    legal_research_au_cases?: boolean | null;
     quick_actions_visible: boolean | null;
     dark_mode: boolean | null;
     project_memory_default: boolean | null;
 };
 
 const PROFILE_SELECT_NEWEST =
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, legal_research_au, legal_research_au_energy, legal_research_au_vic, legal_research_au_cases, quick_actions_visible, dark_mode, project_memory_default";
+
+const PROFILE_SELECT_NO_LEGAL_RESEARCH_AU_VIC_CASES =
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, legal_research_au, legal_research_au_energy, quick_actions_visible, dark_mode, project_memory_default";
+
+const PROFILE_SELECT_NO_LEGAL_RESEARCH_AU_ENERGY =
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, legal_research_au, quick_actions_visible, dark_mode, project_memory_default";
+
+const PROFILE_SELECT_NO_LEGAL_RESEARCH_AU =
     "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, project_memory_default";
 
 const PROFILE_SELECT_NO_MEMORY_CURATOR_MODEL =
@@ -103,6 +116,75 @@ export async function selectProfile(db: Db, userId: string, mode: "maybe" | "sin
             : await newestQuery.maybeSingle();
     if (!newest.error) return newest;
     let cascadeError: unknown = newest.error;
+
+    if (
+        isMissingProfileColumn(cascadeError, "legal_research_au_vic") ||
+        isMissingProfileColumn(cascadeError, "legal_research_au_cases")
+    ) {
+        const previousQuery = db
+            .from("user_profiles")
+            .select(PROFILE_SELECT_NO_LEGAL_RESEARCH_AU_VIC_CASES)
+            .eq("user_id", userId);
+        const previous =
+            mode === "single"
+                ? await previousQuery.single()
+                : await previousQuery.maybeSingle();
+        if (!previous.error) {
+            if (previous.data && typeof previous.data === "object") {
+                Object.assign(previous.data as Record<string, unknown>, {
+                    legal_research_au_vic: null,
+                    legal_research_au_cases: null,
+                });
+            }
+            return previous;
+        }
+        cascadeError = previous.error;
+    }
+
+    if (isMissingProfileColumn(cascadeError, "legal_research_au_energy")) {
+        const previousQuery = db
+            .from("user_profiles")
+            .select(PROFILE_SELECT_NO_LEGAL_RESEARCH_AU_ENERGY)
+            .eq("user_id", userId);
+        const previous =
+            mode === "single"
+                ? await previousQuery.single()
+                : await previousQuery.maybeSingle();
+        if (!previous.error) {
+            if (previous.data && typeof previous.data === "object") {
+                Object.assign(previous.data as Record<string, unknown>, {
+                    legal_research_au_energy: null,
+                    legal_research_au_vic: null,
+                    legal_research_au_cases: null,
+                });
+            }
+            return previous;
+        }
+        cascadeError = previous.error;
+    }
+
+    if (isMissingProfileColumn(cascadeError, "legal_research_au")) {
+        const previousQuery = db
+            .from("user_profiles")
+            .select(PROFILE_SELECT_NO_LEGAL_RESEARCH_AU)
+            .eq("user_id", userId);
+        const previous =
+            mode === "single"
+                ? await previousQuery.single()
+                : await previousQuery.maybeSingle();
+        if (!previous.error) {
+            if (previous.data && typeof previous.data === "object") {
+                Object.assign(previous.data as Record<string, unknown>, {
+                    legal_research_au: null,
+                    legal_research_au_energy: null,
+                    legal_research_au_vic: null,
+                    legal_research_au_cases: null,
+                });
+            }
+            return previous;
+        }
+        cascadeError = previous.error;
+    }
 
     if (isMissingProfileColumn(cascadeError, "memory_curator_model")) {
         const previousQuery = db

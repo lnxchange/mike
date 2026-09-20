@@ -265,6 +265,57 @@ describe("null-content assistant reservations", () => {
         );
     });
 
+    it("enrichWithPriorEvents carries previous-turn reasoning as working notes", async () => {
+        const { db } = makeFakeMessagesDb([
+            realAssistantRow([
+                {
+                    type: "doc_read",
+                    document_id: "doc-uuid-1",
+                    filename: "Brief.docx",
+                },
+                {
+                    type: "reasoning",
+                    text: "Tan agreed to a narrow mutual non-solicit plus active pipeline.",
+                },
+            ]),
+        ]);
+
+        const enriched = await enrichWithPriorEvents(
+            [
+                { role: "assistant", content: "I'll pull the latest drafts." },
+                { role: "user", content: "Continue." },
+            ],
+            "chat-1",
+            db,
+            { "doc-0": { document_id: "doc-uuid-1", filename: "Brief.docx" } },
+        );
+
+        expect(enriched[0].content).toContain(
+            "[Working notes from your previous turn]",
+        );
+        expect(enriched[0].content).toContain(
+            "narrow mutual non-solicit plus active pipeline",
+        );
+        expect(enriched[0].content).toContain(
+            "do not reread those documents unless you need a targeted find_in_document",
+        );
+    });
+
+    it("does not force a full reread at the start of every turn", () => {
+        const messages = buildMessages(
+            [{ role: "user", content: "Continue." }],
+            [{ doc_id: "doc-0", filename: "Brief.docx" }],
+        ) as { role: string; content: string }[];
+
+        expect(messages[0]?.content).toContain("AVAILABLE DOCUMENTS:");
+        expect(messages[0]?.content).toContain(
+            "do not reread those documents",
+        );
+        expect(messages[0]?.content).not.toContain(
+            "You MUST call read_document",
+        );
+    });
+
     it("enrichWithPriorEvents leaves messages untouched when only a reservation exists", async () => {
         const { db } = makeFakeMessagesDb([reservationRow()]);
         const messages = [

@@ -1,5 +1,17 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-20 — Remaining local work shipped so Yule can test
+
+Viewer fix `9ba8091c` was already on Vercel `dpl_caizHhqJQ4M19EoiZ6maYrwb1Y7U` and Railway `9ba8091`, with `cache: "no-store"` in the live JS. Remaining dirty work (Libris Li lockup, AU research, incomplete-turn recovery) is now committed and going to production. Filer drain commits `7c83727` / `5b9aad8` were already pushed; leftover command-queue/MCP/publicity WIP failed tests and was left uncommitted.
+
+## 2026-09-20 — Chat was finishing research and never writing the answer
+
+SOW/MSA chat `82e1fc70-ceb3-4094-8d50-f1be73a621a1` on project `e360041c-fe06-4743-8f43-23cae53a0f5b` ran three turns that only said "I'll pull the latest drafts", reread the Northeon emails + MSA/SOW, then died mid-reasoning. The backend saved those as successful completions, so the UI said "Completed in 12 steps".
+
+Causes: `maxDuration` 60s on the Vercel `/api` gateway; 10 tool steps with high reasoning and no reserved write step; a prompt that forced a full reread on every continue.
+
+Shipped with the AU research tools: gateway 300s; 16 steps with the last step tool-free; incomplete research-only turns now show an error and "Stopped after N steps"; continue gets previous-turn working notes and must not restart the reads.
+
 ## 2026-09-20 — Viewer 304: documents fetched then showed "could not be loaded"
 
 Yule hard-refreshed production after `af8c1d0d` and still could not open files. He now hits "This document could not be loaded. Please try again." rather than an infinite spinner.

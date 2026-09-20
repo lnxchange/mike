@@ -1,5 +1,9 @@
 import { appConfig } from "../../../config";
 import { COURTLISTENER_SYSTEM_PROMPT } from "./tools/courtlistenerTools";
+import { AU_LEGISLATION_SYSTEM_PROMPT } from "./tools/auLegislationTools";
+import { AU_ENERGY_SYSTEM_PROMPT } from "./tools/auEnergyTools";
+import { AU_VIC_LEGISLATION_SYSTEM_PROMPT } from "./tools/auVicLegislationTools";
+import { AU_CASE_LAW_SYSTEM_PROMPT } from "./tools/auCaseLawTools";
 
 const SYSTEM_PROMPT_BEFORE_RESEARCH = `You are ${appConfig.branding.assistantName}, an AI legal assistant for lawyers and legal professionals. Help analyze documents, answer legal questions, and draft legal documents.
 
@@ -7,7 +11,8 @@ CORE RULES:
 - Be precise, professional, and evidence-aware.
 - Do not fabricate document content.
 - In user-facing responses, use natural language only. Never mention tool names or tool calls.
-- Use at most 10 tool-use rounds per response. Batch independent tool calls and leave room for the final answer.
+- Use at most 15 tool-use rounds per response, and reserve the last round for the written answer. Batch independent tool calls. If you already have enough to write, stop reading and write.
+- If the user asks you to continue after an interrupted turn, write the deliverable from the previous-turn working notes and documents already read. Do not restart the research unless those notes are missing a required document.
 - Read each relevant document/version at most once per response. After read_document or fetch_documents returns a document's full text, do not call either tool again for that same document/version in the same response; use the prior result, call find_in_document for targeted checks, or proceed to the next required tool.
 - If you need the user to choose between options, provide an open-ended answer, clarify a missing premise, or attach one or more documents before you can continue, call ask_inputs with all needed items in a single tool call. Use choice when exactly one option should be selected, multi_choice when one or more options may be selected, and text when the answer should be typed freely, such as a name, address, or other fact with no meaningful suggested choices. For document-upload items, include a document_types array with short labels for the specific categories of documents you need. After asking, do not continue the substantive task until the user responds in a later message. If the user skips an input, do not ask for it again. Continue with the available information and, when drafting or editing a document, insert a descriptive placeholder in square brackets wherever the skipped value is required.
 
@@ -98,14 +103,48 @@ GENERAL GUIDANCE:
 - Do not use emojis.
 `;
 
+export type ResearchPromptFlags = {
+  us?: boolean;
+  au?: boolean;
+  energy?: boolean;
+  vic?: boolean;
+  cases?: boolean;
+};
+
+function resolveResearchFlags(
+  flags: boolean | ResearchPromptFlags = true,
+): { us: boolean; au: boolean; energy: boolean; vic: boolean; cases: boolean } {
+  if (typeof flags === "boolean") {
+    return { us: flags, au: false, energy: false, vic: false, cases: false };
+  }
+  return {
+    us: flags.us !== false,
+    au: flags.au === true,
+    energy: flags.energy === true,
+    vic: flags.vic === true,
+    cases: flags.cases === true,
+  };
+}
+
 /**
- * Assemble the chat system prompt. When `includeResearchTools` is true the
- * CourtListener (US case-law) research instructions are spliced in; when
- * false they are omitted entirely so the model is not told about tools it
- * does not have.
+ * Assemble the chat system prompt. US (CourtListener) and AU (Federal
+ * Register) research instructions are spliced in only when those tools are
+ * actually advertised, so the model is not told about tools it does not have.
  */
-export function buildSystemPrompt(includeResearchTools = true): string {
-  return includeResearchTools
-    ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${COURTLISTENER_SYSTEM_PROMPT}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
+export function buildSystemPrompt(
+  includeResearchTools: boolean | ResearchPromptFlags = true,
+): string {
+  const { us, au, energy, vic, cases } = resolveResearchFlags(includeResearchTools);
+  const research = [
+    us ? COURTLISTENER_SYSTEM_PROMPT : "",
+    au ? AU_LEGISLATION_SYSTEM_PROMPT : "",
+    energy ? AU_ENERGY_SYSTEM_PROMPT : "",
+    vic ? AU_VIC_LEGISLATION_SYSTEM_PROMPT : "",
+    cases ? AU_CASE_LAW_SYSTEM_PROMPT : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return research
+    ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${research}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
     : `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${SYSTEM_PROMPT_AFTER_RESEARCH}`;
 }

@@ -9,6 +9,7 @@ import {
     normalizeOptionalModelPreference,
     normalizeReasoningLevel,
 } from "../../lib/modelSelection";
+import { resolveLegalResearchAu } from "./user.profile.serialization";
 
 export type UserModelSettings = {
     /** Explicit override; null means derive the title model from the chat. */
@@ -22,6 +23,10 @@ export type UserModelSettings = {
     /** Cross-surface fallback used only when a chat has no saved level. */
     last_selected_reasoning_level: ReasoningLevel | null;
     legal_research_us: boolean;
+    legal_research_au: boolean;
+    legal_research_au_energy: boolean;
+    legal_research_au_vic: boolean;
+    legal_research_au_cases: boolean;
     api_keys: UserApiKeys;
     personalisation?: {
         displayName: string | null;
@@ -42,7 +47,7 @@ export async function getUserModelSettings(
         client
             .from("user_profiles")
             .select(
-                "title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
+                "title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, legal_research_au, legal_research_au_energy, legal_research_au_vic, legal_research_au_cases, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
             )
             .eq("user_id", userId)
             .single(),
@@ -51,6 +56,82 @@ export async function getUserModelSettings(
     ]);
     let data = profileResult.data;
     let profileError = profileResult.error;
+
+    if (
+        profileError?.code === "42703" &&
+        typeof profileError.message === "string" &&
+        (profileError.message.includes("legal_research_au_vic") ||
+            profileError.message.includes("legal_research_au_cases"))
+    ) {
+        const withoutVicCases = await client
+            .from("user_profiles")
+            .select(
+                "title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, legal_research_au, legal_research_au_energy, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
+            )
+            .eq("user_id", userId)
+            .single();
+        if (!withoutVicCases.error) {
+            data = {
+                ...withoutVicCases.data,
+                legal_research_au_vic: null,
+                legal_research_au_cases: null,
+            } as typeof data;
+            profileError = null;
+        } else {
+            profileError = withoutVicCases.error;
+        }
+    }
+
+    if (
+        profileError?.code === "42703" &&
+        typeof profileError.message === "string" &&
+        profileError.message.includes("legal_research_au_energy")
+    ) {
+        const withoutEnergy = await client
+            .from("user_profiles")
+            .select(
+                "title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, legal_research_au, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
+            )
+            .eq("user_id", userId)
+            .single();
+        if (!withoutEnergy.error) {
+            data = {
+                ...withoutEnergy.data,
+                legal_research_au_energy: null,
+                legal_research_au_vic: null,
+                legal_research_au_cases: null,
+            } as typeof data;
+            profileError = null;
+        } else {
+            profileError = withoutEnergy.error;
+        }
+    }
+
+    if (
+        profileError?.code === "42703" &&
+        typeof profileError.message === "string" &&
+        profileError.message.includes("legal_research_au")
+    ) {
+        const withoutAu = await client
+            .from("user_profiles")
+            .select(
+                "title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
+            )
+            .eq("user_id", userId)
+            .single();
+        if (!withoutAu.error) {
+            data = {
+                ...withoutAu.data,
+                legal_research_au: null,
+                legal_research_au_energy: null,
+                legal_research_au_vic: null,
+                legal_research_au_cases: null,
+            } as typeof data;
+            profileError = null;
+        } else {
+            profileError = withoutAu.error;
+        }
+    }
 
     // Deploy-before-migrate tolerance for the memory curator preference. Keep
     // every previously available setting while the new nullable column is
@@ -141,6 +222,26 @@ export async function getUserModelSettings(
         legal_research_us:
             (data as { legal_research_us?: boolean | null } | null)
                 ?.legal_research_us !== false,
+        legal_research_au: resolveLegalResearchAu(
+            (data as { legal_research_au?: boolean | null } | null)
+                ?.legal_research_au,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
+        legal_research_au_energy: resolveLegalResearchAu(
+            (data as { legal_research_au_energy?: boolean | null } | null)
+                ?.legal_research_au_energy,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
+        legal_research_au_vic: resolveLegalResearchAu(
+            (data as { legal_research_au_vic?: boolean | null } | null)
+                ?.legal_research_au_vic,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
+        legal_research_au_cases: resolveLegalResearchAu(
+            (data as { legal_research_au_cases?: boolean | null } | null)
+                ?.legal_research_au_cases,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
         personalisation: {
             displayName:
                 typeof data?.display_name === "string"

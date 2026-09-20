@@ -65,6 +65,9 @@ export type UserApiKeys = {
     courtlistener?: string | null;
 };
 
+/** Tool-loop budget for interactive chat. The last step is reserved for writing. */
+export const DEFAULT_STREAM_MAX_ITERATIONS = 16;
+
 export type StreamChatParams = {
     model: string;
     systemPrompt: string;

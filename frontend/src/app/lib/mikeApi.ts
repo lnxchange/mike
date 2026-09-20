@@ -642,6 +642,10 @@ export interface UserProfile {
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    legalResearchAu: boolean;
+    legalResearchAuEnergy: boolean;
+    legalResearchAuVic: boolean;
+    legalResearchAuCases: boolean;
     quickActionsVisible: boolean;
     darkMode: boolean;
     projectMemoryDefault: boolean;
@@ -757,6 +761,10 @@ export async function updateUserProfile(payload: {
     lastSelectedChatModel?: string | null;
     lastSelectedReasoningLevel?: NonNullable<Message["reasoning"]>;
     legalResearchUs?: boolean;
+    legalResearchAu?: boolean;
+    legalResearchAuEnergy?: boolean;
+    legalResearchAuVic?: boolean;
+    legalResearchAuCases?: boolean;
     quickActionsVisible?: boolean;
     darkMode?: boolean;
     projectMemoryDefault?: boolean;

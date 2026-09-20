@@ -54,6 +54,10 @@ create table if not exists public.user_profiles (
   quote_model text,
   mfa_on_login boolean not null default false,
   legal_research_us boolean not null default true,
+  legal_research_au boolean,
+  legal_research_au_energy boolean,
+  legal_research_au_vic boolean,
+  legal_research_au_cases boolean,
   quick_actions_visible boolean not null default true,
   dark_mode boolean not null default false,
   -- Whether projects this user creates start with shared memory enabled. Any
