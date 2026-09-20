@@ -876,7 +876,7 @@ export function parseAemcVersions(
                 aemcVersionId: id,
             } satisfies EnergyVersion;
         })
-        .filter((row): row is EnergyVersion => !!row);
+        .filter((row): row is NonNullable<typeof row> => row != null);
     versions.sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
     if (!versions.some((version) => version.isLatest) && versions[0]) {
         versions[0].isLatest = true;
@@ -1273,7 +1273,7 @@ async function extractEnergyFile(
     const view = bytes.buffer.slice(
         bytes.byteOffset,
         bytes.byteOffset + bytes.byteLength,
-    );
+    ) as ArrayBuffer;
     const extract = options.extractPdf ?? extractPdfText;
     return extract(view);
 }

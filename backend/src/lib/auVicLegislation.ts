@@ -433,7 +433,7 @@ export function parseVicPage(payload: unknown): {
         year: parsedNumber.year,
         url: `${WEB}${path}`,
     };
-    const versions = asArray(root.versions)
+    const versions: VicVersion[] = asArray(root.versions)
         .map((row) => {
             const record = asRecord(row);
             if (!record) return null;
@@ -462,7 +462,7 @@ export function parseVicPage(payload: unknown): {
                 fileUrl,
             } satisfies VicVersion;
         })
-        .filter((row): row is VicVersion => !!row);
+        .filter((row): row is NonNullable<typeof row> => row != null);
     versions.sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
     if (versions[0]) versions[0].isLatest = true;
     for (let i = 1; i < versions.length; i++) {
@@ -765,7 +765,7 @@ export async function getVicLegislationText(
     const view = bytes.buffer.slice(
         bytes.byteOffset,
         bytes.byteOffset + bytes.byteLength,
-    );
+    ) as ArrayBuffer;
     const extract = options.extractPdf ?? extractPdfText;
     const fullText = await extract(view);
     const found = findVicSection(fullText, options.section, options.page);

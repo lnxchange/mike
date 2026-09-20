@@ -174,5 +174,3 @@ export const AU_VIC_LEGISLATION_TOOLS = [
         },
     },
 ];
-
-export type { AuVicLegislationToolEvent };

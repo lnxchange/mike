@@ -176,5 +176,3 @@ export const AU_ENERGY_TOOLS = [
         },
     },
 ];
-
-export type { AuEnergyToolEvent };

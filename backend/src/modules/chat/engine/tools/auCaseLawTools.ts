@@ -114,5 +114,3 @@ export const AU_CASE_LAW_TOOLS = [
         },
     },
 ];
-
-export type { AuCaseLawToolEvent };

@@ -428,7 +428,7 @@ async function readFetchedText(
         const view = bytes.buffer.slice(
             bytes.byteOffset,
             bytes.byteOffset + bytes.byteLength,
-        );
+        ) as ArrayBuffer;
         const extract = options.extractPdf ?? extractPdfText;
         return extract(view);
     }
@@ -456,7 +456,7 @@ async function downloadCaseFile(
         const view = downloaded.bytes.buffer.slice(
             downloaded.bytes.byteOffset,
             downloaded.bytes.byteOffset + downloaded.bytes.byteLength,
-        );
+        ) as ArrayBuffer;
         const extract = options.extractPdf ?? extractPdfText;
         return { text: await extract(view), url };
     }
