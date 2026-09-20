@@ -8,7 +8,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { Check, ChevronDown, Loader2, Pencil, Trash2 } from "lucide-react";
+import { Brain, Check, ChevronDown, Loader2, Pencil, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { PageHeader } from "@/app/components/shared/PageHeader";
@@ -63,6 +63,7 @@ import {
 } from "@/app/lib/mikeApi";
 import { ORG_ROLE_LABELS, type OrgRole } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { OrganizationMemoryModal } from "./OrganizationMemoryModal";
 import {
   InviteOrganizationMemberModal,
   OrganizationSettingsModal,
@@ -123,6 +124,7 @@ export function OrganizationWorkspace({ orgId }: { orgId: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [busyMemberId, setBusyMemberId] = useState<string | null>(null);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [removeSelectedOpen, setRemoveSelectedOpen] = useState(false);
@@ -311,6 +313,11 @@ export function OrganizationWorkspace({ orgId }: { orgId: string }) {
                       title="Organization settings"
                       items={[
                         {
+                          label: "Organization memory",
+                          icon: Brain,
+                          onSelect: () => setMemoryOpen(true),
+                        },
+                        {
                           label: "Organization settings",
                           icon: Pencil,
                           onSelect: () => setSettingsOpen(true),
@@ -402,6 +409,13 @@ export function OrganizationWorkspace({ orgId }: { orgId: string }) {
               setSettingsOpen(false);
             }}
             onDeleted={() => router.push("/organizations")}
+          />
+          <OrganizationMemoryModal
+            open={memoryOpen}
+            onClose={() => setMemoryOpen(false)}
+            orgId={org.id}
+            orgName={org.name}
+            canEdit={isAdmin}
           />
         </>
       ) : null}

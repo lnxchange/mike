@@ -527,6 +527,48 @@ export async function setProjectMemoryEnabled(
     );
 }
 
+export async function getOrgMemory(
+    orgId: string,
+    signal?: AbortSignal,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        `/orgs/${encodeURIComponent(orgId)}/memory`,
+        { signal },
+    );
+}
+
+export async function updateOrgMemory(
+    orgId: string,
+    content: string,
+    expectedRevision: number,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        `/orgs/${encodeURIComponent(orgId)}/memory`,
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                content,
+                expected_revision: expectedRevision,
+            }),
+        },
+    );
+}
+
+export async function setOrgMemoryEnabled(
+    orgId: string,
+    enabled: boolean,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        `/orgs/${encodeURIComponent(orgId)}/memory/settings`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+        },
+    );
+}
+
 export async function exportAccountData(): Promise<{
     blob: Blob;
     filename: string | null;

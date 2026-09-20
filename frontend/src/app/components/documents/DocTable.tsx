@@ -129,6 +129,18 @@ import {
 const ASYNC_ZIP_THRESHOLD = 10;
 const DOC_TABLE_STICKY_CELL_CLASS = "table-sticky-cell";
 
+/** Rows whose list metadata may still be catching up after a large-matter join. */
+export function documentNeedsMetadataRefresh(doc: {
+    status: string;
+    filename: string;
+}): boolean {
+    return (
+        doc.status === "pending" ||
+        doc.status === "processing" ||
+        (doc.status === "ready" && doc.filename === "Untitled document")
+    );
+}
+
 export type DocTableFolder = ProjectFolder | LibraryFolder;
 export type DocTableFolderBreadcrumb = {
     id: string;
@@ -952,9 +964,7 @@ export function DocTable({
     // Poll documents stuck in deferred conversion until the backend marks
     // them "ready"/"error" (async conversion flips status server-side)
     useEffect(() => {
-        const converting = documents.filter(
-            (d) => d.status === "pending" || d.status === "processing",
-        );
+        const converting = documents.filter(documentNeedsMetadataRefresh);
         if (converting.length === 0) return;
 
         let cancelled = false;

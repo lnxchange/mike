@@ -4744,9 +4744,10 @@ alter table public.db_jobs enable row level security;
 -- there is no version history and no separate object to keep in step.
 create table if not exists public.memory_files (
   id uuid primary key default gen_random_uuid(),
-  scope text not null check (scope in ('user', 'project')),
+  scope text not null check (scope in ('user', 'project', 'org')),
   user_id uuid references auth.users(id) on delete cascade,
   project_id uuid references public.projects(id) on delete cascade,
+  org_id uuid references public.organizations(id) on delete cascade,
   enabled boolean not null default true,
   epoch bigint not null default 0 check (epoch >= 0),
   -- Monotonic change token for compare-and-swap. Nothing is retained per
@@ -4771,14 +4772,17 @@ create table if not exists public.memory_files (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint memory_files_scope_owner_check check (
-    (scope = 'user' and user_id is not null and project_id is null)
-    or (scope = 'project' and project_id is not null and user_id is null)
+    (scope = 'user' and user_id is not null and project_id is null and org_id is null)
+    or (scope = 'project' and project_id is not null and user_id is null and org_id is null)
+    or (scope = 'org' and org_id is not null and user_id is null and project_id is null)
   )
 );
 create unique index if not exists memory_files_user_unique
   on public.memory_files(user_id);
 create unique index if not exists memory_files_project_unique
   on public.memory_files(project_id);
+create unique index if not exists memory_files_org_unique
+  on public.memory_files(org_id);
 
 create table if not exists public.memory_consolidation_states (
   id uuid primary key default gen_random_uuid(),
@@ -4903,6 +4907,9 @@ on conflict do nothing;
 insert into public.memory_files(scope, project_id, enabled)
 select 'project', id, true from public.projects
 on conflict do nothing;
+insert into public.memory_files(scope, org_id, enabled)
+select 'org', id, true from public.organizations
+on conflict do nothing;
 
 create or replace function public.initialize_new_user_memory()
 returns trigger
@@ -4922,6 +4929,25 @@ drop trigger if exists on_auth_user_created_memory on auth.users;
 create trigger on_auth_user_created_memory
   after insert on auth.users
   for each row execute function public.initialize_new_user_memory();
+
+create or replace function public.initialize_new_org_memory()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.memory_files(scope, org_id, enabled)
+  values ('org', new.id, true)
+  on conflict (org_id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_organization_created_memory on public.organizations;
+create trigger on_organization_created_memory
+  after insert on public.organizations
+  for each row execute function public.initialize_new_org_memory();
 
 create or replace function public.create_project_with_memory(
   p_user_id uuid,

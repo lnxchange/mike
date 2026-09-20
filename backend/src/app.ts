@@ -24,6 +24,7 @@ import { integrationsRouter } from "./modules/integrations/integrations.routes";
 import { authRouter } from "./modules/auth/auth.routes";
 import { uploadSessionsRouter } from "./modules/uploads/uploads.routes";
 import {
+  orgMemoryRouter,
   projectMemoryRouter,
   userMemoryRouter,
 } from "./modules/memory/memory.routes";
@@ -292,6 +293,7 @@ app.use("/word-chat", wordChatRouter);
 app.use("/models", modelsRouter);
 app.use("/projects/:projectId/memory", projectMemoryRouter);
 app.use("/projects", projectsRouter);
+app.use("/orgs/:orgId/memory", orgMemoryRouter);
 app.use("/orgs", orgsRouter);
 app.use("/projects/:projectId/chat", projectChatRouter);
 app.use("/single-documents", documentsRouter);

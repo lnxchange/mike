@@ -360,6 +360,7 @@ function file(scope: "user" | "project" = "user"): MemoryFileRow {
     scope,
     user_id: scope === "user" ? "actor" : null,
     project_id: scope === "project" ? "project" : null,
+    org_id: null,
     enabled: true,
     epoch: 7,
     revision: 1,

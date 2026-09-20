@@ -35,6 +35,34 @@ describe.each(sources)("%s scoped memory SQL", (_name, sql) => {
       /insert into public\.memory_files\(scope, project_id, enabled\)[\s\S]*select 'project', id, true from public\.projects/,
     );
   });
+});
+
+const orgMemoryMigration = readFileSync(
+  resolve(backendRoot, "migrations/20260921_02_org_memory_files.sql"),
+  "utf8",
+);
+
+describe.each([
+  ["schema", schemaSql],
+  ["org memory migration", orgMemoryMigration],
+] as const)("%s org memory", (_name, sql) => {
+  it("owns one memory file per organization", () => {
+    expect(sql).toContain("scope in ('user', 'project', 'org')");
+    expect(sql).toContain("scope = 'org' and org_id is not null");
+    expect(sql).toMatch(
+      /insert into public\.memory_files\(scope, org_id, enabled\)[\s\S]*select 'org', id, true from public\.organizations/,
+    );
+    expect(sql).toContain("initialize_new_org_memory");
+    expect(sql).toContain("on_organization_created_memory");
+  });
+});
+
+describe.each(sources)("%s project memory defaults (continued)", (_name, sql) => {
+  it("keeps the original project-memory backfill", () => {
+    expect(sql).toMatch(
+      /insert into public\.memory_files\(scope, project_id, enabled\)[\s\S]*select 'project', id, true from public\.projects/,
+    );
+  });
 
   it("creates each project and its explicit memory setting atomically", () => {
     const body = functionBody(sql, "create_project_with_memory");

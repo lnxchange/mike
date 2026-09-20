@@ -1,5 +1,44 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Untitled documents fix and Attune org setup
+
+Two workstreams. Not committed, not pushed, not deployed. Did not apply migration 08. Did not deploy the dirty filer.
+
+### Workstream 1 (code, local)
+
+`attachActiveVersionPaths` now chunks `.in()` at 100 ids, throws on PostgREST errors, and falls back to the latest live version when `current_version_id` is missing. DocTable also polls ready rows still titled Untitled document. After Railway/Vercel deploy, hard-refresh S155. No data backfill.
+
+### Workstream 2 (product hook + this-instance tenant data)
+
+- Migration `20260921_02_org_memory_files.sql` applied to production `gttnqqwqoirwbvalqfce` via Supabase MCP. Org memory columns are live. Attune house file is on org `587af71c-e526-4b0e-971e-7e2d285ddac8` (revision 2, 1452 bytes). Org memory is admin-edited only and is not curated from chats.
+- App code injects org memory when the project's `org_id` matches (precedence: conversation > project > org > app). Organization workspace has an Organization memory editor for admins. This code is local until deploy.
+- Six Attune-org workflows created (not in DEFAULT_WORKFLOWS): House style and legal voice, Draft on letterhead, Find a precedent, New job request, Matter setup and naming, Retainer work note.
+- Firm Library project `383f34de-de29-45e3-89ab-31e09276c006` (`Attune - Firm Library`) with folders Templates, Precedents / Commercial, IP & Technology, ESOP & Equity. Memory off. **No files uploaded** (no user credentials for Mike upload).
+- S155 project memory filled with a working set (revision 39). Northeon already had a brief; its `org_id` was set to Attune Legal so org memory will inject after deploy. Empty project `c55d2d65` left alone.
+- Two org admins already present (`0e66f3d3`, `57f82b85`).
+
+### What Yule must do next
+
+1. Deploy the Mike backend (Railway) and frontend (Vercel) so the list join fix and org-memory injection go live. Then hard-refresh S155.
+2. Upload Masters into Firm Library from OneDrive `Cowork - Cowork Library` (same bytes as the zip):
+   - Templates: `Attune Legal Letterhead and Contract Template.docx`, `Attune Legal - presentation template.pptx` into folder `916ebaa7-42af-457b-810b-c86d2207e7fc`.
+   - Precedents/Commercial (`fb616e60-bf05-47cd-8962-ac45a6af7eeb`): Confidentiality Agreement (One-Way), Privacy Policy, SaaS Terms of Service, Website Terms and Conditions.
+   - Precedents/IP & Technology (`40d04801-ba44-4677-b2fc-7396d2891fbd`): Legaler R&D Services & IP Licence Agreement.
+   - Precedents/ESOP & Equity (`035e7df5-549d-4b6b-b92a-c23dd6ad0eb1`): `ESOP [Create Template From This].docx` only. Skip Raw comparison copies.
+3. Mike will not run `albuild.py`. Letterhead-perfect AL numbering stays a Word job after `replicate_document`.
+
+## 2026-09-21 — S155 Zoho/SharePoint buttons were empty
+
+The Matters table had the Zoho and SharePoint columns, but every project row was null. The pills hide when those fields are empty. Cause: S155 (and Northeon) were created before the columns existed, and the live filer still answers status/pull without `matterId` / `sharepointFolderUrl`, so Mike's fill-on-status write never ran.
+
+Filled S155 `41cfbdbf-a1f8-47a2-be4d-1208eb375b0f` in place: Deal `3849704000030080744`, folder `https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared Documents/Clients/Blue NRG Group Pty Ltd/Blue NRG/23-0011 - ACCC - s155 Notice and Enforcement` (legacy folder number 23-0011, not 242814). Hard-refresh shows the buttons. Northeon left blank (no `external_web_url` on its documents).
+
+Local Mike now resolves missing links on status/pull: Zoho via filer search by matter number, SharePoint by walking up mirrored file URLs. Matter page also applies status links after the project row arrives. Not committed, not shipped. Did not deploy the dirty filer, did not apply migration 08.
+
+## 2026-09-21 — External-links app deploy
+
+SQL was already live on `gttnqqwqoirwbvalqfce`; the missing piece was the app deploy. Pushed `7f8a31d9` (quality pass), `e04a9927` (sync adopt/list), and `ca32f331` (Zoho/SharePoint links). Railway auto-deploy did not fire; triggered `redeploy --from-source` on existing `mike`. Railway `f66535bb` SUCCESS, SHA `ca32f331`, https://mike-production-68f2.up.railway.app `/health` 200. That bounce restarted the upload-worker. Vercel production `dpl_3F5eT46LFNqZwwFooCLcqeth9U9b` READY + aliased to https://libris-colleague.vercel.app. Did not apply migration 08, did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`, did not deploy the dirty filer tree.
+
 ## 2026-09-21 — External-links migration on production
 
 Applied `20260921_01_project_external_links.sql` to Libris Colleague Supabase `gttnqqwqoirwbvalqfce`. Columns `projects.zoho_deal_id` and `projects.sharepoint_folder_url` are live; both `get_projects_overview` overloads return them; `create_project_with_memory` accepts `p_zoho_deal_id` and `p_sharepoint_folder_url`. S155 project `41cfbdbf-a1f8-47a2-be4d-1208eb375b0f` still exists; document count stayed 237 (migration did not rewrite documents). Did not push Mike, did not redeploy Railway, did not apply migration 08, did not deploy the dirty filer tree. Hobby upgrade is Yule's to complete in the Railway dashboard; after that he still needs to raise the `mike` replica above 1 GB. `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER` stays 2 until someone changes that env without a reckless restart.

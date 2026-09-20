@@ -52,6 +52,7 @@ function memoryFile(content = "") {
     scope: "project" as const,
     user_id: null,
     project_id: PROJECT_ID,
+    org_id: null,
     enabled: true,
     epoch: 1,
     revision: 3,

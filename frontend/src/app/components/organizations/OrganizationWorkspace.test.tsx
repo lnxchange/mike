@@ -244,6 +244,9 @@ describe("OrganizationWorkspace", () => {
     await user.click(
       screen.getByRole("button", { name: "Organization settings" }),
     );
+    expect(
+      screen.getByRole("menuitem", { name: "Organization memory" }),
+    ).toBeInTheDocument();
     await user.click(screen.getByText("Organization settings"));
     expect(screen.getByLabelText("Organization name")).toHaveValue(
       "Elite Law LLP",

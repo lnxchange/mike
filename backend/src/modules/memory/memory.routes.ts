@@ -21,6 +21,7 @@ import {
   MemoryDisabledError,
   MemoryRevisionConflictError,
   MemoryValidationError,
+  resolveOrgMemoryContext,
   resolveProjectMemoryContext,
   resolveUserMemoryContext,
   saveMemory,
@@ -31,15 +32,18 @@ import {
 
 export const userMemoryRouter = Router();
 export const projectMemoryRouter = Router({ mergeParams: true });
+export const orgMemoryRouter = Router({ mergeParams: true });
 
 userMemoryRouter.use(requireAuth);
 projectMemoryRouter.use(requireAuth);
+orgMemoryRouter.use(requireAuth);
 const privateNoStore = (_req: Request, res: Response, next: NextFunction) => {
   res.setHeader("Cache-Control", "private, no-store");
   next();
 };
 userMemoryRouter.use(privateNoStore);
 projectMemoryRouter.use(privateNoStore);
+orgMemoryRouter.use(privateNoStore);
 
 type ContextResolver = (
   req: Request<ParamsFlatDictionary>,
@@ -62,6 +66,21 @@ function projectContext(required: Capability): ContextResolver {
       projectId: req.params.projectId,
       userId: res.locals.userId as string,
       userEmail: res.locals.userEmail as string | undefined,
+      required,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ detail: result.detail });
+      return null;
+    }
+    return result.context;
+  };
+}
+
+function orgContext(required: "read" | "write" | "manage"): ContextResolver {
+  return async (req, res) => {
+    const result = await resolveOrgMemoryContext(createServerSupabase(), {
+      orgId: req.params.orgId,
+      userId: res.locals.userId as string,
       required,
     });
     if (!result.ok) {
@@ -205,6 +224,13 @@ installMemoryRoutes(
   projectContext("content.edit"),
   projectContext("access.manage"),
 );
+installMemoryRoutes(
+  orgMemoryRouter,
+  orgContext("read"),
+  orgContext("write"),
+  orgContext("manage"),
+);
 
 userMemoryRouter.use(routerErrorHandler("[user-memory]"));
 projectMemoryRouter.use(routerErrorHandler("[project-memory]"));
+orgMemoryRouter.use(routerErrorHandler("[org-memory]"));

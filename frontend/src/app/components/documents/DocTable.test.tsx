@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Document } from "@/app/components/shared/types";
 import {
     DocTable,
+    documentNeedsMetadataRefresh,
     type DocTableFolder,
     type DocTableSelectionActions,
 } from "./DocTable";
@@ -171,5 +172,40 @@ describe("DocTable remove-from-folder failures", () => {
             ),
         );
         expect(tableOperations.refreshCollection).toHaveBeenCalledOnce();
+    });
+});
+
+describe("documentNeedsMetadataRefresh", () => {
+    it("polls converting rows and ready Untitled documents", () => {
+        expect(
+            documentNeedsMetadataRefresh({
+                status: "pending",
+                filename: "Contract.pdf",
+            }),
+        ).toBe(true);
+        expect(
+            documentNeedsMetadataRefresh({
+                status: "processing",
+                filename: "Contract.pdf",
+            }),
+        ).toBe(true);
+        expect(
+            documentNeedsMetadataRefresh({
+                status: "ready",
+                filename: "Untitled document",
+            }),
+        ).toBe(true);
+        expect(
+            documentNeedsMetadataRefresh({
+                status: "ready",
+                filename: "Contract.pdf",
+            }),
+        ).toBe(false);
+        expect(
+            documentNeedsMetadataRefresh({
+                status: "error",
+                filename: "Untitled document",
+            }),
+        ).toBe(false);
     });
 });
