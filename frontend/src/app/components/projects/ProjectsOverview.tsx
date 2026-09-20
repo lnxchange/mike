@@ -71,9 +71,6 @@ import { appConfig } from "@/config";
 
 const t = appConfig.terminology;
 const ZOHO_PULL_ENABLED = appConfig.featureFlags.zohoMatterPull === true;
-// Column header and sort label: "CM number" becomes "CM", "Matter number"
-// becomes "Matter".
-const REFERENCE_SHORT = t.referenceNumber.replace(/\s+number$/i, "");
 
 function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -308,7 +305,7 @@ export function ProjectsOverview() {
     );
     const cmFilterButton = (
         <TableFilters
-            label={`Sort by ${REFERENCE_SHORT}`}
+            label={`Sort by ${t.referenceNumber}`}
             value={cmSortDirection}
             allLabel="Default Order"
             widthClassName="w-40"
@@ -609,12 +606,22 @@ export function ProjectsOverview() {
                             <span className="mr-1">Access</span>
                             {!loading && accessFilterButton}
                         </TableHeaderCell>
-                        <TableHeaderCell className="w-32">
+                        <TableHeaderCell className="w-36">
                             <div className="flex items-center gap-1">
-                                <span>{REFERENCE_SHORT}</span>
+                                <span>{t.referenceNumber}</span>
                                 {!loading && cmFilterButton}
                             </div>
                         </TableHeaderCell>
+                        {ZOHO_PULL_ENABLED && (
+                            <>
+                                <TableHeaderCell className="w-44">
+                                    <span>Client</span>
+                                </TableHeaderCell>
+                                <TableHeaderCell className="w-64">
+                                    <span>Description</span>
+                                </TableHeaderCell>
+                            </>
+                        )}
                         <TableHeaderCell className="w-36">
                             <div className="flex items-center gap-1">
                                 <span>Practice</span>
@@ -670,9 +677,19 @@ export function ProjectsOverview() {
                                 <TableCell className="ml-auto w-32">
                                     <SkeletonLine className="w-16" />
                                 </TableCell>
-                                <TableCell className="w-32">
+                                <TableCell className="w-36">
                                     <SkeletonLine className="w-20" />
                                 </TableCell>
+                                {ZOHO_PULL_ENABLED && (
+                                    <>
+                                        <TableCell className="w-44">
+                                            <SkeletonLine className="w-28" />
+                                        </TableCell>
+                                        <TableCell className="w-64">
+                                            <SkeletonLine className="w-40" />
+                                        </TableCell>
+                                    </>
+                                )}
                                 <TableCell className="w-36">
                                     <SkeletonLine className="w-20" />
                                 </TableCell>
@@ -870,13 +887,27 @@ export function ProjectsOverview() {
                                             }
                                         />
                                     </TableCell>
-                                    <TableCell className="w-32">
+                                    <TableCell className="w-36">
                                         {project.cm_number ?? (
                                             <span className="text-gray-300">
                                                 —
                                             </span>
                                         )}
                                     </TableCell>
+                                    {ZOHO_PULL_ENABLED && (
+                                        <>
+                                            <TableCell className="w-44">
+                                                <span className="block truncate">
+                                                    {project.client_name}
+                                                </span>
+                                            </TableCell>
+                                            <TableCell className="w-64">
+                                                <span className="block truncate">
+                                                    {project.description}
+                                                </span>
+                                            </TableCell>
+                                        </>
+                                    )}
                                     <TableCell className="w-36">
                                         {project.practice ?? (
                                             <span className="text-gray-300">

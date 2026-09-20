@@ -219,6 +219,9 @@ describe("projects.routes", () => {
                         org_id: "org-1",
                         access_scope: "organization",
                         organization_name: "Elite Law LLP",
+                        cm_number: "242814",
+                        client_name: "Blue NRG Pty Ltd",
+                        description: "ACCC - s155 Notice and Enforcement",
                     },
                 ],
                 error: null,
@@ -236,6 +239,9 @@ describe("projects.routes", () => {
                     org_id: "org-1",
                     access_scope: "organization",
                     organization_name: "Elite Law LLP",
+                    cm_number: "242814",
+                    client_name: "Blue NRG Pty Ltd",
+                    description: "ACCC - s155 Notice and Enforcement",
                     memory_enabled: true,
                 },
             ]);
@@ -799,6 +805,8 @@ describe("projects.routes", () => {
                 .send({
                     name: "  Gamma  ",
                     practice: "  litigation  ",
+                    client_name: "  Blue NRG Pty Ltd  ",
+                    description: "  ACCC - s155 Notice and Enforcement  ",
                 });
 
             expect(res.status).toBe(201);
@@ -818,6 +826,8 @@ describe("projects.routes", () => {
                 p_practice: "litigation",
                 p_org_id: null,
                 p_memory_enabled: true,
+                p_client_name: "Blue NRG Pty Ltd",
+                p_description: "ACCC - s155 Notice and Enforcement",
             });
         });
 

@@ -303,7 +303,7 @@ export async function listOrgResources(
         await Promise.all([
             db
                 .from("projects")
-                .select("id, user_id, org_id, name, cm_number, practice, created_at, updated_at")
+                .select("id, user_id, org_id, name, cm_number, client_name, description, practice, created_at, updated_at")
                 .eq("org_id", params.orgId)
                 .order("created_at", { ascending: false }),
             db

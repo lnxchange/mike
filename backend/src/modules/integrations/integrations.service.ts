@@ -45,6 +45,8 @@ export type MatterPullResult = {
   created: boolean;
   matterNumber: string | null;
   matterName: string | null;
+  account: string | null;
+  description: string | null;
   uploaded: number;
   remaining: number;
   status: MatterSyncStatus;
@@ -282,6 +284,8 @@ export async function pullZohoMatter(
     created: call.body.created === true,
     matterNumber: stringOrNull(call.body.matterNumber),
     matterName: stringOrNull(call.body.matterName),
+    account: stringOrNull(call.body.account),
+    description: stringOrNull(call.body.description),
     uploaded: numberOrZero(call.body.uploaded),
     remaining: numberOrZero(call.body.remaining),
     status: statusOf(call.body.status),

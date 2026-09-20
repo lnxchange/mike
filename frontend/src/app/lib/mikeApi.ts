@@ -1036,6 +1036,8 @@ export async function updateProject(
         name?: string;
         cm_number?: string;
         practice?: string | null;
+        client_name?: string | null;
+        description?: string | null;
     },
 ): Promise<Project> {
     return apiRequest<Project>(`/projects/${projectId}`, {

@@ -70,6 +70,8 @@ export interface Project {
   }[];
   name: string;
   cm_number: string | null;
+  client_name?: string | null;
+  description?: string | null;
   practice: string | null;
   /** Whether this project's shared memory.md is active. */
   memory_enabled: boolean;

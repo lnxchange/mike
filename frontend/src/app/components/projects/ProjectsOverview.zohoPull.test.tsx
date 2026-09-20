@@ -76,6 +76,51 @@ describe("ProjectsOverview with zohoMatterPull on", () => {
         expect(librisColleagueProfile.featureFlags.zohoMatterPull).toBe(true);
     });
 
+    it("shows matter number, client, and description on the list", () => {
+        vi.mocked(usePaginatedProjects).mockReturnValue({
+            projects: [
+                {
+                    id: "41cfbdbf-a1f8-47a2-be4d-1208eb375b0f",
+                    user_id: "me",
+                    name: "ACCC - s155 Notice and Enforcement",
+                    cm_number: "242814",
+                    client_name: "Blue NRG Pty Ltd",
+                    description: "ACCC - s155 Notice and Enforcement",
+                    practice: null,
+                    memory_enabled: true,
+                    created_at: "2026-01-01T00:00:00Z",
+                    updated_at: "2026-01-01T00:00:00Z",
+                    access_scope: "organization",
+                    organization_name: "Attune Legal",
+                },
+            ],
+            setProjects: vi.fn(),
+            loading: false,
+            loadingMore: false,
+            hasMore: false,
+            error: null,
+            loadMoreError: null,
+            loadMore: vi.fn(),
+            retry: vi.fn(),
+            selectedProjectIds: [],
+            setSelectedProjectIds: vi.fn(),
+            selectAllMatching: vi.fn(),
+            selectingAll: false,
+            getProjectOwnerId: () => null,
+        } as unknown as ReturnType<typeof usePaginatedProjects>);
+
+        render(<ProjectsOverview />);
+
+        expect(screen.getByText("Matter number")).toBeInTheDocument();
+        expect(screen.getByText("Client")).toBeInTheDocument();
+        expect(screen.getByText("Description")).toBeInTheDocument();
+        expect(screen.getByText("242814")).toBeInTheDocument();
+        expect(screen.getByText("Blue NRG Pty Ltd")).toBeInTheDocument();
+        expect(
+            screen.getAllByText("ACCC - s155 Notice and Enforcement").length,
+        ).toBeGreaterThan(0);
+    });
+
     it("offers Pull from Zoho beside New and opens the modal", async () => {
         const user = userEvent.setup();
         render(<ProjectsOverview />);

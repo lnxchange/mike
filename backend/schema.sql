@@ -547,6 +547,8 @@ create table if not exists public.projects (
   org_id uuid references public.organizations(id) on delete restrict,
   name text not null,
   cm_number text,
+  client_name text,
+  description text,
   practice text,
   visibility text not null default 'private',
   created_at timestamptz not null default now(),
@@ -2299,6 +2301,8 @@ returns table (
   organization_name text,
   name text,
   cm_number text,
+  client_name text,
+  description text,
   practice text,
   created_at timestamptz,
   updated_at timestamptz,
@@ -2357,6 +2361,8 @@ as $$
     ) as organization_name,
     vp.name,
     vp.cm_number,
+    vp.client_name,
+    vp.description,
     vp.practice,
     vp.created_at,
     vp.updated_at,
@@ -3121,6 +3127,8 @@ returns table (
   organization_name text,
   name text,
   cm_number text,
+  client_name text,
+  description text,
   practice text,
   created_at timestamptz,
   updated_at timestamptz,
@@ -3176,6 +3184,12 @@ as $$
         or lower(coalesce(p.cm_number, '')) like
           '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
           escape '\'
+        or lower(coalesce(p.client_name, '')) like
+          '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
+          escape '\'
+        or lower(coalesce(p.description, '')) like
+          '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
+          escape '\'
         or lower(coalesce(p.practice, '')) like
           '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
           escape '\'
@@ -3220,6 +3234,8 @@ as $$
     ) as organization_name,
     vp.name,
     vp.cm_number,
+    vp.client_name,
+    vp.description,
     vp.practice,
     vp.created_at,
     vp.updated_at,
@@ -3330,6 +3346,12 @@ as $$
         '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
         escape '\'
       or lower(coalesce(p.cm_number, '')) like
+        '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
+        escape '\'
+      or lower(coalesce(p.client_name, '')) like
+        '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
+        escape '\'
+      or lower(coalesce(p.description, '')) like
         '%' || replace(replace(replace(lower(p_search_term), '\', '\\'), '%', '\%'), '_', '\_') || '%'
         escape '\'
       or lower(coalesce(p.practice, '')) like
@@ -4751,7 +4773,9 @@ create or replace function public.create_project_with_memory(
   p_cm_number text,
   p_practice text,
   p_org_id uuid,
-  p_memory_enabled boolean
+  p_memory_enabled boolean,
+  p_client_name text default null,
+  p_description text default null
 )
 returns public.projects
 language plpgsql
@@ -4761,8 +4785,13 @@ as $$
 declare
   created public.projects%rowtype;
 begin
-  insert into public.projects(user_id, name, cm_number, practice, org_id)
-  values (p_user_id, p_name, p_cm_number, p_practice, p_org_id)
+  insert into public.projects(
+    user_id, name, cm_number, practice, org_id, client_name, description
+  )
+  values (
+    p_user_id, p_name, p_cm_number, p_practice, p_org_id,
+    p_client_name, p_description
+  )
   returning * into created;
   insert into public.memory_files(scope, project_id, enabled)
   values ('project', created.id, p_memory_enabled);
@@ -6391,7 +6420,7 @@ revoke all on function public.claim_db_job(uuid, integer)
   from public, anon, authenticated;
 revoke all on function public.cancel_db_jobs(text[])
   from public, anon, authenticated;
-revoke all on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean)
+revoke all on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean, text, text)
   from public, anon, authenticated;
 revoke all on function public.initialize_new_user_memory()
   from public, anon, authenticated;
@@ -6485,7 +6514,7 @@ grant execute
 grant execute
   on function public.cancel_db_jobs(text[])
   to service_role;
-grant execute on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean)
+grant execute on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean, text, text)
   to service_role;
 grant execute on function public.initialize_new_user_memory()
   to service_role;

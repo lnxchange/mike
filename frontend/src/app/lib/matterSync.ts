@@ -26,6 +26,8 @@ export type MatterPullResult = {
     created: boolean;
     matterNumber: string | null;
     matterName: string | null;
+    account?: string | null;
+    description?: string | null;
     uploaded: number;
     remaining: number;
     status: MatterSyncStatus;

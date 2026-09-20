@@ -412,9 +412,20 @@ export async function createProject(
     practice?: string;
     org_id?: string | null;
     memory_enabled?: boolean;
+    client_name?: string;
+    description?: string;
   },
 ): Promise<CreateProjectResult> {
-  const { userId, name, cm_number, practice, org_id, memory_enabled } = args;
+  const {
+    userId,
+    name,
+    cm_number,
+    practice,
+    org_id,
+    memory_enabled,
+    client_name,
+    description,
+  } = args;
   if (!name?.trim())
     return { ok: false, kind: "validation", detail: "name is required" };
   if (memory_enabled !== undefined && typeof memory_enabled !== "boolean") {
@@ -451,6 +462,8 @@ export async function createProject(
     p_practice: normalizeOptionalString(practice),
     p_org_id: resolvedOrgId,
     p_memory_enabled: resolvedMemoryEnabled,
+    p_client_name: normalizeOptionalString(client_name),
+    p_description: normalizeOptionalString(description),
   });
   const data = Array.isArray(created) ? created[0] : created;
   if (error || !data) return { ok: false, kind: "db_error", error };
@@ -640,6 +653,12 @@ export async function updateProject(
   if (body.cm_number != null) updates.cm_number = body.cm_number;
   if ("practice" in body) {
     updates.practice = normalizeOptionalString(body.practice);
+  }
+  if ("client_name" in body) {
+    updates.client_name = normalizeOptionalString(body.client_name);
+  }
+  if ("description" in body) {
+    updates.description = normalizeOptionalString(body.description);
   }
   // Project settings and access edits are Owner-only: the creator, a direct
   // Owner grant on a personal project, or an Admin of the project's org.
