@@ -8,12 +8,78 @@ import {
   type NormalizedToolResult,
   type OpenAIToolSchema,
   type Provider,
+  type ReasoningLevel,
   type StreamChatParams,
   type StreamChatResult,
 } from "./types";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 
-const MAX_OUTPUT_TOKENS = 16_384;
+/**
+ * Output budget when an adapter does not declare its own. Reasoning tokens
+ * count against this on every provider, so it must leave room for a long
+ * think plus the tool call or answer that follows it.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+/** Hosted frontier models accept far more; give thinking room to finish. */
+export const HOSTED_MAX_OUTPUT_TOKENS = 32_768;
+
+/**
+ * How many times one turn may recover from a step that spent its whole
+ * output budget thinking and produced neither text nor a tool call.
+ */
+export const MAX_REASONING_OVERRUN_RETRIES = 2;
+
+export const REASONING_OVERRUN_NUDGE = `Your previous attempt ran out of output room while thinking and produced nothing the user can see. Do not re-plan or re-read. Take the next concrete action now: either call one tool, or write the user-facing answer from what is already in this conversation.`;
+
+const REASONING_STEP_DOWN: Partial<Record<ReasoningLevel, ReasoningLevel>> = {
+  max: "xhigh",
+  xhigh: "high",
+  high: "medium",
+  medium: "low",
+  low: "low",
+};
+
+/** One notch less thinking for the retry after an overrun; "none" stays put. */
+export function lowerReasoningLevel(
+  level: ReasoningLevel | undefined,
+): ReasoningLevel | undefined {
+  if (!level) return level;
+  return REASONING_STEP_DOWN[level] ?? level;
+}
+
+export type FinishedStepShape = {
+  finishReason: string | undefined;
+  producedText: boolean;
+  producedToolCall: boolean;
+};
+
+/** A step that hit the output cap with nothing to show is a thinking overrun. */
+export function isReasoningOverrunStep(step: FinishedStepShape | null): boolean {
+  return (
+    step !== null &&
+    step.finishReason === "length" &&
+    !step.producedText &&
+    !step.producedToolCall
+  );
+}
+
+type ModelMessageLike = AiSdk.ModelMessage;
+
+/**
+ * Assistant messages that carry nothing (the overrun step itself) would be
+ * rejected by Anthropic as empty content; drop them before the retry.
+ */
+export function messagesForOverrunRetry(
+  original: ModelMessageLike[],
+  responseMessages: ModelMessageLike[],
+): ModelMessageLike[] {
+  const kept = responseMessages.filter((message) => {
+    if (message.role !== "assistant") return true;
+    if (typeof message.content === "string") return message.content.trim() !== "";
+    return Array.isArray(message.content) && message.content.length > 0;
+  });
+  return [...original, ...kept, { role: "user", content: REASONING_OVERRUN_NUDGE }];
+}
 
 /** Ensure a proxy-closed final SSE event is still visible to SDK parsers. */
 export async function aiSdkFetch(
@@ -137,6 +203,8 @@ export type AiSdkAdapterConfig = {
   supportsReasoning?: boolean;
   /** OpenAI's CourtListener tools require an extra instruction after use. */
   courtlistenerCitationReminder?: boolean;
+  /** Output-token cap for this adapter; defaults to DEFAULT_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?: number;
 };
 
 type PendingToolExecution = {
@@ -302,100 +370,151 @@ export async function streamAiSdk(
   const openReasoningBlocks = new Set<string>();
 
   const maxIterations = params.maxIterations ?? DEFAULT_STREAM_MAX_ITERATIONS;
+  const maxOutputTokens = config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+
+  // A thinking overrun ends the AI SDK loop with nothing to continue on. Each
+  // retry replays this turn's own steps (tool calls and results included) and
+  // asks for an action with a little less thinking, inside the same budget.
+  let messages: ModelMessageLike[] = params.messages;
+  let reasoning = params.reasoning;
+  let remainingSteps = maxIterations;
+  let overrunRetries = 0;
 
   try {
-    const result = sdk.streamText({
-      model: config.model,
-      system: params.systemPrompt,
-      messages: params.messages,
-      tools,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      stopWhen: sdk.stepCountIs(maxIterations),
-      abortSignal: params.abortSignal,
-      reasoning:
-        config.supportsReasoning === false
-          ? undefined
-          : // The OpenAI adapter and API support `max`, while AI SDK Core 7's
-            // shared call-options type still omits it. Preserve the runtime
-            // value across that temporary upstream type mismatch.
-            ((params.reasoning ?? "none") as
-              | "provider-default"
-              | Exclude<NonNullable<StreamChatParams["reasoning"]>, "max">
-              | undefined),
-      include: { rawChunks: true },
-      prepareStep: ({
-        steps,
-      }: {
-        steps: Array<{ toolCalls: Array<{ toolName: string }> }>;
-      }) =>
-        prepareAssistantStreamStep({
-          steps,
-          maxIterations,
-          systemPrompt: params.systemPrompt,
-          courtlistenerReminder: config.courtlistenerCitationReminder,
-        }),
-    });
+    for (;;) {
+      let stepsThisRun = 0;
+      let currentStep: FinishedStepShape = {
+        finishReason: undefined,
+        producedText: false,
+        producedToolCall: false,
+      };
+      let lastFinishedStep: FinishedStepShape | null = null;
 
-    for await (const part of result.stream) {
-      switch (part.type) {
-        case "start-step":
-          iteration += 1;
-          break;
-        case "raw":
-          logRawLlmStream({
-            provider: config.provider,
-            model: config.modelId,
-            iteration: Math.max(0, iteration - 1),
-            label: "ai_sdk_raw",
-            payload: part.rawValue,
-          });
-          rawStreamRecorder?.record({
-            iteration: Math.max(0, iteration - 1),
-            label: "ai_sdk_raw",
-            payload: part.rawValue,
-          });
-          break;
-        case "text-delta":
-          fullText += part.text;
-          params.callbacks?.onContentDelta?.(part.text);
-          break;
-        case "reasoning-start":
-          openReasoningBlocks.add(part.id);
-          break;
-        case "reasoning-delta":
-          openReasoningBlocks.add(part.id);
-          params.callbacks?.onReasoningDelta?.(part.text);
-          break;
-        case "reasoning-end":
-          if (openReasoningBlocks.delete(part.id)) {
-            params.callbacks?.onReasoningBlockEnd?.();
+      const result = sdk.streamText({
+        model: config.model,
+        system: params.systemPrompt,
+        messages,
+        tools,
+        maxOutputTokens,
+        stopWhen: sdk.stepCountIs(remainingSteps),
+        abortSignal: params.abortSignal,
+        reasoning:
+          config.supportsReasoning === false
+            ? undefined
+            : // The OpenAI adapter and API support `max`, while AI SDK Core 7's
+              // shared call-options type still omits it. Preserve the runtime
+              // value across that temporary upstream type mismatch.
+              ((reasoning ?? "none") as
+                | "provider-default"
+                | Exclude<NonNullable<StreamChatParams["reasoning"]>, "max">
+                | undefined),
+        include: { rawChunks: true },
+        prepareStep: ({
+          steps,
+        }: {
+          steps: Array<{ toolCalls: Array<{ toolName: string }> }>;
+        }) =>
+          prepareAssistantStreamStep({
+            steps,
+            maxIterations: remainingSteps,
+            systemPrompt: params.systemPrompt,
+            courtlistenerReminder: config.courtlistenerCitationReminder,
+          }),
+      });
+
+      for await (const part of result.stream) {
+        switch (part.type) {
+          case "start-step":
+            iteration += 1;
+            stepsThisRun += 1;
+            currentStep = {
+              finishReason: undefined,
+              producedText: false,
+              producedToolCall: false,
+            };
+            break;
+          case "finish-step":
+            currentStep.finishReason = part.finishReason;
+            lastFinishedStep = currentStep;
+            break;
+          case "raw":
+            logRawLlmStream({
+              provider: config.provider,
+              model: config.modelId,
+              iteration: Math.max(0, iteration - 1),
+              label: "ai_sdk_raw",
+              payload: part.rawValue,
+            });
+            rawStreamRecorder?.record({
+              iteration: Math.max(0, iteration - 1),
+              label: "ai_sdk_raw",
+              payload: part.rawValue,
+            });
+            break;
+          case "text-delta":
+            if (part.text) currentStep.producedText = true;
+            fullText += part.text;
+            params.callbacks?.onContentDelta?.(part.text);
+            break;
+          case "reasoning-start":
+            openReasoningBlocks.add(part.id);
+            break;
+          case "reasoning-delta":
+            openReasoningBlocks.add(part.id);
+            params.callbacks?.onReasoningDelta?.(part.text);
+            break;
+          case "reasoning-end":
+            if (openReasoningBlocks.delete(part.id)) {
+              params.callbacks?.onReasoningBlockEnd?.();
+            }
+            break;
+          case "tool-call": {
+            currentStep.producedToolCall = true;
+            const call: NormalizedToolCall = {
+              id: part.toolCallId,
+              name: part.toolName,
+              input: normalizeToolInput(part.input),
+            };
+            params.callbacks?.onToolCallStart?.(call);
+            break;
           }
-          break;
-        case "tool-call": {
-          const call: NormalizedToolCall = {
-            id: part.toolCallId,
-            name: part.toolName,
-            input: normalizeToolInput(part.input),
-          };
-          params.callbacks?.onToolCallStart?.(call);
-          break;
-        }
-        case "tool-error":
-          throw new Error(errorMessage(part.error, config.label));
-        case "error":
-          throw new Error(errorMessage(part.error, config.label));
-        case "abort": {
-          const error = new Error(part.reason || "Stream aborted.");
-          error.name = "AbortError";
-          throw error;
+          case "tool-error":
+            throw new Error(errorMessage(part.error, config.label));
+          case "error":
+            throw new Error(errorMessage(part.error, config.label));
+          case "abort": {
+            const error = new Error(part.reason || "Stream aborted.");
+            error.name = "AbortError";
+            throw error;
+          }
         }
       }
+
+      for (const id of openReasoningBlocks) {
+        openReasoningBlocks.delete(id);
+        params.callbacks?.onReasoningBlockEnd?.();
+      }
+
+      remainingSteps = Math.max(1, remainingSteps - stepsThisRun);
+      const canRetry =
+        isReasoningOverrunStep(lastFinishedStep) &&
+        overrunRetries < MAX_REASONING_OVERRUN_RETRIES &&
+        !params.abortSignal?.aborted;
+      if (!canRetry) break;
+
+      overrunRetries += 1;
+      const responseMessages = (await result.responseMessages) as ModelMessageLike[];
+      messages = messagesForOverrunRetry(messages, responseMessages);
+      reasoning = lowerReasoningLevel(reasoning);
+      console.warn("[llm-stream] reasoning overrun, retrying with less thinking", {
+        provider: config.provider,
+        model: config.modelId,
+        attempt: overrunRetries,
+        reasoning,
+        remainingSteps,
+      });
     }
 
-    for (const id of openReasoningBlocks) {
-      openReasoningBlocks.delete(id);
-      params.callbacks?.onReasoningBlockEnd?.();
-    }
     await rawStreamRecorder?.flush("completed");
     return { fullText };
   } catch (error) {
