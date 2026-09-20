@@ -86,6 +86,7 @@ export function useFetchDocxBytes(
                 // Stream bytes through the backend (avoids CORS on R2
                 // signed URLs).
                 const bin = await authenticatedFetch(url, {
+                    cache: "no-store",
                     signal: cacheBytes ? undefined : controller.signal,
                 });
                 if (!bin.ok) throw new Error(`HTTP ${bin.status}`);

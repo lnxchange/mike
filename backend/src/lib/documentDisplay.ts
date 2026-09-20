@@ -124,6 +124,7 @@ export function sendDocumentDisplay(
   payload: DocumentDisplayPayload,
 ): void {
   res.setHeader("Content-Type", payload.contentType);
+  res.setHeader("Cache-Control", "private, no-store");
   res.setHeader(
     "Content-Disposition",
     buildContentDisposition("inline", payload.filename),

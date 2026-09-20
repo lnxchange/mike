@@ -31,6 +31,14 @@ async function proxy(request: NextRequest, context: RouteContext) {
         headers.delete("host");
         headers.delete("connection");
         headers.delete("content-length");
+        // Authenticated document bytes must not be revalidated as 304.
+        // Express attaches ETags; a replayed If-None-Match returns an empty
+        // body that the viewer treats as a failed load.
+        headers.delete("if-none-match");
+        headers.delete("if-modified-since");
+        headers.delete("if-match");
+        headers.delete("if-unmodified-since");
+        headers.delete("if-range");
         headers.set("x-forwarded-host", request.nextUrl.host);
         headers.set(
             "x-forwarded-proto",
@@ -53,6 +61,9 @@ async function proxy(request: NextRequest, context: RouteContext) {
         // Fetch implementations may transparently decompress the response.
         responseHeaders.delete("content-encoding");
         responseHeaders.delete("content-length");
+        responseHeaders.delete("etag");
+        responseHeaders.delete("last-modified");
+        responseHeaders.set("cache-control", "private, no-store");
 
         return new Response(upstream.body, {
             status: upstream.status,

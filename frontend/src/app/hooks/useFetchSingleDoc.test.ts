@@ -5,12 +5,12 @@ import { useFetchSingleDoc } from "./useFetchSingleDoc";
 
 vi.mock("@/app/lib/authEvents", () => ({ authenticatedFetch: vi.fn() }));
 beforeEach(() => vi.mocked(authenticatedFetch).mockReset());
+const pdfBytes = () => Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]);
 const pdf = () =>
-    new Response(new Uint8Array([1, 2]), {
+    new Response(pdfBytes(), {
         headers: { "Content-Type": "application/pdf" },
     });
-const pdfMagic = () =>
-    new Response(Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]));
+const pdfMagic = () => new Response(pdfBytes());
 
 it("does not refetch stable inputs, refreshes revisions, and clears a closed document", async () => {
     vi.mocked(authenticatedFetch).mockImplementation(async () => pdf());
@@ -67,4 +67,55 @@ it("treats a PDF magic header as a PDF when Content-Type is missing", async () =
     const { result } = renderHook(() => useFetchSingleDoc("d1"));
     await waitFor(() => expect(result.current.result?.type).toBe("pdf"));
     expect(result.current.error).toBeNull();
+});
+
+it("surfaces a load error for a 304 or HTML body without treating it as a timeout", async () => {
+    vi.mocked(authenticatedFetch).mockResolvedValueOnce(
+        new Response(null, { status: 304 }),
+    );
+    const { result, rerender } = renderHook(
+        ({ id }) => useFetchSingleDoc(id),
+        { initialProps: { id: "d1" } },
+    );
+    await waitFor(() =>
+        expect(result.current.error).toBe(
+            "This document could not be loaded. Please try again.",
+        ),
+    );
+    expect(result.current.error).not.toBe(
+        "This document is taking too long to open. Please try again.",
+    );
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+        "/api/single-documents/d1/display",
+        expect.objectContaining({ cache: "no-store" }),
+    );
+
+    vi.mocked(authenticatedFetch).mockResolvedValueOnce(
+        new Response("<html>error</html>", {
+            status: 200,
+            headers: { "Content-Type": "text/html" },
+        }),
+    );
+    rerender({ id: "d2" });
+    await waitFor(() =>
+        expect(result.current.error).toBe(
+            "This document could not be loaded. Please try again.",
+        ),
+    );
+    expect(result.current.result).toBeNull();
+});
+
+it("rejects an application/pdf response that is not a PDF", async () => {
+    vi.mocked(authenticatedFetch).mockResolvedValue(
+        new Response("<!doctype html>", {
+            headers: { "Content-Type": "application/pdf" },
+        }),
+    );
+    const { result } = renderHook(() => useFetchSingleDoc("d1"));
+    await waitFor(() =>
+        expect(result.current.error).toBe(
+            "This document could not be loaded. Please try again.",
+        ),
+    );
+    expect(result.current.result).toBeNull();
 });

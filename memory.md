@@ -1,5 +1,15 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-20 — Viewer 304: documents fetched then showed "could not be loaded"
+
+Yule hard-refreshed production after `af8c1d0d` and still could not open files. He now hits "This document could not be loaded. Please try again." rather than an infinite spinner.
+
+Evidence: Railway `/display` for `afea6820-9df6-4ed7-b9c0-e63188798f9c` was 200, then Vercel logged `GET /api/single-documents/afea6820-9df6-4ed7-b9c0-e63188798f9c/display 304`. Express ETags plus the `/api` gateway forwarding `If-None-Match` return an empty body. `useFetchSingleDoc` treats any non-2xx as a load failure. PDF.js worker `pdf.worker.min.0fycs0zatkwj0.mjs` is 200; a tiny PDF loaded in 71ms with 6.3.289. Fonts were not the remaining bug.
+
+Fix: strip conditional request headers and ETags on the gateway, set `Cache-Control: private, no-store` on `/display` and `/file`, fetch with `cache: "no-store"`, reject HTML/JSON pretending to be a PDF, prefer the stored PDF for Word in the workspace as well as the side panel.
+
+After hard-refresh, open `230125 - Letter to the ACCC advising address of service (final signed).pdf` and the matching `.docx`.
+
 ## 2026-09-20 — Synced documents opened but never finished rendering
 
 Matter 242814 project `41cfbdbf-a1f8-47a2-be4d-1208eb375b0f`: all 26 listed files were `ready` with storage paths (6 pdf with page_count, 20 docx with converted-pdfs paths and null page_count). Railway `/display` and `/file` returned 200 when Yule clicked. Processing was not the hang.
@@ -63,3 +73,13 @@ First-slice instruments: ESC ERCOP / EDCOP / GDCOP from esc.vic.gov.au Word down
 Victoria has its own retail code: NERR is not treated as applying to Victorian retail customers unless comparing or asking about a participating jurisdiction. AER guidelines, AEMO procedures, Vic Acts, and case law are out of this slice.
 
 Settings: Features → Legal Research → Australian energy law (no API key). Docs: `docs/au-energy.md`.
+
+## 2026-09-20 — Remaining AU research surfaces (AER/AEMO, Vic statutes, case law)
+
+Third AU research slice. Energy flag now also covers AER guidelines and AEMO procedures (same `legal_research_au_energy` tools). New independent flags `legal_research_au_vic` and `legal_research_au_cases` (migration `20260920_07`). Defaults on when jurisdiction is Australia.
+
+Vic: Tide page JSON + authorised PDFs on legislation.vic.gov.au / content.legislation.vic.gov.au. Tools: `au_search_vic_legislation`, `au_get_vic_legislation`, `au_get_vic_legislation_as_at`, `au_vic_legislation_versions`, `au_find_in_vic_legislation`.
+
+Cases: NSW Caselaw HTML, FCA Funnelback `fca~sp-judgments-internet`, HCA `eresources.hcourt.gov.au/showCase`. Tools: `au_search_case_law`, `au_get_case`, `au_find_in_case`. VSC/VSCA refused (AustLII). Cite only fetched official text. No new subscription. Word and tabular stay research-off.
+
+Settings: Features → Victorian legislation / Australian case law. Docs: `docs/au-vic-legislation.md`, `docs/au-case-law.md`. Energy docs updated. Not shipped to production.

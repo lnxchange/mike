@@ -79,28 +79,33 @@ export function useFetchSingleDoc(
                 const response = await authenticatedFetch(
                     displayUrl ??
                         `${API_BASE}/single-documents/${documentId}/display${qs}`,
-                    { credentials: "include", signal: controller.signal },
+                    {
+                        credentials: "include",
+                        cache: "no-store",
+                        signal: controller.signal,
+                    },
                 );
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 if (cancelled) return;
 
                 const contentType = response.headers.get("content-type") ?? "";
-                if (contentType.includes("application/pdf")) {
-                    const buffer = await response.arrayBuffer();
-                    if (!cancelled) setResult({ type: "pdf", buffer });
-                } else if (isSpreadsheetContentType(contentType)) {
-                    const buffer = await response.arrayBuffer();
-                    if (!cancelled) setResult({ type: "spreadsheet", buffer });
-                } else {
-                    const buffer = await response.arrayBuffer();
-                    if (cancelled) return;
-                    // Proxies sometimes drop Content-Type. A PDF still has
-                    // to open in PdfView, not sit on a blank canvas.
-                    if (isPdfMagic(buffer)) {
-                        setResult({ type: "pdf", buffer });
-                    } else {
-                        setResult({ type: "docx" });
+                const buffer = await response.arrayBuffer();
+                if (cancelled) return;
+                if (contentType.includes("application/pdf") || isPdfMagic(buffer)) {
+                    if (!isPdfMagic(buffer)) {
+                        throw new Error("HTTP 200 returned a non-PDF body");
                     }
+                    setResult({ type: "pdf", buffer });
+                } else if (isSpreadsheetContentType(contentType)) {
+                    setResult({ type: "spreadsheet", buffer });
+                } else if (
+                    contentType.includes("json") ||
+                    contentType.includes("html") ||
+                    contentType.startsWith("text/")
+                ) {
+                    throw new Error("HTTP 200 returned a non-document body");
+                } else {
+                    setResult({ type: "docx" });
                 }
             } catch {
                 if (!cancelled) {

@@ -17,6 +17,7 @@ import {
 import { LIQUID_GLASS_TRANSLUCENT_CLASS } from "@/shared/ui/LiquidGlassUI";
 import {
     DOCUMENT_LOAD_FAILED_MESSAGE,
+    DOCUMENT_LOAD_TIMEOUT_MESSAGE,
     DOCUMENT_RENDER_TIMEOUT_MS,
     withTimeout,
 } from "@/app/lib/documentViewerTimeout";
@@ -564,11 +565,15 @@ export function PdfView({
             if (cancelled) return;
             pdfDocRef.current = pdfDoc;
             await renderPDF(pdfDoc, list);
-        })().catch(() => {
+        })().catch((error: unknown) => {
             if (!cancelled)
                 setPdfLoadError({
                     result,
-                    message: DOCUMENT_LOAD_FAILED_MESSAGE,
+                    message:
+                        error instanceof Error &&
+                        error.message === DOCUMENT_LOAD_TIMEOUT_MESSAGE
+                            ? DOCUMENT_LOAD_TIMEOUT_MESSAGE
+                            : DOCUMENT_LOAD_FAILED_MESSAGE,
                 });
         });
         return () => {
@@ -579,17 +584,6 @@ export function PdfView({
             void loadingTask?.destroy().catch(() => {});
         };
     }, [result, renderPDF]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    useEffect(() => {
-        if (!rendering) return;
-        const timer = window.setTimeout(() => {
-            setPdfLoadError({
-                result,
-                message: DOCUMENT_LOAD_FAILED_MESSAGE,
-            });
-        }, DOCUMENT_RENDER_TIMEOUT_MS);
-        return () => window.clearTimeout(timer);
-    }, [rendering, result]);
 
     // Re-render at new scale when container is resized (debounced 150ms)
     useEffect(() => {
