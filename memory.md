@@ -1,8 +1,24 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-20 — Email PDF blank page, signatures, and mojibake
+
+LibreOffice 7.4.7 (backend Docker image) was emitting a blank first page on almost every email PDF, dropping cid signature images, and garbled curly quotes/accents.
+
+Causes: wrapper used `<h1>`/`<hr>`/`<p>` as the first body node (LO treats those as page breaks); `sanitizeEmailHtml` deleted `cid:` images; Outlook `charset=Windows-1252` nested inside our UTF-8 file made LO re-decode apostrophes as `â€™`.
+
+Fix in `backend/src/lib/emailMessage.ts`: table-only masthead, cid inlined as data URIs, body-only HTML with page CSS stripped, `.msg` decoded by Internet code page, RTF `\'xx` kept, `fonts-liberation` on Dockerfile/nixpacks. Existing stored email PDFs will stay wrong until re-rendered.
+
 ## 2026-09-20 — Remaining local work shipped so Yule can test
 
-Viewer fix `9ba8091c` was already on Vercel `dpl_caizHhqJQ4M19EoiZ6maYrwb1Y7U` and Railway `9ba8091`, with `cache: "no-store"` in the live JS. Remaining dirty work (Libris Li lockup, AU research, incomplete-turn recovery) is now committed and going to production. Filer drain commits `7c83727` / `5b9aad8` were already pushed; leftover command-queue/MCP/publicity WIP failed tests and was left uncommitted.
+Viewer fix `9ba8091c` was already aliased on `dpl_caizHhqJQ4M19EoiZ6maYrwb1Y7U` with `cache: "no-store"` in the live JS. Yule should still hard-refresh because a newer production cut is now aliased.
+
+Live now:
+- Vercel `dpl_HbfctagZSDfAvySRy72PwwnbrNVF` SHA `5d307c90` on https://libris-colleague.vercel.app (READY + aliased). Includes viewer, Li lockup, AU research UI, incomplete-turn recovery.
+- Railway `mike` SHA `848f923` SUCCESS, `/health` 200. First AU research build `5d307c90` failed tsc; follow-up commit fixed buffers, version filters, and duplicate tool event exports.
+- AU research columns applied on `gttnqqwqoirwbvalqfce`.
+- Filer drain already live at `7c83727-dirty`. Leftover command-queue/MCP/publicity WIP failed 3 tests and was not committed. Kicked 242814: uploaded 6, remaining 1197, documentCount 101, status Syncing.
+
+## 2026-09-20 — Chat was finishing research and never writing the answer
 
 ## 2026-09-20 — Chat was finishing research and never writing the answer
 
@@ -95,3 +111,9 @@ Vic: Tide page JSON + authorised PDFs on legislation.vic.gov.au / content.legisl
 Cases: NSW Caselaw HTML, FCA Funnelback `fca~sp-judgments-internet`, HCA `eresources.hcourt.gov.au/showCase`. Tools: `au_search_case_law`, `au_get_case`, `au_find_in_case`. VSC/VSCA refused (AustLII). Cite only fetched official text. No new subscription. Word and tabular stay research-off.
 
 Settings: Features → Victorian legislation / Australian case law. Docs: `docs/au-vic-legislation.md`, `docs/au-case-law.md`. Energy docs updated. Not shipped to production.
+
+## 2026-09-20 — Email-only matter status in project memory
+
+Fat matters were dying because chat tried to read the whole library to form a picture. Project memory now gets a background `memory.matter_brief` pass: latest email thread only (not chat), a short as-at note, working files named in that thread, and a grouped index. Refresh on new ready email, Zoho pull, or existing matters that still lack the fenced block. Curator must copy `<!-- matter-status:start -->` verbatim; the server restores it if dropped. Chat still has to open current drafts for mark-up.
+
+In the tree, not shipped. Do not bundle with the unshipped AU research work. Yule tests production only.

@@ -84,7 +84,25 @@ the answer being shown to the user.
 
 The live model receives enabled memory in an earliest synthetic user message,
 delimited as untrusted data. A system policy states that memory cannot grant
-permissions, change policy, or trigger tools by itself.
+permissions, change policy, or trigger tools by itself. When project memory
+contains a "Where the matter sits" section, that is a file note from the
+latest correspondence, not the text of an instrument.
+
+## Matter status from correspondence
+
+Project memory can also carry a sync-owned block written by a background
+pass, not by the live chat and not by the curator.
+
+After a project email becomes ready, after a Zoho/SharePoint pull, or when
+an existing matter still has no status block, a `memory.matter_brief` job
+reads the latest email thread (not a single `.eml` in isolation), writes a
+short as-at note, lists the working files named in that thread, and appends
+a grouped index of counts and latest files. Chat transcripts never enter
+that block. The curator must copy the fenced `<!-- matter-status:start -->`
+section verbatim; the server also restores it if a curator write drops it.
+
+The status note is refreshed when a newer email arrives. It is a place to
+pick the matter up from, not a substitute for opening the current drafts.
 
 ## User experience and controls
 
@@ -211,6 +229,9 @@ Configuration:
   Automatic mode uses the model selected for the conversation.
 - `MEMORY_CURATOR_MODEL` optionally enforces a deployment-wide curator model
   and takes precedence over the user's preference.
+- `MEMORY_MATTER_BRIEF_MODEL` optionally selects the model for the email-only
+  matter-status pass. If unset, the curator override or the project owner's
+  memory/chat model is used.
 
 Operational logs contain sanitized identifiers and outcomes only. Queue
 payloads contain IDs and cursors, not transcripts, credentials, or memory

@@ -80,6 +80,11 @@ flowchart LR
   Sweep --> Ops -->|"Bearer JWT, sync service account"| API --> Worker --> Store
 ```
 
+Once those files are ready, Colleague schedules a `memory.matter_brief` job
+for the project. That pass reads the latest email thread and writes the
+"Where the matter sits" block into project memory so chat does not have to
+rebuild the picture from the full library. See [Scoped memory](../memory.md).
+
 ## What the filer already has (verified 2026-09-20)
 
 These facts replace the secondhand notes this document previously carried. Paths are in

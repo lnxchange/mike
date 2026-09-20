@@ -33,6 +33,7 @@ import {
 } from "../../lib/emailMessage";
 import { storageKey, uploadFileFromPath } from "../../lib/storage";
 import type { Db } from "../../lib/supabase";
+import { enqueueProjectMatterBrief } from "../memory/memory.service";
 import { MAX_UPLOAD_SIZE_BYTES } from "./uploads.manifest";
 import {
   buildEmailPdfRendition,
@@ -211,6 +212,7 @@ export async function createDocumentFromLocalFile(
     projectId: target.projectId,
     documentId,
   });
+  await enqueueProjectMatterBrief(db, target.projectId);
 
   return {
     id: documentId,

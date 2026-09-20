@@ -137,3 +137,10 @@ export async function wipeMemory(
 }
 
 export { handleMemoryConsolidation, markMemoryConsolidationFailed } from "./memory.curator";
+export {
+    enqueueMatterBriefForDocument,
+    enqueueMatterBriefsForExistingProjects,
+    enqueueProjectMatterBrief,
+    handleMemoryMatterBrief,
+    MATTER_BRIEF_JOB_KIND,
+} from "./memory.matterBrief";

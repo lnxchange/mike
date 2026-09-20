@@ -13,7 +13,8 @@
 ## Features and clients
 
 - [Scoped memory](memory.md) — app and project Markdown memory, permissions,
-  asynchronous learning, deletion, and operations
+  correspondence-derived matter status, asynchronous learning, deletion, and
+  operations
 - [CourtListener integration](courtlistener.md) — live US case-law tools and
   optional bulk data
 - [Australian Commonwealth legislation](au-legislation.md) — live Federal

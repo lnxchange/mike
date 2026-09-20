@@ -103,6 +103,11 @@ describe("direct memory file writes", () => {
       .toThrow("content contains executable HTML");
     expect(() => normalizeMemoryMarkdown('<a href="javascript:run()">x</a>'))
       .toThrow("content contains executable HTML");
+    expect(
+      normalizeMemoryMarkdown(
+        "<!-- matter-status:start -->\nAs at 18 September 2026.\n<!-- matter-status:end -->\n",
+      ),
+    ).toContain("matter-status:start");
   });
 
   it("sends the normalized body, its digest and size under the loaded CAS token", async () => {

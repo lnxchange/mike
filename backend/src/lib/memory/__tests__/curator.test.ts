@@ -488,6 +488,41 @@ describe("scope-bound memory curator tool", () => {
     );
   });
 
+  it("restores the email-status block when a project curator drops it", async () => {
+    const section = [
+      "<!-- matter-status:start -->",
+      "As at 18 September 2026.",
+      "<!-- matter-status:end -->",
+    ].join("\n");
+    const svc = services();
+    svc.stream = vi.fn(async (params: StreamChatParams) => {
+      await params.runTools?.([
+        {
+          id: "call-1",
+          name: "write_memory_file",
+          input: {
+            expectedRevision: 1,
+            markdown: "## Working notes\n- Chat guess",
+            changeSummary: "Remember a chat guess",
+          },
+        },
+      ]);
+      return { fullText: "" };
+    });
+    const input = args("project");
+    input.current = { content: `${section}\n\n## Working notes\n- Keep`, revision: 1 };
+    await runMemoryCuratorScope(input, svc);
+    expect(svc.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("As at 18 September 2026."),
+      }),
+    );
+    expect(svc.write.mock.calls[0]![0].content).toContain("Chat guess");
+    expect(svc.stream.mock.calls[0]![0].systemPrompt).toContain(
+      "matter-status:start",
+    );
+  });
+
   it("records no change when the model calls no tool", async () => {
     const svc = services();
     const result = await runMemoryCuratorScope(args(), svc);

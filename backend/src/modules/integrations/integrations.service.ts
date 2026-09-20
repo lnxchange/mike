@@ -12,6 +12,7 @@
 // Design note: docs/integrations/sharepoint-zoho-matter-sync.md.
 
 import { checkProjectAccess, getOrgRole } from "../../lib/access";
+import { enqueueProjectMatterBrief } from "../memory/memory.service";
 import { logError } from "../../lib/log";
 import { filerConfiguration } from "../../lib/runtimeConfig";
 import {
@@ -279,6 +280,9 @@ export async function pullZohoMatter(
     });
     return failure("unavailable", PROJECT_NOT_READY_MESSAGE);
   }
+  // Files may still be landing. The per-document ready hook also schedules
+  // this; the longer delay covers the first-pass burst after a pull.
+  await enqueueProjectMatterBrief(db, projectId, { delayMs: 180_000 });
   return ok({
     projectId,
     created: call.body.created === true,

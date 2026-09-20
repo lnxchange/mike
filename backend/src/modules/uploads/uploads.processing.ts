@@ -39,6 +39,7 @@ import {
   versionStorageKey,
 } from "../../lib/storage";
 import { createServerSupabase, type Db } from "../../lib/supabase";
+import { enqueueProjectMatterBrief } from "../memory/memory.service";
 import {
   expandArchive,
   expandEmailAttachments,
@@ -490,6 +491,7 @@ async function processCreatedDocument(
     projectId,
     documentId,
   });
+  await enqueueProjectMatterBrief(db, projectId);
 
   return {
     ...document,

@@ -70,6 +70,7 @@ describe("buildMemoryTurn", () => {
     expect(MEMORY_SYSTEM_POLICY).toContain(
       "never included in a shared-audience conversation",
     );
+    expect(MEMORY_SYSTEM_POLICY).toContain("Where the matter sits");
     expect(getMemoryCurrent).toHaveBeenCalledTimes(1);
     expect(getMemoryCurrent).toHaveBeenCalledWith(
       expect.anything(),
