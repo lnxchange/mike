@@ -429,6 +429,14 @@ export async function runToolCalls(
     { type: "courtlistener_find_in_case" }
   >[] = [];
 
+  const allocateNextDocLabel = (existingLabels: Set<string>): string => {
+    let i = 0;
+    while (existingLabels.has(`doc-${i}`)) i++;
+    const label = `doc-${i}`;
+    existingLabels.add(label);
+    return label;
+  };
+
   const registerGeneratedDocument = (
     tc: ToolCall,
     result: Record<string, unknown>,
@@ -446,10 +454,7 @@ export async function runToolCalls(
       const storagePath = (result as { storage_path?: string }).storage_path;
 
       if (documentId && storagePath && docIndex) {
-        const existingLabels = new Set(Object.keys(docIndex));
-        let i = 0;
-        while (existingLabels.has(`doc-${i}`)) i++;
-        newDocLabel = `doc-${i}`;
+        newDocLabel = allocateNextDocLabel(new Set(Object.keys(docIndex)));
         docIndex[newDocLabel] = {
           document_id: documentId,
           filename: dlFilename,
@@ -2839,7 +2844,6 @@ export async function runToolCalls(
                 // doc-N slug so the model can edit/read any of
                 // them in the same turn.
                 const existingLabels = new Set(Object.keys(docIndex));
-                let nextLabelIdx = 0;
                 const copies: {
                   new_filename: string;
                   document_id: string;
@@ -2881,10 +2885,7 @@ export async function runToolCalls(
                       );
                     }
                   }
-                  while (existingLabels.has(`doc-${nextLabelIdx}`))
-                    nextLabelIdx++;
-                  const slug = `doc-${nextLabelIdx}`;
-                  existingLabels.add(slug);
+                  const slug = allocateNextDocLabel(existingLabels);
                   docIndex[slug] = {
                     document_id: d.id,
                     filename: d.filename,
@@ -3019,10 +3020,7 @@ export async function runToolCalls(
         if (!result.ok) {
           fail(result.error);
         } else {
-          const existingLabels = new Set(Object.keys(docIndex));
-          let nextLabelIdx = 0;
-          while (existingLabels.has(`doc-${nextLabelIdx}`)) nextLabelIdx++;
-          const slug = `doc-${nextLabelIdx}`;
+          const slug = allocateNextDocLabel(new Set(Object.keys(docIndex)));
           docIndex[slug] = {
             document_id: result.document_id,
             filename: result.filename,
@@ -3035,8 +3033,17 @@ export async function runToolCalls(
             filename: result.filename,
             source_kind: "document",
           });
-          const { ok: _ok, ...payload } = result;
-          void _ok;
+          const payload: DocFinalizedResult = {
+            filename: result.filename,
+            document_id: result.document_id,
+            version_id: result.version_id,
+            version_number: result.version_number,
+            source_document_id: result.source_document_id,
+            source_filename: result.source_filename,
+            download_url: result.download_url,
+            accepted: result.accepted,
+            comments_removed: result.comments_removed,
+          };
           docsFinalized.push(payload);
           write(
             `data: ${JSON.stringify({ type: "doc_finalized", ...payload })}\n\n`,

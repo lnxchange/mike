@@ -9,6 +9,12 @@
 
 import { randomUUID } from "node:crypto";
 import type { Db } from "../../lib/supabase";
+import {
+  finishRunningTurn,
+  recordTurnFrame,
+  startRunningTurn,
+  type RunningTurn,
+} from "./chat.turnRegistry";
 
 /** How long a lease survives without a heartbeat before it can be reclaimed. */
 export const CHAT_TURN_STALE_AFTER_SECONDS = 90;
@@ -25,6 +31,27 @@ export type ActiveChatTurn = {
   turnId: string;
   assistantMessageId: string | null;
   startedAt: string | null;
+};
+
+/** Columns the lease writes onto a chats row. */
+export type ChatTurnRow = {
+  id?: string;
+  active_turn_id?: string | null;
+  active_turn_message_id?: string | null;
+  active_turn_started_at?: string | null;
+  active_turn_heartbeat_at?: string | null;
+};
+
+/** Synthetic assistant row GET /chat appends while a lease is still live. */
+export type RunningAssistantMessage = {
+  id: string;
+  chat_id: string | null;
+  role: "assistant";
+  content: null;
+  citations: null;
+  status: "running";
+  started_at: string | null;
+  created_at: string | null;
 };
 
 export type ClaimChatTurnResult =
@@ -181,6 +208,57 @@ export async function requestChatTurnCancel(
   return { requested: row?.requested ?? false, turnId: row?.turn_id ?? null };
 }
 
+export function turnInProgressBody(active: ActiveChatTurn) {
+  return {
+    code: "turn_in_progress" as const,
+    detail: "A reply is still being written in this chat.",
+    assistant_message_id: active.assistantMessageId,
+    started_at: active.startedAt,
+  };
+}
+
+/**
+ * Bind the in-process registry and heartbeat to an SSE writer so both chat
+ * routes record, cancel, and reattach the same way.
+ */
+export function bindChatTurnStream(args: {
+  db: Db;
+  lease: ChatTurnLease | null;
+  userId: string;
+  fallbackSignal: AbortSignal;
+  write: (line: string) => boolean;
+}): {
+  runningTurn: RunningTurn | null;
+  signal: AbortSignal;
+  write: (line: string) => boolean;
+  finish: () => void;
+} {
+  const runningTurn = args.lease
+    ? startRunningTurn({
+        turnId: args.lease.turnId,
+        chatId: args.lease.chatId,
+        assistantMessageId: args.lease.assistantMessageId,
+        userId: args.userId,
+      })
+    : null;
+  const stopHeartbeat =
+    args.lease && runningTurn
+      ? startChatTurnHeartbeat(args.db, args.lease, runningTurn.controller)
+      : () => {};
+  return {
+    runningTurn,
+    signal: runningTurn?.controller.signal ?? args.fallbackSignal,
+    write: (line) => {
+      if (runningTurn) recordTurnFrame(runningTurn, line);
+      return args.write(line);
+    },
+    finish: () => {
+      stopHeartbeat();
+      if (runningTurn) finishRunningTurn(runningTurn);
+    },
+  };
+}
+
 /**
  * The transcript plus one synthetic assistant row for a turn that is still
  * running, so a client that loads the chat mid-turn can show it as working
@@ -188,8 +266,8 @@ export async function requestChatTurnCancel(
  */
 export function withRunningTurnMessage<T extends { id?: unknown }>(
   messages: T[],
-  chatRow: Parameters<typeof activeTurnFromChatRow>[0] & { id?: string },
-): Array<T | Record<string, unknown>> {
+  chatRow: ChatTurnRow,
+): Array<T | RunningAssistantMessage> {
   const active = activeTurnFromChatRow(chatRow);
   if (!active?.assistantMessageId) return messages;
   if (messages.some((message) => message.id === active.assistantMessageId)) {
@@ -211,12 +289,7 @@ export function withRunningTurnMessage<T extends { id?: unknown }>(
 }
 
 /** The lease as a client sees it, or null when nothing is running. */
-export function activeTurnFromChatRow(row: {
-  active_turn_id?: string | null;
-  active_turn_message_id?: string | null;
-  active_turn_started_at?: string | null;
-  active_turn_heartbeat_at?: string | null;
-}): ActiveChatTurn | null {
+export function activeTurnFromChatRow(row: ChatTurnRow): ActiveChatTurn | null {
   if (!row.active_turn_id) return null;
   const heartbeat = row.active_turn_heartbeat_at ?? row.active_turn_started_at;
   if (heartbeat) {

@@ -43,6 +43,7 @@ vi.mock("../../../../../lib/downloadTokens", () => ({
 import {
   cleanCopyFilename,
   formatTrackedChangesSection,
+  pendingTrackedChangeCount,
   runFinalizeDocument,
 } from "../documentOps";
 
@@ -80,21 +81,23 @@ describe("cleanCopyFilename", () => {
 
 describe("formatTrackedChangesSection", () => {
   it("lists pending changes with author and date and points at finalize_document", () => {
-    const section = formatTrackedChangesSection({
+    const summary = {
       changes: [
         {
-          w_id: "1",
-          kind: "ins",
+          w_id: "1" as const,
+          kind: "ins" as const,
           author: "Tan",
           date: "2026-09-18T07:01:16Z",
           text: "with Steadfast's prior written approval",
         },
-        { w_id: "2", kind: "del", author: null, date: null, text: "notify" },
+        { w_id: "2", kind: "del" as const, author: null, date: null, text: "notify" },
       ],
       propertyChanges: 1,
       moves: 0,
       comments: 2,
-    });
+    };
+    const section = formatTrackedChangesSection(summary);
+    expect(pendingTrackedChangeCount(summary)).toBe(3);
     expect(section).toContain("TRACKED CHANGES (3 pending, 2 comments)");
     expect(section).toContain(
       '1. [ins] Tan, 2026-09-18: "with Steadfast\'s prior written approval"',

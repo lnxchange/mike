@@ -1108,6 +1108,10 @@ export async function loadCurrentVersionBytes(
 /** Pending changes listed per read; the rest is summarised as a count. */
 export const TRACKED_CHANGES_LIST_LIMIT = 60;
 
+export function pendingTrackedChangeCount(summary: TrackedMarkupSummary): number {
+  return summary.changes.length + summary.moves + summary.propertyChanges;
+}
+
 /**
  * What read_document appends below a Word document's body text so the model
  * can tell existing redline from body text. The body above is the accepted
@@ -1117,8 +1121,7 @@ export const TRACKED_CHANGES_LIST_LIMIT = 60;
 export function formatTrackedChangesSection(
   summary: TrackedMarkupSummary,
 ): string {
-  const pending =
-    summary.changes.length + summary.moves + summary.propertyChanges;
+  const pending = pendingTrackedChangeCount(summary);
   if (pending === 0 && summary.comments === 0) {
     return "\n\n--- TRACKED CHANGES: none. This document carries no redline or comments. ---";
   }
@@ -1729,7 +1732,8 @@ export async function readDocumentContent(
     } else if (fileType === "docx") {
       // Use the same flattening as the edit_document matcher so the
       // LLM sees exactly the characters it can anchor against.
-      text = await extractDocxBodyText(Buffer.from(raw));
+      const bytes = Buffer.from(raw);
+      text = await extractDocxBodyText(bytes);
       devLog(
         `[read_document] docx extractDocxBodyText length=${text.length} for filename="${docInfo.filename}"`,
       );
@@ -1737,9 +1741,8 @@ export async function readDocumentContent(
       // find_in_document searches the body text alone.
       if (text && emitEvents) {
         try {
-          const markup = await listTrackedChanges(Buffer.from(raw));
-          trackedChangeCount =
-            markup.changes.length + markup.moves + markup.propertyChanges;
+          const markup = await listTrackedChanges(bytes);
+          trackedChangeCount = pendingTrackedChangeCount(markup);
           text += formatTrackedChangesSection(markup);
         } catch (err) {
           devLog(`[read_document] tracked-change inventory failed`, err);

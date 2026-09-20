@@ -30,15 +30,12 @@ import {
     parseOptionalDisplayedDoc,
     parseOptionalModel,
     parseOptionalReasoning,
+    bindChatTurnStream,
     claimChatTurn,
     discardChatInputMessage,
     releaseChatTurn,
-    startChatTurnHeartbeat,
-    finishRunningTurn,
-    recordTurnFrame,
-    startRunningTurn,
+    turnInProgressBody,
     type ChatTurnLease,
-    type RunningTurn,
 } from "../chat/chat.service";
 import { generateAssistantChatTitle } from "../chat/chat.service";
 import { titleModelForChat } from "../../lib/modelSelection";
@@ -173,12 +170,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             });
             if (!claim.ok) {
                 await discardChatInputMessage(db, { chatId, inputMessageId });
-                return void res.status(409).json({
-                    code: "turn_in_progress",
-                    detail: "A reply is still being written in this chat.",
-                    assistant_message_id: claim.active.assistantMessageId,
-                    started_at: claim.active.startedAt,
-                });
+                return void res.status(409).json(turnInProgressBody(claim.active));
             }
             turnLease = claim.lease;
         }
@@ -188,24 +180,15 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         // chat cancel endpoint or the heartbeat; frames are recorded so a
         // returning client can reattach.
         const stream = openAssistantSse(res, { abortOnClose: false });
-        const runningTurn: RunningTurn | null =
-            turnLease
-                ? startRunningTurn({
-                      turnId: turnLease.turnId,
-                      chatId,
-                      assistantMessageId: turnLease.assistantMessageId,
-                      userId,
-                  })
-                : null;
-        const turnSignal = runningTurn?.controller.signal ?? stream.signal;
-        const stopHeartbeat =
-            turnLease && runningTurn
-                ? startChatTurnHeartbeat(db, turnLease, runningTurn.controller)
-                : () => {};
-        const write = (line: string) => {
-            if (runningTurn) recordTurnFrame(runningTurn, line);
-            return stream.write(line);
-        };
+        const turn = bindChatTurnStream({
+            db,
+            lease: turnLease,
+            userId,
+            fallbackSignal: stream.signal,
+            write: (line) => stream.write(line),
+        });
+        const turnSignal = turn.signal;
+        const write = turn.write;
 
         try {
             write(
@@ -382,9 +365,22 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             write("data: [DONE]\n\n");
         } catch (err) {
             if (isAbortError(err)) {
-                console.log("[project-chat/stream] client aborted stream", {
+                console.log("[project-chat/stream] turn cancelled", {
                     chatId,
                 });
+                void enqueueChatTurnAudit(
+                    db,
+                    {
+                        userId,
+                        userEmail,
+                        chatId,
+                        projectId,
+                        title: chatTitle,
+                        model: selectedModel,
+                        status: "cancelled",
+                    },
+                    null,
+                );
                 if (err instanceof AssistantStreamError) {
                     const partial = buildCancelledAssistantMessage({
                         fullText: err.fullText,
@@ -475,8 +471,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 /* ignore */
             }
         } finally {
-            stopHeartbeat();
-            if (runningTurn) finishRunningTurn(runningTurn);
+            turn.finish();
             stream.finish();
         }
     } finally {

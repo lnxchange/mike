@@ -334,6 +334,26 @@ export function useAssistantChat({
     signal: AbortSignal,
   ) => {
     const isCurrentRequest = () => requestGenerationRef.current === generation;
+    const settleIfFinished = async (): Promise<boolean> => {
+      if (!isCurrentRequest() || signal.aborted) return true;
+      let loaded: Awaited<ReturnType<typeof getChat>>;
+      try {
+        loaded = await getChat(targetChatId);
+      } catch {
+        return false;
+      }
+      if (!isCurrentRequest() || signal.aborted) return true;
+      if (findRunningTurn(loaded.messages)) return false;
+      setMessages(loaded.messages);
+      setIsResponseLoading(false);
+      setIsLoadingCitations(false);
+      activeTurnRef.current = null;
+      if (abortControllerRef.current?.signal === signal) {
+        abortControllerRef.current = null;
+      }
+      return true;
+    };
+    if (await settleIfFinished()) return;
     for (;;) {
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, RUNNING_TURN_POLL_MS);
@@ -346,23 +366,7 @@ export function useAssistantChat({
           { once: true },
         );
       });
-      if (!isCurrentRequest() || signal.aborted) return;
-      let loaded: Awaited<ReturnType<typeof getChat>>;
-      try {
-        loaded = await getChat(targetChatId);
-      } catch {
-        continue;
-      }
-      if (!isCurrentRequest() || signal.aborted) return;
-      if (findRunningTurn(loaded.messages)) continue;
-      setMessages(loaded.messages);
-      setIsResponseLoading(false);
-      setIsLoadingCitations(false);
-      activeTurnRef.current = null;
-      if (abortControllerRef.current?.signal === signal) {
-        abortControllerRef.current = null;
-      }
-      return;
+      if (await settleIfFinished()) return;
     }
   };
 

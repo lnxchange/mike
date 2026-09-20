@@ -1,17 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activeTurnFromChatRow,
+  bindChatTurnStream,
   claimChatTurn,
   heartbeatChatTurn,
   releaseChatTurn,
   requestChatTurnCancel,
   startChatTurnHeartbeat,
+  turnInProgressBody,
   withRunningTurnMessage,
   CHAT_TURN_STALE_AFTER_SECONDS,
 } from "../chat.turns";
+import {
+  getRunningTurn,
+  resetTurnRegistryForTests,
+} from "../chat.turnRegistry";
 
 afterEach(() => {
   vi.useRealTimers();
+  resetTurnRegistryForTests();
 });
 
 function dbWithRpc(
@@ -244,5 +251,63 @@ describe("activeTurnFromChatRow", () => {
         active_turn_heartbeat_at: old,
       }),
     ).toBeNull();
+  });
+});
+
+describe("turnInProgressBody", () => {
+  it("shapes the 409 payload both chat routes return", () => {
+    expect(
+      turnInProgressBody({
+        turnId: "turn-1",
+        assistantMessageId: "asst-1",
+        startedAt: "2026-09-20T07:08:49.000Z",
+      }),
+    ).toEqual({
+      code: "turn_in_progress",
+      detail: "A reply is still being written in this chat.",
+      assistant_message_id: "asst-1",
+      started_at: "2026-09-20T07:08:49.000Z",
+    });
+  });
+});
+
+describe("bindChatTurnStream", () => {
+  it("records frames on the running turn and finishes it", () => {
+    const written: string[] = [];
+    const bound = bindChatTurnStream({
+      db: { rpc: vi.fn() } as never,
+      lease: {
+        chatId: "chat-1",
+        turnId: "turn-1",
+        assistantMessageId: "asst-1",
+      },
+      userId: "user-1",
+      fallbackSignal: new AbortController().signal,
+      write: (line) => {
+        written.push(line);
+        return true;
+      },
+    });
+    expect(bound.runningTurn?.assistantMessageId).toBe("asst-1");
+    bound.write("data: hi\n\n");
+    expect(getRunningTurn("asst-1")?.frames).toEqual(["data: hi\n\n"]);
+    expect(written).toEqual(["data: hi\n\n"]);
+    bound.finish();
+    expect(getRunningTurn("asst-1")?.finished).toBe(true);
+  });
+
+  it("uses the fallback signal when there is no lease", () => {
+    const fallback = new AbortController();
+    const bound = bindChatTurnStream({
+      db: { rpc: vi.fn() } as never,
+      lease: null,
+      userId: "user-1",
+      fallbackSignal: fallback.signal,
+      write: () => true,
+    });
+    expect(bound.runningTurn).toBeNull();
+    expect(bound.signal).toBe(fallback.signal);
+    expect(getRunningTurn("asst-1")).toBeUndefined();
+    bound.finish();
   });
 });

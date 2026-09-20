@@ -92,6 +92,7 @@ function advertisedToolNames(): string[] {
 const WRITERS = [
   "edit_document",
   "replicate_document",
+  "finalize_document",
   "generate_docx",
   "generate_excel",
   "generate_ppt",

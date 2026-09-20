@@ -583,8 +583,10 @@ describe("useAssistantChat SSE parsing", () => {
                 pending = result.current.attachToTurn("asst-x");
             });
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(5_000);
+                await Promise.resolve();
+                await Promise.resolve();
             });
+            expect(chatReads).toBe(1);
             expect(result.current.isResponseLoading).toBe(true);
             await act(async () => {
                 await vi.advanceTimersByTimeAsync(5_000);

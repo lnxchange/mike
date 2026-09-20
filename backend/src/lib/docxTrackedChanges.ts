@@ -827,12 +827,6 @@ const MOVE_RANGE_TAGS = new Set([
     "w:moveToRangeEnd",
 ]);
 
-const COMMENT_ANCHOR_TAGS = new Set([
-    "w:commentRangeStart",
-    "w:commentRangeEnd",
-    "w:commentReference",
-]);
-
 /** Story parts that can carry tracked changes. */
 const STORY_PART_PATTERN =
     /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/;
