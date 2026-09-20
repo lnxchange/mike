@@ -4,6 +4,7 @@ import {
   emailToHtml,
   emailToText,
   fileableAttachments,
+  inlineCidImages,
   parseEmail,
   sanitizeEmailHtml,
 } from "../emailMessage";
@@ -65,6 +66,7 @@ describe("parseEmail (eml)", () => {
       "notes.txt",
     ]);
     expect(email.attachments[1]?.inline).toBe(true);
+    expect(email.attachments[1]?.cid).toBe("logo@cid");
   });
 
   it("rejects unknown email types", async () => {
@@ -120,16 +122,81 @@ describe("emailToHtml", () => {
     const html = emailToHtml(email, {
       importedAttachments: ["Shareholders Agreement.pdf"],
     });
-    expect(html).toContain("<h1>Re: &lt;urgent&gt; &amp; confidential</h1>");
+    expect(html).toContain(
+      '<td class="email-subject" colspan="2">Re: &lt;urgent&gt; &amp; confidential</td>',
+    );
+    expect(html).not.toContain("<h1");
+    expect(html).not.toContain("<hr");
+    expect(html).not.toMatch(/<body>\s*<p[\s>]/);
     expect(html).toContain("<th>From</th><td>Yule Guttenbeil &lt;yule@attune.legal&gt;</td>");
     expect(html).toContain("Shareholders Agreement.pdf, notes.txt (not imported)");
     expect(html).toContain("<pre");
     expect(html).toContain("Attached is the draft for your review.");
   });
+
+  it("inlines cid signature images and drops Outlook page styles", () => {
+    const html = emailToHtml({
+      subject: "Signed",
+      from: [{ name: "Yule", address: "yule@attune.legal" }],
+      to: [],
+      cc: [],
+      bcc: [],
+      date: null,
+      text: "",
+      html: `<html><head>
+<meta http-equiv="Content-Type" content="text/html; charset=Windows-1252">
+<style>
+@page WordSection1 { size:8.5in 11.0in; margin:1.0in; }
+div.WordSection1 { page:WordSection1; }
+p.MsoNormal { font-family:Calibri; }
+</style>
+</head>
+<body>
+<div class="WordSection1">
+<p class="MsoNormal">Kind regards,</p>
+<img src="cid:attune-logo" alt="Attune">
+<p>The client\u2019s draft.</p>
+</div>
+</body></html>`,
+      attachments: [
+        {
+          filename: "logo.png",
+          contentType: "image/png",
+          content: Buffer.from("png"),
+          inline: true,
+          cid: "attune-logo",
+          embeddedMessage: false,
+        },
+      ],
+    });
+    expect(html).toContain('src="data:image/png;base64,cG5n"');
+    expect(html).not.toContain("cid:attune-logo");
+    expect(html).not.toContain("Windows-1252");
+    expect(html).not.toContain("@page");
+    expect(html).not.toMatch(/page\s*:\s*WordSection1/);
+    expect(html).toContain("The client\u2019s draft.");
+    expect(html).toContain("p.MsoNormal { font-family:Calibri; }");
+  });
+});
+
+describe("inlineCidImages", () => {
+  it("matches cid values with or without the domain suffix", () => {
+    const html = inlineCidImages('<img src="cid:logo@cid" alt="logo">', [
+      {
+        filename: "logo.png",
+        contentType: "image/png",
+        content: Buffer.from("png"),
+        inline: true,
+        cid: "logo@cid",
+        embeddedMessage: false,
+      },
+    ]);
+    expect(html).toContain('src="data:image/png;base64,cG5n"');
+  });
 });
 
 describe("sanitizeEmailHtml", () => {
-  it("strips scripts, event handlers and remote or cid images", () => {
+  it("strips scripts, event handlers and remote or leftover cid images", () => {
     const dirty = [
       "<p onclick=\"steal()\">Hi</p>",
       "<script>alert(1)</script>",
@@ -145,5 +212,19 @@ describe("sanitizeEmailHtml", () => {
     expect(clean).not.toContain("cid:logo");
     expect(clean).toContain('<img src="data:image/png;base64,AAAA">');
     expect(clean).toContain('<a href="https://example.com">link</a>');
+  });
+
+  it("takes the body only and drops charset metas that would re-decode UTF-8", () => {
+    const dirty = `<!DOCTYPE html><html><head>
+<meta http-equiv="Content-Type" content="text/html; charset=Windows-1252">
+<style>@page WordSection1 { margin:1in; } p { color:#222; }</style>
+</head><body><p>The client\u2019s café</p></body></html>`;
+    const clean = sanitizeEmailHtml(dirty);
+    expect(clean).not.toContain("Windows-1252");
+    expect(clean).not.toContain("<html");
+    expect(clean).not.toContain("<body");
+    expect(clean).not.toContain("@page");
+    expect(clean).toContain("The client\u2019s café");
+    expect(clean).toContain("p { color:#222; }");
   });
 });

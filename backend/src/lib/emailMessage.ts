@@ -29,6 +29,8 @@ export type EmailAttachment = {
   content: Buffer;
   /** Images and other parts referenced from the HTML body, not real files. */
   inline: boolean;
+  /** Content-ID without angle brackets, used to inline signature images. */
+  cid: string | null;
   /** An embedded message (.msg inside .msg) the parser could not expose as bytes. */
   embeddedMessage: boolean;
 };
@@ -89,6 +91,7 @@ async function parseEml(bytes: Buffer): Promise<ParsedEmail> {
       inline:
         attachment.contentDisposition === "inline" ||
         (!!attachment.cid && attachment.related === true),
+      cid: normalizeCid(attachment.cid),
       embeddedMessage: false,
     })),
   };
@@ -120,11 +123,12 @@ async function parseMsg(bytes: Buffer): Promise<ParsedEmail> {
         address: (recipient.smtpAddress ?? recipient.email ?? "").trim(),
       }));
 
+  const codepage = data.internetCodepage ?? data.messageCodepage;
   let html: string | null = null;
   if (typeof data.bodyHtml === "string" && data.bodyHtml.trim()) {
     html = data.bodyHtml;
   } else if (data.html instanceof Uint8Array && data.html.byteLength > 0) {
-    html = Buffer.from(data.html).toString("utf8");
+    html = decodeMsgHtml(data.html, codepage);
   }
   let text = data.body?.trim() ?? "";
   if (!text && !html && data.compressedRtf instanceof Uint8Array) {
@@ -142,6 +146,7 @@ async function parseMsg(bytes: Buffer): Promise<ParsedEmail> {
         contentType: "application/vnd.ms-outlook",
         content: Buffer.alloc(0),
         inline: false,
+        cid: null,
         embeddedMessage: true,
       });
       continue;
@@ -156,6 +161,7 @@ async function parseMsg(bytes: Buffer): Promise<ParsedEmail> {
       contentType: attachment.attachMimeTag ?? "application/octet-stream",
       content: Buffer.from(extracted.content),
       inline: !!attachment.attachmentHidden || !!attachment.pidContentId,
+      cid: normalizeCid(attachment.pidContentId),
       embeddedMessage: false,
     });
   }
@@ -192,9 +198,12 @@ async function rtfToText(compressed: Buffer): Promise<string> {
     const rtf = Buffer.from(decompressRTF(Array.from(compressed))).toString(
       "latin1",
     );
+    const windows1252 = new TextDecoder("windows-1252");
     return rtf
       .replace(/\\par[d]?/g, "\n")
-      .replace(/\\'[0-9a-f]{2}/gi, "")
+      .replace(/\\'([0-9a-f]{2})/gi, (_match, hex: string) =>
+        windows1252.decode(Uint8Array.of(Number.parseInt(hex, 16))),
+      )
       .replace(/\\[a-z]+-?\d* ?/gi, "")
       .replace(/[{}]/g, "")
       .replace(/\n{3,}/g, "\n\n")
@@ -263,24 +272,193 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Content-ID without the angle brackets Outlook often wraps it in. */
+function normalizeCid(value: string | undefined | null): string | null {
+  const cid = value?.replace(/^<|>$/g, "").trim();
+  return cid || null;
+}
+
 /**
- * Body HTML from the wild is not safe to hand to LibreOffice as-is: scripts
- * are pointless, and remote images would make the converter reach out to the
- * internet during a headless conversion and stall on a dead host. Strip
- * both, keep the rest.
+ * Outlook stores HTML bytes under a Windows code page. Decoding them as
+ * UTF-8 produces the â€™ / Ã© mojibake that then lands in the PDF.
+ */
+function decodeMsgHtml(
+  bytes: Uint8Array,
+  codepage: number | undefined,
+): string {
+  const labels = [
+    internetCodepageLabel(codepage),
+    "windows-1252",
+    "utf-8",
+  ].filter((label, index, all): label is string => {
+    return !!label && all.indexOf(label) === index;
+  });
+  for (const label of labels) {
+    try {
+      return new TextDecoder(label).decode(bytes);
+    } catch {
+      // Try the next label; Node's ICU build may not know every code page.
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+function internetCodepageLabel(codepage: number | undefined): string | null {
+  switch (codepage) {
+    case 65001:
+      return "utf-8";
+    case 1200:
+      return "utf-16le";
+    case 1201:
+      return "utf-16be";
+    case 1250:
+      return "windows-1250";
+    case 1251:
+      return "windows-1251";
+    case 1252:
+      return "windows-1252";
+    case 1253:
+      return "windows-1253";
+    case 1254:
+      return "windows-1254";
+    case 1255:
+      return "windows-1255";
+    case 1256:
+      return "windows-1256";
+    case 1257:
+      return "windows-1257";
+    case 1258:
+      return "windows-1258";
+    case 28591:
+      return "iso-8859-1";
+    case 28592:
+      return "iso-8859-2";
+    case 28595:
+      return "iso-8859-5";
+    case 28597:
+      return "iso-8859-7";
+    case 28599:
+      return "iso-8859-9";
+    case 28605:
+      return "iso-8859-15";
+    case 932:
+      return "shift_jis";
+    case 936:
+      return "gbk";
+    case 949:
+      return "euc-kr";
+    case 950:
+      return "big5";
+    default:
+      return null;
+  }
+}
+
+/** Inline images larger than this stay out of the HTML; they are not signatures. */
+const MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Replace cid: image references with data URIs from the message parts so
+ * LibreOffice can draw the signature without fetching anything.
+ */
+export function inlineCidImages(
+  html: string,
+  attachments: EmailAttachment[],
+): string {
+  const byCid = new Map<string, EmailAttachment>();
+  for (const attachment of attachments) {
+    if (
+      !attachment.cid ||
+      attachment.content.byteLength === 0 ||
+      attachment.content.byteLength > MAX_INLINE_IMAGE_BYTES
+    ) {
+      continue;
+    }
+    const cid = attachment.cid.toLowerCase();
+    byCid.set(cid, attachment);
+    const local = cid.split("@")[0];
+    if (local && !byCid.has(local)) byCid.set(local, attachment);
+  }
+  if (byCid.size === 0) return html;
+
+  return html.replace(/<img\b[^>]*>/gi, (tag) => {
+    const match = tag.match(
+      /\bsrc\s*=\s*(?:["']cid:([^"']+)["']|cid:([^\s>]+))/i,
+    );
+    if (!match) return tag;
+    const raw = (match[1] ?? match[2] ?? "").replace(/^<|>$/g, "").trim();
+    const key = raw.toLowerCase();
+    const attachment =
+      byCid.get(key) ?? byCid.get(key.split("@")[0] ?? "");
+    if (!attachment) return tag;
+    const mime = attachment.contentType.startsWith("image/")
+      ? attachment.contentType
+      : "image/png";
+    const dataUrl = `data:${mime};base64,${attachment.content.toString("base64")}`;
+    return tag.replace(
+      /\bsrc\s*=\s*(?:["']cid:[^"']+["']|cid:[^\s>]+)/i,
+      `src="${dataUrl}"`,
+    );
+  });
+}
+
+/**
+ * LibreOffice 7.4's HTML import treats @page / page-break / `page:` as
+ * section breaks and emits a blank first page. Neutralise those only.
+ */
+function neutralizePagedCss(css: string): string {
+  return css
+    .replace(/@page[^{]*\{[\s\S]*?\}/gi, "")
+    .replace(/page-break-[a-z]+\s*:\s*[^;}{]+;?/gi, "")
+    .replace(/break-(?:before|after|inside)\s*:\s*[^;}{]+;?/gi, "")
+    .replace(/(^|[;{\s])page\s*:\s*[^;}{]+;?/gi, "$1")
+    .trim();
+}
+
+function collectCleanStyles(html: string): string {
+  return [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+    .map((match) => neutralizePagedCss(match[1] ?? ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractHtmlBody(html: string): string {
+  const body = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  if (body?.[1] != null) return body[1];
+  return html
+    .replace(/<!DOCTYPE[^>]*>/gi, "")
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, "")
+    .replace(/<\/?html\b[^>]*>/gi, "");
+}
+
+/**
+ * Body HTML from the wild is not safe to hand to LibreOffice as-is.
+ * Drop scripts and remote images (the converter would fetch them and
+ * stall), take the body only so a leftover Windows-1252 charset meta
+ * cannot re-decode our UTF-8 file, and strip page-break CSS.
  */
 export function sanitizeEmailHtml(html: string): string {
-  return html
+  const styles = collectCleanStyles(html);
+  let body = extractHtmlBody(html);
+  body = body
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
     .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, "")
     .replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, "")
     .replace(/<link\b[^>]*>/gi, "")
+    .replace(/<meta\b[^>]*>/gi, "")
+    .replace(/<!DOCTYPE[^>]*>/gi, "")
+    .replace(/<\/?(?:html|head|body)\b[^>]*>/gi, "")
+    .replace(/<xml\b[^>]*>[\s\S]*?<\/xml>/gi, "")
+    .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, "")
     .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     .replace(
       /<img\b[^>]*\bsrc\s*=\s*("(?:https?:|\/\/)[^"]*"|'(?:https?:|\/\/)[^']*')[^>]*>/gi,
       "",
     )
     .replace(/<img\b[^>]*\bsrc\s*=\s*("cid:[^"]*"|'cid:[^']*')[^>]*>/gi, "");
+  if (styles) return `<style>${styles}</style>${body}`;
+  return body;
 }
 
 /**
@@ -309,8 +487,11 @@ export function emailToHtml(
     rows.push(["Attachments", attachmentNames.join(", ")]);
   }
 
+  // LibreOffice 7.4 inserts a blank first page when the HTML body starts
+  // with a heading, a paragraph, or an <hr>. Keep the masthead as a table
+  // and draw the divider with a border.
   const body = email.html
-    ? sanitizeEmailHtml(email.html)
+    ? sanitizeEmailHtml(inlineCidImages(email.html, email.attachments))
     : `<pre style="white-space:pre-wrap;font-family:inherit">${escapeHtml(
         email.text,
       )}</pre>`;
@@ -322,16 +503,17 @@ export function emailToHtml(
 <title>${escapeHtml(email.subject || "(no subject)")}</title>
 <style>
 body { font-family: Helvetica, Arial, sans-serif; font-size: 11pt; color: #222; }
-h1 { font-size: 15pt; margin: 0 0 8pt 0; }
-table.headers { border-collapse: collapse; margin-bottom: 12pt; }
+.email-masthead { border-bottom: 1px solid #999; margin: 0 0 12pt 0; padding: 0 0 8pt 0; }
+table.headers { border-collapse: collapse; margin: 0; }
 table.headers th { text-align: left; padding: 1pt 10pt 1pt 0; color: #555; font-weight: normal; vertical-align: top; white-space: nowrap; }
 table.headers td { padding: 1pt 0; vertical-align: top; }
-hr { border: 0; border-top: 1px solid #999; margin: 0 0 12pt 0; }
+table.headers td.email-subject { font-size: 15pt; font-weight: bold; padding: 0 0 8pt 0; }
 </style>
 </head>
 <body>
-<h1>${escapeHtml(email.subject || "(no subject)")}</h1>
+<div class="email-masthead">
 <table class="headers">
+<tr><td class="email-subject" colspan="2">${escapeHtml(email.subject || "(no subject)")}</td></tr>
 ${rows
   .filter(([, value]) => value)
   .map(
@@ -340,7 +522,7 @@ ${rows
   )
   .join("\n")}
 </table>
-<hr>
+</div>
 ${body}
 </body>
 </html>
