@@ -67,10 +67,34 @@ import { TabPillButtonUI } from "@/shared/ui/TabPillButtonUI";
 import { useQueryParamTab } from "@/app/hooks/useQueryParamTab";
 import { LIQUID_GLASS_FLOAT_CLASS } from "@/shared/ui/LiquidGlassUI";
 import { AccessScopeLabel } from "@/app/components/shared/AccessScopeLabel";
+import { sharepointFolderUrl, zohoMatterUrl } from "@/app/lib/matterSync";
 import { appConfig } from "@/config";
 
 const t = appConfig.terminology;
 const ZOHO_PULL_ENABLED = appConfig.featureFlags.zohoMatterPull === true;
+
+function MatterExternalLink({
+    href,
+    label,
+}: {
+    href: string | null;
+    label: string;
+}) {
+    if (!href) {
+        return <span className="text-gray-300">—</span>;
+    }
+    return (
+        <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(event) => event.stopPropagation()}
+            className="text-xs text-gray-800 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+        >
+            {label}
+        </a>
+    );
+}
 
 function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -620,6 +644,12 @@ export function ProjectsOverview() {
                                 <TableHeaderCell className="w-64">
                                     <span>Description</span>
                                 </TableHeaderCell>
+                                <TableHeaderCell className="w-20">
+                                    <span>Zoho</span>
+                                </TableHeaderCell>
+                                <TableHeaderCell className="w-28">
+                                    <span>SharePoint</span>
+                                </TableHeaderCell>
                             </>
                         )}
                         <TableHeaderCell className="w-36">
@@ -687,6 +717,12 @@ export function ProjectsOverview() {
                                         </TableCell>
                                         <TableCell className="w-64">
                                             <SkeletonLine className="w-40" />
+                                        </TableCell>
+                                        <TableCell className="w-20">
+                                            <SkeletonLine className="w-10" />
+                                        </TableCell>
+                                        <TableCell className="w-28">
+                                            <SkeletonLine className="w-16" />
                                         </TableCell>
                                     </>
                                 )}
@@ -905,6 +941,22 @@ export function ProjectsOverview() {
                                                 <span className="block truncate">
                                                     {project.description}
                                                 </span>
+                                            </TableCell>
+                                            <TableCell className="w-20">
+                                                <MatterExternalLink
+                                                    href={zohoMatterUrl(
+                                                        project.zoho_deal_id,
+                                                    )}
+                                                    label="Zoho"
+                                                />
+                                            </TableCell>
+                                            <TableCell className="w-28">
+                                                <MatterExternalLink
+                                                    href={sharepointFolderUrl(
+                                                        project.sharepoint_folder_url,
+                                                    )}
+                                                    label="SharePoint"
+                                                />
                                             </TableCell>
                                         </>
                                     )}

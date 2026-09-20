@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getOrgRole: vi.fn(),
   checkProjectAccess: vi.fn(),
   fetch: vi.fn(),
+  createServerSupabase: vi.fn(() => ({})),
 }));
 
 vi.mock("../../middleware/auth", () => ({
@@ -21,7 +22,7 @@ vi.mock("../../middleware/auth", () => ({
 }));
 
 vi.mock("../../lib/supabase", () => ({
-  createServerSupabase: () => ({}),
+  createServerSupabase: mocks.createServerSupabase,
 }));
 
 vi.mock("../../lib/access", () => ({
@@ -56,6 +57,7 @@ describe("integrations routes", () => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", mocks.fetch);
     configureFiler();
+    mocks.createServerSupabase.mockReturnValue({});
     mocks.getOrgRole.mockResolvedValue("member");
     mocks.checkProjectAccess.mockResolvedValue({ ok: true });
   });
@@ -157,6 +159,8 @@ describe("integrations routes", () => {
       uploaded: 12,
       remaining: 40,
       status: "Syncing",
+      matterId: null,
+      sharepointFolderUrl: null,
     });
     const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({
@@ -328,6 +332,8 @@ describe("integrations routes", () => {
       lastSyncAt: "2026-09-20T00:00:00Z",
       lastChangeAt: null,
       lastError: null,
+      matterId: null,
+      sharepointFolderUrl: null,
     });
     expect(mocks.checkProjectAccess).toHaveBeenCalledWith(
       PROJECT_ID,
@@ -346,6 +352,104 @@ describe("integrations routes", () => {
 
     expect(response.status).toBe(404);
     expect(mocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("writes Zoho and SharePoint links onto the project after a pull", async () => {
+    const updates: Record<string, unknown>[] = [];
+    mocks.createServerSupabase.mockReturnValue({
+      from: (table: string) => {
+        if (table !== "projects") {
+          throw new Error(`unexpected table ${table}`);
+        }
+        return {
+          update: (payload: Record<string, unknown>) => {
+            updates.push(payload);
+            return { eq: async () => ({ data: null, error: null }) };
+          },
+        };
+      },
+    });
+    mocks.fetch.mockResolvedValue(
+      filerResponse(200, {
+        projectId: PROJECT_ID,
+        created: true,
+        matterNumber: "263334",
+        matterName: "Intellihub - VAPs",
+        uploaded: 1,
+        remaining: 0,
+        status: "Idle",
+        matterId: "deal-1",
+        sharepointFolderUrl:
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+      }),
+    );
+
+    const response = await request(app)
+      .post("/integrations/matters/pull")
+      .send({ matterId: "deal-1" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.matterId).toBe("deal-1");
+    expect(response.body.sharepointFolderUrl).toBe(
+      "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+    );
+    expect(updates).toEqual([
+      expect.objectContaining({
+        zoho_deal_id: "deal-1",
+        sharepoint_folder_url:
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+      }),
+    ]);
+  });
+
+  it("fills missing project links from a status read", async () => {
+    const updates: Record<string, unknown>[] = [];
+    mocks.createServerSupabase.mockReturnValue({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: { zoho_deal_id: null, sharepoint_folder_url: null },
+              error: null,
+            }),
+          }),
+        }),
+        update: (payload: Record<string, unknown>) => {
+          updates.push(payload);
+          return { eq: async () => ({ data: null, error: null }) };
+        },
+      }),
+    });
+    mocks.fetch.mockResolvedValue(
+      filerResponse(200, {
+        found: true,
+        status: "Idle",
+        matterNumber: "263334",
+        matterName: "Intellihub - VAPs",
+        documentCount: 12,
+        remaining: 0,
+        lastSyncAt: null,
+        lastChangeAt: null,
+        lastError: null,
+        matterId: "deal-1",
+        sharepointFolderUrl:
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+      }),
+    );
+
+    const response = await request(app).get(
+      `/integrations/matters/status/${PROJECT_ID}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.matterId).toBe("deal-1");
+    expect(updates).toEqual([
+      expect.objectContaining({
+        zoho_deal_id: "deal-1",
+        sharepoint_folder_url:
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+      }),
+    ]);
   });
 
   it("reports found:false when the matter has no sync row", async () => {

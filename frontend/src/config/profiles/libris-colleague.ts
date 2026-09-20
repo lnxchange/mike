@@ -33,6 +33,8 @@ export const librisColleagueProfile: DeploymentProfile = {
   externalLinks: {
     terms: "https://libris.au",
     privacy: "https://libris.au",
+    zohoMatterBase:
+      "https://crm.zoho.com/crm/org684713976/tab/Potentials",
   },
   support: {
     email: "yule@attune.legal",

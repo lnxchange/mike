@@ -42,6 +42,8 @@ interface Props<T extends string> {
     onChange?: (id: T) => void;
     /** Optional content rendered on the left before any tab items */
     leading?: React.ReactNode;
+    /** Optional content rendered after the tab items, still on the left */
+    afterItems?: React.ReactNode;
     /** Optional content rendered on the right side of the toolbar */
     actions?: React.ReactNode;
 }
@@ -51,9 +53,11 @@ export function TableToolbar<T extends string>({
     active,
     onChange,
     leading,
+    afterItems,
     actions,
 }: Props<T>) {
     const hasItems = items.length > 0;
+    const hasLeadingGroup = Boolean(leading || hasItems || afterItems);
     const isDesktop = useSyncExternalStore(
         subscribeToDesktopQuery,
         getDesktopSnapshot,
@@ -62,7 +66,7 @@ export function TableToolbar<T extends string>({
 
     return (
         <div className="mx-4 mb-2 flex h-10 items-center md:mx-8">
-            {(leading || hasItems) && (
+            {hasLeadingGroup && (
                 <div className="-my-2 flex flex-1 items-center gap-1.5 py-2">
                     {leading}
                     {items.map((item) => (
@@ -74,6 +78,7 @@ export function TableToolbar<T extends string>({
                             {item.label}
                         </TabPillButtonUI>
                     ))}
+                    {afterItems}
                 </div>
             )}
             {actions && isDesktop && (

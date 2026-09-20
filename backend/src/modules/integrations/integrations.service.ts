@@ -13,6 +13,7 @@
 
 import { checkProjectAccess, getOrgRole } from "../../lib/access";
 import { enqueueProjectMatterBrief } from "../memory/memory.service";
+import { normalizeHttpUrl } from "../../lib/httpUrl";
 import { logError } from "../../lib/log";
 import { filerConfiguration } from "../../lib/runtimeConfig";
 import {
@@ -51,6 +52,8 @@ export type MatterPullResult = {
   uploaded: number;
   remaining: number;
   status: MatterSyncStatus;
+  matterId: string | null;
+  sharepointFolderUrl: string | null;
 };
 
 export type MatterSyncStatusResult =
@@ -65,6 +68,8 @@ export type MatterSyncStatusResult =
       lastSyncAt: string | null;
       lastChangeAt: string | null;
       lastError: string | null;
+      matterId: string | null;
+      sharepointFolderUrl: string | null;
     };
 
 const UNAVAILABLE_MESSAGE =
@@ -164,6 +169,63 @@ function statusOf(value: unknown): MatterSyncStatus {
   return typeof value === "string" && STATUS_VALUES.has(value)
     ? (value as MatterSyncStatus)
     : "Syncing";
+}
+
+const ZOHO_DEAL_ID_MAX_LENGTH = 64;
+
+function normalizeDealId(value: unknown): string | null {
+  const id = stringOrNull(value)?.trim() ?? null;
+  if (!id || id.length > ZOHO_DEAL_ID_MAX_LENGTH) return null;
+  return id;
+}
+
+/**
+ * Write Zoho / SharePoint identifiers onto the project. Pull replaces any
+ * values the filer sent; status only fills blanks so opening a matter
+ * backfills rows created before these columns existed. Failures stay
+ * local: the pull or status answer must not depend on this write.
+ */
+async function persistMatterLinks(
+  db: Db,
+  projectId: string,
+  fields: { zohoDealId: string | null; sharepointFolderUrl: string | null },
+  mode: "replace" | "fill",
+): Promise<void> {
+  const zohoDealId = normalizeDealId(fields.zohoDealId);
+  const sharepointFolderUrl = normalizeHttpUrl(fields.sharepointFolderUrl);
+  if (!zohoDealId && !sharepointFolderUrl) return;
+  try {
+    if (mode === "fill") {
+      const { data } = await db
+        .from("projects")
+        .select("zoho_deal_id, sharepoint_folder_url")
+        .eq("id", projectId)
+        .maybeSingle();
+      const updates: Record<string, string> = {};
+      if (zohoDealId && !stringOrNull(data?.zoho_deal_id)) {
+        updates.zoho_deal_id = zohoDealId;
+      }
+      if (sharepointFolderUrl && !stringOrNull(data?.sharepoint_folder_url)) {
+        updates.sharepoint_folder_url = sharepointFolderUrl;
+      }
+      if (Object.keys(updates).length === 0) return;
+      await db
+        .from("projects")
+        .update({ ...updates, updated_at: new Date().toISOString() })
+        .eq("id", projectId);
+      return;
+    }
+    const updates: Record<string, string> = {};
+    if (zohoDealId) updates.zoho_deal_id = zohoDealId;
+    if (sharepointFolderUrl) updates.sharepoint_folder_url = sharepointFolderUrl;
+    if (Object.keys(updates).length === 0) return;
+    await db
+      .from("projects")
+      .update({ ...updates, updated_at: new Date().toISOString() })
+      .eq("id", projectId);
+  } catch (error) {
+    logError("integrations/hydrate", error, { projectId });
+  }
 }
 
 async function requireSyncMember(
@@ -283,6 +345,14 @@ export async function pullZohoMatter(
   // Files may still be landing. The per-document ready hook also schedules
   // this; the longer delay covers the first-pass burst after a pull.
   await enqueueProjectMatterBrief(db, projectId, { delayMs: 180_000 });
+  const zohoDealId = normalizeDealId(call.body.matterId);
+  const sharepointFolderUrl = normalizeHttpUrl(call.body.sharepointFolderUrl);
+  await persistMatterLinks(
+    db,
+    projectId,
+    { zohoDealId, sharepointFolderUrl },
+    "replace",
+  );
   return ok({
     projectId,
     created: call.body.created === true,
@@ -293,6 +363,8 @@ export async function pullZohoMatter(
     uploaded: numberOrZero(call.body.uploaded),
     remaining: numberOrZero(call.body.remaining),
     status: statusOf(call.body.status),
+    matterId: zohoDealId,
+    sharepointFolderUrl,
   });
 }
 
@@ -329,6 +401,14 @@ export async function getMatterSyncStatus(
     return failure("unavailable", FILER_UNREACHABLE_MESSAGE);
   }
   if (call.body.found !== true) return ok({ found: false });
+  const matterId = normalizeDealId(call.body.matterId);
+  const sharepointFolderUrl = normalizeHttpUrl(call.body.sharepointFolderUrl);
+  await persistMatterLinks(
+    db,
+    args.projectId,
+    { zohoDealId: matterId, sharepointFolderUrl },
+    "fill",
+  );
   return ok({
     found: true,
     status: statusOf(call.body.status),
@@ -339,6 +419,8 @@ export async function getMatterSyncStatus(
     lastSyncAt: stringOrNull(call.body.lastSyncAt),
     lastChangeAt: stringOrNull(call.body.lastChangeAt),
     lastError: stringOrNull(call.body.lastError),
+    matterId,
+    sharepointFolderUrl,
   });
 }
 

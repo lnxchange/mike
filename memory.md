@@ -1,5 +1,18 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — External-links migration on production
+
+Applied `20260921_01_project_external_links.sql` to Libris Colleague Supabase `gttnqqwqoirwbvalqfce`. Columns `projects.zoho_deal_id` and `projects.sharepoint_folder_url` are live; both `get_projects_overview` overloads return them; `create_project_with_memory` accepts `p_zoho_deal_id` and `p_sharepoint_folder_url`. S155 project `41cfbdbf-a1f8-47a2-be4d-1208eb375b0f` still exists; document count stayed 237 (migration did not rewrite documents). Did not push Mike, did not redeploy Railway, did not apply migration 08, did not deploy the dirty filer tree. Hobby upgrade is Yule's to complete in the Railway dashboard; after that he still needs to raise the `mike` replica above 1 GB. `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER` stays 2 until someone changes that env without a reckless restart.
+
+## 2026-09-21 — Zoho and SharePoint links on matters
+
+Matters list and matter page now link out to Zoho and SharePoint when the project has a Deal id and folder URL.
+
+- Migration `20260921_01_project_external_links.sql`: `projects.zoho_deal_id`, `projects.sharepoint_folder_url`; overview RPCs and `create_project_with_memory` carry them. Not applied to production until Yule confirms.
+- Filer `complete_pull` writes both fields (create and update) and stores `FolderWebUrl` on ColleagueMatterSync. Status returns `matterId` and `sharepointFolderUrl`. Filer changes are in the sibling `sharepoint-email-filer` tree, not this repo.
+- Mike pull/status persist those fields (pull replaces, status fills blanks). Zoho URL is built from `libris-colleague` `externalLinks.zohoMatterBase`.
+- UI (flag `zohoMatterPull`): Zoho / SharePoint columns on the Matters table; pills beside Documents, Chats, Tabular Reviews. Hidden when the matter has no URL.
+
 ## 2026-09-21 — S155 / 242814 matter-sync unstuck
 
 Stall cause: the live Azure drain (`attuneemailfiler-flex` Durable `colleague_drain_orchestrator`) kept re-uploading the first Graph page as `document_create`. Filer skip in `_continue_slice` only skipped when stored `external_ctag` exactly matched Graph `cTag`/`eTag`. About 15 already-mirrored SharePoint item ids looped forever. Mike upserted a new UUID then died on `documents_project_external_item_unique`. Railway upload-worker logs from 10:30Z on 2026-09-20 through 20:50Z were that unique-key loop. Budget never reached new files. Postgres sat at ~113 ready docs (newest `2026-09-20 05:47:18Z`) until a later dribble to 123.

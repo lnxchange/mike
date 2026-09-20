@@ -114,11 +114,69 @@ describe("ProjectsOverview with zohoMatterPull on", () => {
         expect(screen.getByText("Matter number")).toBeInTheDocument();
         expect(screen.getByText("Client")).toBeInTheDocument();
         expect(screen.getByText("Description")).toBeInTheDocument();
+        expect(screen.getByText("Zoho")).toBeInTheDocument();
+        expect(screen.getByText("SharePoint")).toBeInTheDocument();
         expect(screen.getByText("242814")).toBeInTheDocument();
         expect(screen.getByText("Blue NRG Pty Ltd")).toBeInTheDocument();
         expect(
             screen.getAllByText("ACCC - s155 Notice and Enforcement").length,
         ).toBeGreaterThan(0);
+        expect(screen.queryByRole("link", { name: "Zoho" })).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("link", { name: "SharePoint" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("links out to Zoho and SharePoint when the matter has both fields", () => {
+        vi.mocked(usePaginatedProjects).mockReturnValue({
+            projects: [
+                {
+                    id: "41cfbdbf-a1f8-47a2-be4d-1208eb375b0f",
+                    user_id: "me",
+                    name: "ACCC - s155 Notice and Enforcement",
+                    cm_number: "242814",
+                    client_name: "Blue NRG Pty Ltd",
+                    description: "ACCC - s155 Notice and Enforcement",
+                    zoho_deal_id: "deal-1",
+                    sharepoint_folder_url:
+                        "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+                    practice: null,
+                    memory_enabled: true,
+                    created_at: "2026-01-01T00:00:00Z",
+                    updated_at: "2026-01-01T00:00:00Z",
+                    access_scope: "organization",
+                    organization_name: "Attune Legal",
+                },
+            ],
+            setProjects: vi.fn(),
+            loading: false,
+            loadingMore: false,
+            hasMore: false,
+            error: null,
+            loadMoreError: null,
+            loadMore: vi.fn(),
+            retry: vi.fn(),
+            selectedProjectIds: [],
+            setSelectedProjectIds: vi.fn(),
+            selectAllMatching: vi.fn(),
+            selectingAll: false,
+            getProjectOwnerId: () => null,
+        } as unknown as ReturnType<typeof usePaginatedProjects>);
+
+        render(<ProjectsOverview />);
+
+        const zoho = screen.getByRole("link", { name: "Zoho" });
+        const sharepoint = screen.getByRole("link", { name: "SharePoint" });
+        expect(zoho).toHaveAttribute(
+            "href",
+            "https://crm.zoho.com/crm/org684713976/tab/Potentials/deal-1",
+        );
+        expect(sharepoint).toHaveAttribute(
+            "href",
+            "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+        );
+        expect(zoho).toHaveAttribute("target", "_blank");
+        expect(sharepoint).toHaveAttribute("target", "_blank");
     });
 
     it("offers Pull from Zoho beside New and opens the modal", async () => {

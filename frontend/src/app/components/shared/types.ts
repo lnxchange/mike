@@ -72,6 +72,10 @@ export interface Project {
   cm_number: string | null;
   client_name?: string | null;
   description?: string | null;
+  /** Zoho Deal id when this matter was pulled from Zoho. */
+  zoho_deal_id?: string | null;
+  /** SharePoint matter-folder URL from the Deal's SharePoint Link field. */
+  sharepoint_folder_url?: string | null;
   practice: string | null;
   /** Whether this project's shared memory.md is active. */
   memory_enabled: boolean;

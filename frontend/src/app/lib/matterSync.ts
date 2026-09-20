@@ -2,6 +2,8 @@
 // (backend/src/modules/integrations). Kept apart from mikeApi.ts so the
 // modal, the matter header and their tests share one vocabulary.
 
+import { appConfig } from "@/config";
+
 export type MatterSyncStatus =
     | "AwaitingFolder"
     | "Creating"
@@ -31,6 +33,8 @@ export type MatterPullResult = {
     uploaded: number;
     remaining: number;
     status: MatterSyncStatus;
+    matterId?: string | null;
+    sharepointFolderUrl?: string | null;
 };
 
 export type MatterSyncStatusResult =
@@ -45,7 +49,35 @@ export type MatterSyncStatusResult =
           lastSyncAt: string | null;
           lastChangeAt: string | null;
           lastError: string | null;
+          matterId?: string | null;
+          sharepointFolderUrl?: string | null;
       };
+
+/** Build the Zoho Deal URL for a matter, or null when this profile has none. */
+export function zohoMatterUrl(
+    dealId: string | null | undefined,
+): string | null {
+    const base = appConfig.externalLinks.zohoMatterBase?.replace(/\/$/, "");
+    const id = dealId?.trim();
+    if (!base || !id) return null;
+    return `${base}/${encodeURIComponent(id)}`;
+}
+
+export function sharepointFolderUrl(
+    value: string | null | undefined,
+): string | null {
+    const trimmed = value?.trim();
+    if (!trimmed) return null;
+    try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            return null;
+        }
+        return trimmed;
+    } catch {
+        return null;
+    }
+}
 
 /** Statuses the filer will move on from without anyone asking. */
 export function isMatterSyncInProgress(status: MatterSyncStatus): boolean {

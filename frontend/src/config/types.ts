@@ -75,6 +75,11 @@ export interface DeploymentProfile {
   externalLinks: {
     terms: string;
     privacy: string;
+    /**
+     * Zoho CRM Deal URL prefix used to build a matter link from a Deal id.
+     * Only the libris-colleague profile sets this.
+     */
+    zohoMatterBase?: string;
   };
 
   support: {

@@ -26,7 +26,13 @@ import {
     updateProject,
     type ProjectGrant,
 } from "@/app/lib/mikeApi";
-import { describeMatterSync, isMatterSyncInProgress } from "@/app/lib/matterSync";
+import {
+    describeMatterSync,
+    isMatterSyncInProgress,
+    sharepointFolderUrl,
+    zohoMatterUrl,
+} from "@/app/lib/matterSync";
+import { tabPillButtonUIClassName } from "@/shared/ui/TabPillButtonUI.styles";
 import { useMatterSyncStatus } from "@/app/hooks/useMatterSyncStatus";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
@@ -279,6 +285,30 @@ export function ProjectWorkspaceProvider({
             enabled: matterSyncEnabled,
             onDocumentCountIncreased: () => void refreshProjectCollection(),
         });
+
+    useEffect(() => {
+        if (!matterSyncStatus?.found) return;
+        const dealId = matterSyncStatus.matterId?.trim() || null;
+        const folderUrl =
+            sharepointFolderUrl(matterSyncStatus.sharepointFolderUrl);
+        if (!dealId && !folderUrl) return;
+        setProject((prev) => {
+            if (!prev) return prev;
+            const nextDeal = prev.zoho_deal_id || dealId;
+            const nextUrl = prev.sharepoint_folder_url || folderUrl;
+            if (
+                nextDeal === prev.zoho_deal_id &&
+                nextUrl === prev.sharepoint_folder_url
+            ) {
+                return prev;
+            }
+            return {
+                ...prev,
+                zoho_deal_id: nextDeal,
+                sharepoint_folder_url: nextUrl,
+            };
+        });
+    }, [matterSyncStatus]);
     const [syncNowPending, setSyncNowPending] = useState(false);
     const [syncNowError, setSyncNowError] = useState<string | null>(null);
 
@@ -760,8 +790,10 @@ export function ProjectSectionToolbar({
     actions?: ReactNode;
     backAction?: (() => void) | null;
 }) {
-    const { activeSection, projectId } = useProjectWorkspace();
+    const { activeSection, projectId, project } = useProjectWorkspace();
     const router = useRouter();
+    const zohoUrl = zohoMatterUrl(project?.zoho_deal_id);
+    const sharepointUrl = sharepointFolderUrl(project?.sharepoint_folder_url);
 
     return (
         <TableToolbar
@@ -791,6 +823,32 @@ export function ProjectSectionToolbar({
                         Back
                     </TabPillButtonUI>
                 ) : undefined
+            }
+            afterItems={
+                backAction || (!zohoUrl && !sharepointUrl) ? undefined : (
+                    <>
+                        {zohoUrl ? (
+                            <a
+                                href={zohoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={tabPillButtonUIClassName()}
+                            >
+                                Zoho
+                            </a>
+                        ) : null}
+                        {sharepointUrl ? (
+                            <a
+                                href={sharepointUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={tabPillButtonUIClassName()}
+                            >
+                                SharePoint
+                            </a>
+                        ) : null}
+                    </>
+                )
             }
             actions={actions}
         />

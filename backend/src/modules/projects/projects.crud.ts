@@ -28,6 +28,7 @@ import {
   buildProjectsOverviewRpcArgs,
   type ProjectScope,
 } from "./projects.overview";
+import { normalizeHttpUrl } from "../../lib/httpUrl";
 import {
   type Db,
   attachDocumentOwnerLabels,
@@ -35,6 +36,14 @@ import {
   normalizeOptionalString,
   projectMemoryDefaultFor,
 } from "./projects.shared";
+
+const ZOHO_DEAL_ID_MAX_LENGTH = 64;
+
+function normalizeZohoDealId(value: unknown): string | null {
+  const trimmed = normalizeOptionalString(value);
+  if (!trimmed) return null;
+  return trimmed.length <= ZOHO_DEAL_ID_MAX_LENGTH ? trimmed : null;
+}
 
 // Service-layer failure carrying the raw driver error. The route layer hands
 // it to sendInternalError, which logs it (with the request id) and answers
@@ -414,6 +423,8 @@ export async function createProject(
     memory_enabled?: boolean;
     client_name?: string;
     description?: string;
+    zoho_deal_id?: string;
+    sharepoint_folder_url?: string;
   },
 ): Promise<CreateProjectResult> {
   const {
@@ -425,6 +436,8 @@ export async function createProject(
     memory_enabled,
     client_name,
     description,
+    zoho_deal_id,
+    sharepoint_folder_url,
   } = args;
   if (!name?.trim())
     return { ok: false, kind: "validation", detail: "name is required" };
@@ -433,6 +446,27 @@ export async function createProject(
       ok: false,
       kind: "validation",
       detail: "memory_enabled must be a boolean",
+    };
+  }
+  if (
+    typeof zoho_deal_id === "string" &&
+    zoho_deal_id.trim().length > ZOHO_DEAL_ID_MAX_LENGTH
+  ) {
+    return {
+      ok: false,
+      kind: "validation",
+      detail: "zoho_deal_id is too long.",
+    };
+  }
+  if (
+    typeof sharepoint_folder_url === "string" &&
+    sharepoint_folder_url.trim() &&
+    !normalizeHttpUrl(sharepoint_folder_url)
+  ) {
+    return {
+      ok: false,
+      kind: "validation",
+      detail: "sharepoint_folder_url must be an http(s) URL.",
     };
   }
 
@@ -464,6 +498,8 @@ export async function createProject(
     p_memory_enabled: resolvedMemoryEnabled,
     p_client_name: normalizeOptionalString(client_name),
     p_description: normalizeOptionalString(description),
+    p_zoho_deal_id: normalizeZohoDealId(zoho_deal_id),
+    p_sharepoint_folder_url: normalizeHttpUrl(sharepoint_folder_url),
   });
   const data = Array.isArray(created) ? created[0] : created;
   if (error || !data) return { ok: false, kind: "db_error", error };
@@ -636,6 +672,7 @@ export type UpdateProjectResult =
   | { ok: true; body: Record<string, unknown> }
   | { ok: false; kind: "not_found" }
   | { ok: false; kind: "forbidden"; detail: string }
+  | { ok: false; kind: "validation"; detail: string }
   | { ok: false; kind: "db_error"; error: unknown };
 
 export async function updateProject(
@@ -659,6 +696,33 @@ export async function updateProject(
   }
   if ("description" in body) {
     updates.description = normalizeOptionalString(body.description);
+  }
+  if ("zoho_deal_id" in body) {
+    if (
+      typeof body.zoho_deal_id === "string" &&
+      body.zoho_deal_id.trim().length > ZOHO_DEAL_ID_MAX_LENGTH
+    ) {
+      return {
+        ok: false,
+        kind: "validation",
+        detail: "zoho_deal_id is too long.",
+      };
+    }
+    updates.zoho_deal_id = normalizeZohoDealId(body.zoho_deal_id);
+  }
+  if ("sharepoint_folder_url" in body) {
+    if (
+      typeof body.sharepoint_folder_url === "string" &&
+      body.sharepoint_folder_url.trim() &&
+      !normalizeHttpUrl(body.sharepoint_folder_url)
+    ) {
+      return {
+        ok: false,
+        kind: "validation",
+        detail: "sharepoint_folder_url must be an http(s) URL.",
+      };
+    }
+    updates.sharepoint_folder_url = normalizeHttpUrl(body.sharepoint_folder_url);
   }
   // Project settings and access edits are Owner-only: the creator, a direct
   // Owner grant on a personal project, or an Admin of the project's org.
