@@ -21,10 +21,15 @@ import {
     getProjectPeople,
     grantProjectAccess,
     listProjectChats,
+    pullZohoMatter,
     revokeProjectAccess,
     updateProject,
     type ProjectGrant,
 } from "@/app/lib/mikeApi";
+import { describeMatterSync, isMatterSyncInProgress } from "@/app/lib/matterSync";
+import { useMatterSyncStatus } from "@/app/hooks/useMatterSyncStatus";
+import { userFacingApiError } from "@/app/lib/userFacingError";
+import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import type {
     Chat,
     ColumnConfig,
@@ -56,6 +61,7 @@ import {
 import { appConfig } from "@/config";
 
 const t = appConfig.terminology;
+const ZOHO_PULL_ENABLED = appConfig.featureFlags.zohoMatterPull === true;
 
 /**
  * A denied action: the sentence for the popup plus which role the action is
@@ -249,6 +255,58 @@ export function ProjectWorkspaceProvider({
     const openProjectRoot = useCallback(() => {
         router.push(`/projects/${projectId}`);
     }, [projectId, router]);
+
+    // A matter pulled from Zoho keeps filling with documents after the page
+    // opens. Re-read the project when the filer reports more of them so the
+    // list grows without a manual reload; the same read ProjectDocumentsView
+    // uses for its own refresh.
+    const refreshProjectCollection = useCallback(async () => {
+        try {
+            const updated = await getProject(projectId);
+            setProject(updated);
+            setFolders(updated.folders ?? []);
+        } catch (error) {
+            console.error("[project workspace] failed to refresh project", error);
+        }
+    }, [projectId]);
+
+    const matterNumber = project?.cm_number?.trim() || null;
+    const matterSyncEnabled =
+        ZOHO_PULL_ENABLED && showShell && !!project && !!matterNumber;
+    const { status: matterSyncStatus, refresh: refreshMatterSyncStatus } =
+        useMatterSyncStatus({
+            projectId,
+            enabled: matterSyncEnabled,
+            onDocumentCountIncreased: () => void refreshProjectCollection(),
+        });
+    const [syncNowPending, setSyncNowPending] = useState(false);
+    const [syncNowError, setSyncNowError] = useState<string | null>(null);
+
+    const requestSyncNow = useCallback(async () => {
+        if (!matterNumber || syncNowPending) return;
+        setSyncNowPending(true);
+        try {
+            await pullZohoMatter({ matterNumber }, { mode: "incremental" });
+            await Promise.all([
+                refreshMatterSyncStatus(),
+                refreshProjectCollection(),
+            ]);
+        } catch (error) {
+            setSyncNowError(
+                userFacingApiError(
+                    error,
+                    `The ${t.projectLower} could not be synced from SharePoint.`,
+                ),
+            );
+        } finally {
+            setSyncNowPending(false);
+        }
+    }, [
+        matterNumber,
+        refreshMatterSyncStatus,
+        refreshProjectCollection,
+        syncNowPending,
+    ]);
 
     useEffect(() => {
         if (!showShell) {
@@ -561,9 +619,30 @@ export function ProjectWorkspaceProvider({
                     onUploadFiles={documentUploadActions.uploadFiles}
                     onUploadFolder={documentUploadActions.uploadFolder}
                     documentFolderBreadcrumbs={documentFolderBreadcrumbs}
+                    matterSync={
+                        matterSyncEnabled && matterSyncStatus?.found
+                            ? {
+                                  statusLine:
+                                      describeMatterSync(matterSyncStatus),
+                                  onSyncNow: () => void requestSyncNow(),
+                                  syncing:
+                                      syncNowPending ||
+                                      isMatterSyncInProgress(
+                                          matterSyncStatus.status,
+                                      ),
+                              }
+                            : null
+                    }
                 />
 
                 {children}
+
+                <WarningPopup
+                    open={syncNowError !== null}
+                    title="Sync not started"
+                    message={syncNowError ?? ""}
+                    onClose={() => setSyncNowError(null)}
+                />
 
                 <NewTRModal
                     open={newTRModalOpen}

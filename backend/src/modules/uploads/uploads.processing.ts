@@ -44,7 +44,10 @@ import {
   expandEmailAttachments,
   type ExpansionContext,
 } from "./uploads.expand";
-import { UPLOAD_VERIFICATION_LEASE_SECONDS } from "./uploads.manifest";
+import {
+  UPLOAD_VERIFICATION_LEASE_SECONDS,
+  type UploadExternalReference,
+} from "./uploads.manifest";
 import {
   buildEmailPdfRendition,
   buildPdfRendition,
@@ -84,7 +87,39 @@ type UploadFileRow = {
    * deleted by the user" — the attempt counter cannot make that distinction.
    */
   document_created_at: string | null;
+  /** The manifest's optional `external` block, as persisted by the RPC. */
+  client_meta?: { external?: UploadExternalReference | null } | null;
 };
+
+/**
+ * The external reference the manifest carried for this file, if any. The
+ * column was added after the first sessions were created, so an absent key
+ * and a null value both mean "an ordinary upload".
+ */
+function externalReferenceOf(
+  file: UploadFileRow,
+): UploadExternalReference | null {
+  const external = file.client_meta?.external;
+  if (!external || typeof external !== "object") return null;
+  if (
+    external.provider !== "sharepoint" ||
+    typeof external.item_id !== "string" ||
+    !external.item_id
+  ) {
+    return null;
+  }
+  return external;
+}
+
+function externalDocumentColumns(external: UploadExternalReference | null) {
+  if (!external) return {};
+  return {
+    external_provider: external.provider,
+    external_item_id: external.item_id,
+    external_ctag: external.ctag,
+    external_web_url: external.web_url ?? null,
+  };
+}
 
 type UploadJobRow = {
   id: string;
@@ -267,6 +302,7 @@ async function processCreatedDocument(
     scope === "workflow" ? (destination.workflow_id as string) : null;
   const documentId = file.resource_id;
   const versionId = file.id;
+  const external = externalReferenceOf(file);
 
   // A document created inside an org project belongs to the organization —
   // the org_id stamp is an authorization input, so a failed lookup must fail
@@ -354,6 +390,7 @@ async function processCreatedDocument(
       library_kind: libraryKind,
       library_folder_id: libraryFolderId,
       workflow_id: workflowId,
+      ...externalDocumentColumns(external),
     },
     { onConflict: "id" },
   );
@@ -416,7 +453,7 @@ async function processCreatedDocument(
     document_id: documentId,
     storage_path: sourcePath,
     pdf_storage_path: pdfPath,
-    source: "upload",
+    source: external ? "sharepoint_sync" : "upload",
     version_number: 1,
     filename: file.filename,
     file_type: file.file_type,
@@ -478,6 +515,7 @@ async function processNewDocumentVersion(
 ) {
   const documentId = session.destination.document_id as string;
   const versionId = file.resource_id;
+  const external = externalReferenceOf(file);
   const requestedFilename =
     (session.destination.filename as string | undefined)?.trim() ||
     file.filename;
@@ -506,8 +544,7 @@ async function processNewDocumentVersion(
     document_id: documentId,
     storage_path: sourcePath,
     pdf_storage_path: pdfPath,
-    source: "user_upload",
-
+    source: external ? "sharepoint_sync" : "user_upload",
     filename: requestedFilename,
     file_type: file.file_type,
     size_bytes: artifact.size,
@@ -520,6 +557,20 @@ async function processNewDocumentVersion(
     throw new DeletedDocumentError(documentId, [sourcePath, pdfPath]);
   if (error || !version)
     throw error ?? new Error("version_insert_returned_no_data");
+
+  // A changed SharePoint item arrives as a new version; the document's
+  // reference moves to the new change tag so the next sync pass sees this
+  // item as current rather than re-uploading it.
+  if (external) {
+    const { error: referenceError } = await db
+      .from("documents")
+      .update({
+        ...externalDocumentColumns(external),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", documentId);
+    if (referenceError) throw referenceError;
+  }
 
   const {
     id,

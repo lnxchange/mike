@@ -38,5 +38,6 @@ export const librisColleagueProfile: DeploymentProfile = {
   allowedDocumentCategories: [],
   featureFlags: {
     modeLawIntegration: false,
+    zohoMatterPull: true,
   },
 };

@@ -94,6 +94,20 @@ export function uploadJobWallClockMs(
   );
 }
 
+/**
+ * The Attune filer (Libris Back Office) that owns the Zoho and SharePoint
+ * side of matter sync. All three values are needed before the integrations
+ * module will call it; a deployment without them simply reports the feature
+ * as unavailable.
+ */
+export function filerConfiguration(env: NodeJS.ProcessEnv = process.env) {
+  const baseUrl = required(env, ["FILER_BASE_URL"]).replace(/\/+$/, "");
+  const functionKey = required(env, ["FILER_FUNCTION_KEY"]);
+  const matterSyncOrgId = required(env, ["MATTER_SYNC_ORG_ID"]);
+  const configured = !!baseUrl && !!functionKey && !!matterSyncOrgId;
+  return { configured, baseUrl, functionKey, matterSyncOrgId };
+}
+
 function parsedUrl(value: string, name: string, errors: string[]): URL | null {
   try {
     const url = new URL(value);

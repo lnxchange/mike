@@ -5,6 +5,11 @@
 
 import { isPanelDocument } from "@/app/components/shared/types";
 import { authenticatedFetch } from "@/app/lib/authEvents";
+import type {
+    MatterPullResult,
+    MatterSyncStatusResult,
+    ZohoMatterSearchHit,
+} from "@/app/lib/matterSync";
 import {
     UploadBatchError,
     createControlRequestRetryPolicy,
@@ -1158,6 +1163,42 @@ export async function revokeProjectAccess(
     await apiRequest(
         `/projects/${projectId}/access/${encodeURIComponent(email)}`,
         { method: "DELETE" },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Zoho matter pull and SharePoint sync (integrations module)
+// ---------------------------------------------------------------------------
+
+export async function searchZohoMatters(
+    q: string,
+): Promise<ZohoMatterSearchHit[]> {
+    const result = await apiRequest<{ matters: ZohoMatterSearchHit[] }>(
+        `/integrations/matters/search?q=${encodeURIComponent(q)}`,
+    );
+    return result.matters;
+}
+
+/**
+ * Enrol a matter and run the filer's first pass. Pass the Zoho matter id from
+ * a search hit, or the matter number a project already carries for "Sync now".
+ */
+export async function pullZohoMatter(
+    target: { matterId: string } | { matterNumber: string },
+    options?: { mode?: "incremental" | "full" },
+): Promise<MatterPullResult> {
+    return apiRequest<MatterPullResult>("/integrations/matters/pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...target, ...(options ?? {}) }),
+    });
+}
+
+export async function getMatterSyncStatus(
+    projectId: string,
+): Promise<MatterSyncStatusResult> {
+    return apiRequest<MatterSyncStatusResult>(
+        `/integrations/matters/status/${projectId}`,
     );
 }
 

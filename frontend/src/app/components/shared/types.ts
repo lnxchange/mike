@@ -110,6 +110,14 @@ export interface Document {
   active_version_number?: number | null;
   /** Legacy: max version_number across assistant_edit rows, null if doc is unedited. */
   latest_version_number?: number | null;
+  /**
+   * Set when the document mirrors an item in an external store (today:
+   * SharePoint, synced by the Attune filer). Null or absent for uploads.
+   */
+  external_provider?: string | null;
+  external_item_id?: string | null;
+  external_ctag?: string | null;
+  external_web_url?: string | null;
 }
 
 export type PanelDocumentType = SourceDocumentType;

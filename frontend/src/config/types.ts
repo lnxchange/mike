@@ -75,5 +75,12 @@ export interface DeploymentProfile {
      * check instead of needing a code change here.
      */
     modeLawIntegration: boolean;
+    /**
+     * "Pull from Zoho" on the matters overview and the SharePoint sync status
+     * line on a matter page. Needs the backend's FILER_* and
+     * MATTER_SYNC_ORG_ID settings; only the libris-colleague profile turns it
+     * on. See docs/integrations/sharepoint-zoho-matter-sync.md.
+     */
+    zohoMatterPull?: boolean;
   };
 }

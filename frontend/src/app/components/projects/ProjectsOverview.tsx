@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, CloudDownload } from "lucide-react";
 import {
     getProjectFilterOptions,
     type ProjectFilterOptions,
@@ -28,6 +28,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import type { Project } from "@/app/components/shared/types";
 import { can, roleFrom } from "@/app/lib/permissions";
 import { NewProjectModal } from "./NewProjectModal";
+import { PullMatterModal } from "./PullMatterModal";
 import { ProjectDetailsModal } from "./ProjectDetailsModal";
 import { TableToolbar } from "@/app/components/shared/TableToolbar";
 import {
@@ -69,6 +70,7 @@ import { AccessScopeLabel } from "@/app/components/shared/AccessScopeLabel";
 import { appConfig } from "@/config";
 
 const t = appConfig.terminology;
+const ZOHO_PULL_ENABLED = appConfig.featureFlags.zohoMatterPull === true;
 // Column header and sort label: "CM number" becomes "CM", "Matter number"
 // becomes "Matter".
 const REFERENCE_SHORT = t.referenceNumber.replace(/\s+number$/i, "");
@@ -124,6 +126,7 @@ export function ProjectsOverview() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const [modalOpen, setModalOpen] = useState(false);
+    const [pullModalOpen, setPullModalOpen] = useState(false);
     const [detailsProject, setDetailsProject] = useState<Project | null>(null);
     const [activeFilter, setActiveFilter] = useQueryParamTab(
         PROJECT_FILTER_IDS,
@@ -541,6 +544,16 @@ export function ProjectsOverview() {
                         onChange: setSearch,
                         placeholder: `Search ${t.projectsLower}…`,
                     },
+                    ZOHO_PULL_ENABLED && {
+                        onClick: () => setPullModalOpen(true),
+                        icon: <CloudDownload className="h-4 w-4" />,
+                        label: (
+                            <span className="hidden sm:inline">
+                                Pull from Zoho
+                            </span>
+                        ),
+                        title: "Pull from Zoho",
+                    },
                     {
                         type: "new",
                         onClick: () => setModalOpen(true),
@@ -943,6 +956,13 @@ export function ProjectsOverview() {
                     router.push(`/projects/${p.id}`);
                 }}
             />
+
+            {ZOHO_PULL_ENABLED && (
+                <PullMatterModal
+                    open={pullModalOpen}
+                    onClose={() => setPullModalOpen(false)}
+                />
+            )}
 
             <ProjectDetailsModal
                 open={!!detailsProject}

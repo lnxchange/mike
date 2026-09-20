@@ -705,6 +705,12 @@ create table if not exists public.documents (
   folder_id uuid references public.project_subfolders(id) on delete set null,
   library_kind text not null default 'file',
   library_folder_id uuid references public.library_folders(id) on delete set null,
+  -- Reference back to the external item a synced document mirrors (today:
+  -- SharePoint via the Attune filer). Null for ordinary uploads.
+  external_provider text,
+  external_item_id text,
+  external_ctag text,
+  external_web_url text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint documents_library_kind_check
@@ -713,6 +719,12 @@ create table if not exists public.documents (
 
 create index if not exists idx_documents_user_project
   on public.documents(user_id, project_id);
+
+-- One document per external item within a project, so a sync re-run never
+-- files the same item twice.
+create unique index if not exists documents_project_external_item_unique
+  on public.documents(project_id, external_provider, external_item_id)
+  where external_item_id is not null;
 
 create index if not exists idx_documents_project_folder
   on public.documents(project_id, folder_id);
@@ -746,7 +758,8 @@ create table if not exists public.document_versions (
       'assistant_edit'::text,
       'user_accept'::text,
       'user_reject'::text,
-      'generated'::text
+      'generated'::text,
+      'sharepoint_sync'::text
     ]))
 );
 
@@ -857,6 +870,9 @@ create table if not exists public.upload_session_files (
   -- Set once the worker has written the destination documents row, so a
   -- retry can tell "never created" from "created, then deleted by the user".
   document_created_at timestamptz,
+  -- Caller-supplied per-file metadata the worker copies onto the created
+  -- document (today: the manifest's optional `external` block).
+  client_meta jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint upload_session_files_client_id_check
@@ -3990,7 +4006,8 @@ begin
     content_type text,
     expected_size_bytes bigint,
     staging_storage_path text,
-    sealed_storage_path text
+    sealed_storage_path text,
+    client_meta jsonb
   );
 
   if manifest_file_count < 1 or manifest_file_count > 50 then
@@ -4011,7 +4028,8 @@ begin
       content_type text,
       expected_size_bytes bigint,
       staging_storage_path text,
-      sealed_storage_path text
+      sealed_storage_path text,
+      client_meta jsonb
     )
     where file_row.id is null
        or file_row.resource_id is null
@@ -4022,6 +4040,7 @@ begin
        or file_row.expected_size_bytes not between 1 and 104857600
        or length(file_row.staging_storage_path) < 1
        or length(file_row.sealed_storage_path) < 1
+       or (file_row.client_meta is not null and jsonb_typeof(file_row.client_meta) <> 'object')
   ) then
     raise exception using errcode = '22023', message = 'invalid_upload_manifest';
   end if;
@@ -4115,7 +4134,8 @@ begin
     content_type,
     expected_size_bytes,
     staging_storage_path,
-    sealed_storage_path
+    sealed_storage_path,
+    client_meta
   )
   select
     file_row.id,
@@ -4128,7 +4148,8 @@ begin
     file_row.content_type,
     file_row.expected_size_bytes,
     file_row.staging_storage_path,
-    file_row.sealed_storage_path
+    file_row.sealed_storage_path,
+    file_row.client_meta
   from jsonb_to_recordset(target_files) as file_row(
     id uuid,
     resource_id uuid,
@@ -4139,7 +4160,8 @@ begin
     content_type text,
     expected_size_bytes bigint,
     staging_storage_path text,
-    sealed_storage_path text
+    sealed_storage_path text,
+    client_meta jsonb
   );
 end;
 $$;

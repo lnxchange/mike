@@ -26,6 +26,25 @@ export const UPLOAD_SESSION_TTL_SECONDS = 30 * 60;
 export const UPLOAD_URL_TTL_SECONDS = 15 * 60;
 export const UPLOAD_VERIFICATION_LEASE_SECONDS = 5 * 60;
 
+/**
+ * Where a file came from when an integration (the Attune filer mirroring a
+ * SharePoint matter folder) uploads on a person's behalf. Stored on the
+ * created document so a re-run recognises what is already here and a changed
+ * item becomes a new version instead of a duplicate. Browser uploads never
+ * send it.
+ */
+const externalReferenceSchema = z
+  .object({
+    provider: z.literal("sharepoint"),
+    drive_id: z.string().trim().min(1).max(512),
+    item_id: z.string().trim().min(1).max(512),
+    ctag: z.string().trim().min(1).max(512),
+    web_url: z.string().trim().min(1).max(512).optional(),
+  })
+  .strict();
+
+export type UploadExternalReference = z.infer<typeof externalReferenceSchema>;
+
 const clientFileSchema = z
   .object({
     client_id: z.string().trim().min(1).max(128),
@@ -40,6 +59,7 @@ const clientFileSchema = z
       ),
     size_bytes: z.number().int().positive().max(MAX_UPLOAD_SIZE_BYTES),
     folder_id: z.string().uuid().nullable().optional(),
+    external: externalReferenceSchema.optional(),
   })
   .strict();
 
@@ -135,6 +155,11 @@ export type UploadSessionFile = {
   expected_size_bytes: number;
   staging_storage_path: string;
   sealed_storage_path: string;
+  /**
+   * Persisted as `upload_session_files.client_meta`. Null rather than
+   * absent so the RPC's jsonb_to_recordset column list always finds the key.
+   */
+  client_meta: { external: UploadExternalReference } | null;
 };
 
 export type ParsedUploadSessionRequest = {
@@ -234,6 +259,7 @@ export function parseUploadSessionRequest(
       expected_size_bytes: file.size_bytes,
       staging_storage_path: `${basePath}/staging`,
       sealed_storage_path: `${basePath}/sealed`,
+      client_meta: file.external ? { external: file.external } : null,
     };
   });
 

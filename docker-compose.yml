@@ -154,6 +154,7 @@ services:
       - ./backend/migrations/20260916_01_upload_document_row_created.sql:/upload-document-row-created-migration.sql:ro
       - ./backend/migrations/20260920_01_professional_title_options.sql:/professional-title-options-migration.sql:ro
       - ./backend/migrations/20260920_02_upload_types_email_zip.sql:/upload-types-email-zip-migration.sql:ro
+      - ./backend/migrations/20260920_03_external_document_refs.sql:/external-document-refs-migration.sql:ro
     entrypoint: ["bash", "-c"]
     command:
       - |
@@ -192,6 +193,7 @@ services:
         psql "$$DB" -v ON_ERROR_STOP=1 -f /upload-document-row-created-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /professional-title-options-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /upload-types-email-zip-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /external-document-refs-migration.sql;
         psql "$$DB" -c "grant usage on schema public to service_role;
           grant all privileges on all tables in schema public to service_role;
           grant all privileges on all sequences in schema public to service_role;
