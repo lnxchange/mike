@@ -3077,12 +3077,16 @@ export function DocTable({
                                 <div className="w-24 shrink-0 text-xs text-gray-300">—</div>
                                 <div className="w-20 shrink-0 text-xs text-gray-300">—</div>
                                 <div className="w-32 shrink-0 truncate text-xs text-gray-500">
-                                    {formatDate(folder.created_at)}
+                                    {folder.created_at
+                                        ? formatDate(folder.created_at)
+                                        : "—"}
                                 </div>
                                 <div className="w-32 shrink-0 truncate text-xs text-gray-500">
-                                    {formatDate(
-                                        folder.updated_at ?? folder.created_at,
-                                    )}
+                                    {folder.updated_at
+                                        ? formatDate(folder.updated_at)
+                                        : folder.created_at
+                                          ? formatDate(folder.created_at)
+                                          : "—"}
                                 </div>
                                 <div className="w-8 shrink-0 flex justify-end" onClick={(e) => e.stopPropagation()}>
                                     {"virtual" in folder && folder.virtual ? null : (
