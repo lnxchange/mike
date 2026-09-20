@@ -1,10 +1,25 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Org Library shipped and Attune Masters seeded
+
+HEAD `09331d0b` (feature `011f59d4`, UI typefix `d7089a6d`, backend tsc `09331d0b`). Library is a union of personal plus every org shelf. Migration `20260921_03_org_library.sql` applied to `gttnqqwqoirwbvalqfce`. Railway `mike` `7931d333` SUCCESS, SHA `09331d0b`, https://mike-production-68f2.up.railway.app `/health` 200. Vercel preview `dpl_FnCQkgYbUTHDUHGFcye5UmF9nzaF` READY (SHA `09331d0b`) and aliased to https://libris-colleague.vercel.app. `/login` follows to 200 (SSO gate on `/` is 302). Did not apply migration 08, did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`, did not deploy the dirty filer.
+
+Attune org `587af71c-e526-4b0e-971e-7e2d285ddac8` Templates shelf (library_kind template):
+
+- Folders: Templates `c2b7258f-ec8e-473e-a1e6-669282254183`, Precedents `d4680723-5fc3-4a60-9537-21fccde11026`, Commercial `b4f1ce84-8655-45fa-85d2-f4487adce51b`, IP & Technology `bfc1c6d9-c847-4d07-9812-bd7ff8f237c6`, ESOP & Equity `ae5d1a4b-3b0c-46a6-a104-5adc8da051d4`.
+- Letterhead `e120a232-4839-4707-ae92-5de3cc4c7d39`, presentation `64c51588-4330-469b-93f3-1e9baafa1a68`, NDA `eb97a134-b98a-4f90-9dbc-762447010694`, Privacy Policy `e7b10c9b-5b4a-4896-ab29-cc6e129852b2`, SaaS Terms `225bdb7d-85ad-4cdd-b289-1fd3824660c9`, Website Terms `04e0029c-4048-4639-a680-1a2ffa313344`, Legaler IP `bfeba474-d75d-4048-8737-88c6b01c40e9`, ESOP template `ccb70dd9-214a-47d6-8cdf-5b2a93fa0895`. Real version rows; filenames are the OneDrive names.
+
+Firm Library project `383f34de-de29-45e3-89ab-31e09276c006` is still empty and unused. Left in place (no archive column). Workflows Draft on letterhead and Find a precedent now point at the org Library Templates shelf and `replicate_document`.
+
+Yule: hard-refresh `/library` and `/library/templates`. Open the Attune Legal shelf. Members can read and replicate; only admins mutate. Letterhead-perfect AL numbering stays a Word job after `replicate_document`.
+
+Left uncommitted: Zoho/SharePoint fill-on-status leftovers (`httpUrl.ts`, integrations service/tests, ProjectWorkspace).
+
 ## 2026-09-21 — Library is a union, not org-instead-of-personal
 
 Yule stopped the first org-library design. `/library` is a **union**: every user keeps today's personal Files + Templates, and also sees every organisation they belong to. Multi-org users see each shelf, labelled and grouped (Personal / Attune Legal / …). Writes stay on one shelf. Personal writes stay personal. Org writes follow `libraryRoleFromOrgRole` (admin → owner, member → viewer) via existing `can()`. Members read and `replicate_document` org templates; only admins mutate the org shelf. Chat template immutability is unchanged. Having an org membership must not hide the personal library.
 
-Implementation is local only: migration `20260921_03_org_library.sql` (not applied), schema RPCs take `p_org_ids uuid[]` (personal `user_id` + `org_id is null`, or `org_id = any(p_org_ids)`). Virtual `source:personal` / `source:<orgUuid>` folders at the union root when there is more than one source. A user with no orgs still sees the flat personal tree. Cross-shelf move is refused. Uploads and folder creates take explicit `org_id` (null = personal). Did not apply the migration to `gttnqqwqoirwbvalqfce`. Did not seed Attune folders. Did not archive Firm Library `383f34de-…`. Did not apply migration 08, did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`, did not deploy the dirty filer. No commit/push.
+Shipped as `09331d0b`. See the ship entry above.
 
 ## 2026-09-21 — Untitled-document fix and org memory shipped
 
