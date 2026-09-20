@@ -2301,6 +2301,169 @@ describe("chat grants, deletion and roster", () => {
         expect(creator.body.is_owner).toBe(true);
     });
 
+    it("shows a running turn as one assistant row with status running on GET /chat/:chatId", async () => {
+        const now = new Date().toISOString();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: {
+                        project_id: null,
+                        org_id: null,
+                        active_turn_id: "turn-1",
+                        active_turn_message_id: "asst-running",
+                        active_turn_started_at: now,
+                        active_turn_heartbeat_at: now,
+                    },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(200);
+        expect(res.body.messages).toEqual([
+            expect.objectContaining({
+                id: "asst-running",
+                role: "assistant",
+                content: null,
+                status: "running",
+                started_at: now,
+            }),
+        ]);
+    });
+
+    it("hides a running turn whose heartbeat has gone stale", async () => {
+        const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: {
+                        project_id: null,
+                        org_id: null,
+                        active_turn_id: "turn-1",
+                        active_turn_message_id: "asst-running",
+                        active_turn_started_at: stale,
+                        active_turn_heartbeat_at: stale,
+                    },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(200);
+        expect(res.body.messages).toEqual([]);
+    });
+
+    it("records a cancel request for a running turn", async () => {
+        const db = makeRbacDb(null, "u1", {
+            chat: { project_id: null, org_id: null },
+        });
+        db.rpc.mockImplementation((fn: string, args: unknown) => {
+            rbacRpcCalls.push({ fn, args });
+            return Promise.resolve({
+                data:
+                    fn === "request_chat_turn_cancel"
+                        ? [{ requested: true, turn_id: "turn-1" }]
+                        : [],
+                error: null,
+            });
+        });
+        mockedCreate.mockImplementation(() => db as never);
+
+        const res = await request(app)
+            .post("/chat/chat-1/turns/asst-running/cancel")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(202);
+        expect(res.body).toEqual({ cancelled: true });
+        expect(rbacRpcCalls).toContainEqual({
+            fn: "request_chat_turn_cancel",
+            args: {
+                p_chat_id: "chat-1",
+                p_assistant_message_id: "asst-running",
+            },
+        });
+    });
+
+    it("answers 202 finished when asked to reattach to a turn that is over", async () => {
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: { project_id: null, org_id: null },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1/turns/asst-gone/stream")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(202);
+        expect(res.body).toEqual({ status: "finished" });
+    });
+
+    it("replays recorded frames and tails a turn this process is running", async () => {
+        const registry = await import("../../modules/chat/chat.turnRegistry.js");
+        registry.resetTurnRegistryForTests();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: { project_id: null, org_id: null },
+                }) as never,
+        );
+        const turn = registry.startRunningTurn({
+            turnId: "turn-live",
+            chatId: "chat-1",
+            assistantMessageId: "asst-live",
+            userId: "u1",
+        });
+        registry.recordTurnFrame(turn, 'data: {"type":"chat_id","chatId":"chat-1"}\n\n');
+        registry.recordTurnFrame(turn, 'data: {"type":"content","text":"Part one"}\n\n');
+
+        const pending = request(app)
+            .get("/chat/chat-1/turns/asst-live/stream")
+            .set("Authorization", "Bearer test");
+        // Let the route attach before the turn produces more.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        registry.recordTurnFrame(turn, 'data: {"type":"content","text":" and two"}\n\n');
+        registry.recordTurnFrame(turn, "data: [DONE]\n\n");
+        registry.finishRunningTurn(turn);
+
+        const res = await pending;
+        expect(res.status).toBe(200);
+        expect(res.headers["content-type"]).toContain("text/event-stream");
+        expect(res.text).toContain('"text":"Part one"');
+        expect(res.text).toContain('"text":" and two"');
+        expect(res.text).toContain("[DONE]");
+        registry.resetTurnRegistryForTests();
+    });
+
+    it("answers 202 running when the lease points at a turn this process is not running", async () => {
+        const now = new Date().toISOString();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: {
+                        project_id: null,
+                        org_id: null,
+                        active_turn_id: "turn-1",
+                        active_turn_message_id: "asst-elsewhere",
+                        active_turn_started_at: now,
+                        active_turn_heartbeat_at: now,
+                    },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1/turns/asst-elsewhere/stream")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(202);
+        expect(res.body).toEqual({ status: "running" });
+    });
+
     it("returns the creator and direct-grant roster from GET /chat/:chatId/people", async () => {
         mockedCreate.mockImplementation(
             () =>

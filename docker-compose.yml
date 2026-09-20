@@ -155,7 +155,11 @@ services:
       - ./backend/migrations/20260920_01_professional_title_options.sql:/professional-title-options-migration.sql:ro
       - ./backend/migrations/20260920_02_upload_types_email_zip.sql:/upload-types-email-zip-migration.sql:ro
       - ./backend/migrations/20260920_03_external_document_refs.sql:/external-document-refs-migration.sql:ro
+      - ./backend/migrations/20260920_04_user_profile_legal_research_au.sql:/legal-research-au-migration.sql:ro
       - ./backend/migrations/20260920_05_project_client_description.sql:/project-client-description-migration.sql:ro
+      - ./backend/migrations/20260920_06_user_profile_legal_research_au_energy.sql:/legal-research-au-energy-migration.sql:ro
+      - ./backend/migrations/20260920_07_user_profile_legal_research_au_vic_cases.sql:/legal-research-au-vic-cases-migration.sql:ro
+      - ./backend/migrations/20260920_08_chat_turn_lease.sql:/chat-turn-lease-migration.sql:ro
     entrypoint: ["bash", "-c"]
     command:
       - |
@@ -195,7 +199,11 @@ services:
         psql "$$DB" -v ON_ERROR_STOP=1 -f /professional-title-options-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /upload-types-email-zip-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /external-document-refs-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /legal-research-au-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /project-client-description-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /legal-research-au-energy-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /legal-research-au-vic-cases-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /chat-turn-lease-migration.sql;
         psql "$$DB" -c "grant usage on schema public to service_role;
           grant all privileges on all tables in schema public to service_role;
           grant all privileges on all sequences in schema public to service_role;

@@ -59,7 +59,18 @@ import {
     claimChatTurn,
     discardChatInputMessage,
     releaseChatTurn,
+    requestChatTurnCancel,
+    startChatTurnHeartbeat,
+    withRunningTurnMessage,
+    cancelRunningTurn,
+    finishRunningTurn,
+    getRunningTurn,
+    recordTurnFrame,
+    startRunningTurn,
+    subscribeToTurn,
+    activeTurnFromChatRow,
     type ChatTurnLease,
+    type RunningTurn,
 } from "./chat.service";
 
 export const chatRouter = Router();
@@ -125,13 +136,95 @@ chatRouter.get("/:chatId", requireAuth, asyncRoute(async (req, res) => {
     const messages = await getChatMessages(db, chatId);
     // access_role/is_owner mirror the project and review detail responses so
     // the client can render per-role affordances instead of re-deriving them.
+    // A turn still running for this chat appears as one assistant row with
+    // status "running" so the client can reattach rather than resend.
     res.json({
         chat: access.chat,
         is_owner: access.isCreator,
         access_role: access.projectRole,
-        messages,
+        messages: withRunningTurnMessage(
+            messages,
+            access.chat as Record<string, unknown> & { id?: string },
+        ),
     });
 }));
+
+// POST /chat/:chatId/turns/:assistantMessageId/cancel — stop a running turn.
+// The only path that ends generation early: a closed socket no longer does.
+chatRouter.post(
+    "/:chatId/turns/:assistantMessageId/cancel",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId, assistantMessageId } = req.params;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+
+        const local = cancelRunningTurn(assistantMessageId);
+        const remote = await requestChatTurnCancel(db, {
+            chatId,
+            assistantMessageId,
+        });
+        res.status(202).json({ cancelled: local || remote.requested });
+    }),
+);
+
+// GET /chat/:chatId/turns/:assistantMessageId/stream — reattach to a turn
+// this server is running: replay what has streamed so far, then tail it.
+// 202 means the turn is not attachable here (finished, or running on another
+// instance); the client should poll GET /chat/:chatId instead.
+chatRouter.get(
+    "/:chatId/turns/:assistantMessageId/stream",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId, assistantMessageId } = req.params;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+
+        const turn = getRunningTurn(assistantMessageId);
+        if (!turn || turn.chatId !== chatId || turn.overflowed) {
+            const active = activeTurnFromChatRow(
+                access.chat as Record<string, unknown>,
+            );
+            const running =
+                (!!turn && !turn.finished) ||
+                active?.assistantMessageId === assistantMessageId;
+            return void res.status(202).json({
+                status: running ? "running" : "finished",
+            });
+        }
+
+        const stream = openAssistantSse(res);
+        for (const line of turn.frames) stream.write(line);
+        if (turn.finished) {
+            stream.finish();
+            return;
+        }
+        await new Promise<void>((resolve) => {
+            const unsubscribe = subscribeToTurn(turn, {
+                onFrame: (line) => {
+                    stream.write(line);
+                },
+                onEnd: () => {
+                    unsubscribe();
+                    stream.finish();
+                    resolve();
+                },
+            });
+            stream.signal.addEventListener("abort", () => {
+                unsubscribe();
+                resolve();
+            });
+        });
+    }),
+);
 
 // GET /chat/:chatId/people
 // The chat's creator + every direct grantee, resolved to
@@ -567,8 +660,29 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             }
         }
 
-        const stream = openAssistantSse(res);
-        const write = stream.write;
+        // The socket is one viewer of the turn, not its owner. Generation
+        // ends only through the cancel endpoint, the heartbeat noticing a
+        // cancel or a lost lease, or the turn finishing; a user who navigates
+        // away reattaches to the recorded frames.
+        const stream = openAssistantSse(res, { abortOnClose: false });
+        const runningTurn: RunningTurn | null =
+            turnLease
+                ? startRunningTurn({
+                      turnId: turnLease.turnId,
+                      chatId,
+                      assistantMessageId: turnLease.assistantMessageId,
+                      userId,
+                  })
+                : null;
+        const turnSignal = runningTurn?.controller.signal ?? stream.signal;
+        const stopHeartbeat =
+            turnLease && runningTurn
+                ? startChatTurnHeartbeat(db, turnLease, runningTurn.controller)
+                : () => {};
+        const write = (line: string) => {
+            if (runningTurn) recordTurnFrame(runningTurn, line);
+            return stream.write(line);
+        };
         const updateReservedAssistantMessage =
             createReservedAssistantMessageUpdater({
                 db,
@@ -615,7 +729,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                           });
                           if (!saved.ok) throw saved.error;
                           chatTitle = title;
-                          if (!stream.signal.aborted) {
+                          if (!turnSignal.aborted) {
                               write(
                                   `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                               );
@@ -646,7 +760,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 model: selectedModel,
                 reasoning: selectedReasoningLevel,
                 apiKeys,
-                signal: stream.signal,
+                signal: turnSignal,
                 projectId: resolvedProjectId,
                 includeMemory: true,
                 memoryProjectId: canReadProjectMemory
@@ -674,14 +788,27 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 !events?.some((event) => event.type === "ask_inputs") &&
                 (!events || events.every((event) => !("error" in event)))
             ) {
-                write(
-                    `data: ${JSON.stringify({
-                        type: "error",
-                        message:
-                            "The model returned an empty response. Try again, or pick a different model.",
-                        safe_to_display: true,
-                    })}\n\n`,
-                );
+                const emptyEvent = {
+                    type: "error" as const,
+                    message:
+                        "The model returned an empty response. Try again, or pick a different model.",
+                    safe_to_display: true,
+                };
+                // Fill the reserved row so the history does not keep an
+                // unanswered question that reloads as still running.
+                const emptySaveError = askInputsResponse
+                    ? null
+                    : await updateReservedAssistantMessage(
+                          [...stripTransientAssistantEvents(events ?? []), emptyEvent],
+                          null,
+                      );
+                if (emptySaveError) {
+                    console.error(
+                        "[chat/stream] failed to save empty response",
+                        emptySaveError,
+                    );
+                }
+                write(`data: ${JSON.stringify(emptyEvent)}\n\n`);
                 write("data: [DONE]\n\n");
                 return;
             }
@@ -725,7 +852,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 const title = lastUser.content.slice(0, 120);
                 await updateChatTitle(db, { chatId, title });
                 chatTitle = title;
-                if (shouldGenerateTitle && !stream.signal.aborted) {
+                if (shouldGenerateTitle && !turnSignal.aborted) {
                     write(
                         `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                     );
@@ -777,7 +904,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             write("data: [DONE]\n\n");
         } catch (err) {
             if (isAbortError(err)) {
-                devLog("[chat/stream] client aborted stream", { chatId });
+                devLog("[chat/stream] turn cancelled", { chatId });
                 void enqueueChatTurnAudit(
                     db,
                     {
@@ -822,7 +949,13 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                             saveError,
                         );
                     }
+                    // A viewer that reattached after the cancel was requested
+                    // needs the same closing frames the transcript will show.
+                    for (const event of partial.events.slice(-2)) {
+                        write(`data: ${JSON.stringify(event)}\n\n`);
+                    }
                 }
+                write("data: [DONE]\n\n");
                 return;
             }
             console.error("[chat/stream] error:", err);
@@ -868,6 +1001,8 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 /* ignore */
             }
         } finally {
+            stopHeartbeat();
+            if (runningTurn) finishRunningTurn(runningTurn);
             stream.finish();
         }
     } finally {

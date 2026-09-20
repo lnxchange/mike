@@ -27,12 +27,23 @@ export {
   heartbeatChatTurn,
   releaseChatTurn,
   requestChatTurnCancel,
+  startChatTurnHeartbeat,
+  withRunningTurnMessage,
   CHAT_TURN_HEARTBEAT_MS,
   CHAT_TURN_STALE_AFTER_SECONDS,
   type ActiveChatTurn,
   type ChatTurnLease,
   type ClaimChatTurnResult,
 } from "./chat.turns";
+export {
+  cancelRunningTurn,
+  finishRunningTurn,
+  getRunningTurn,
+  recordTurnFrame,
+  startRunningTurn,
+  subscribeToTurn,
+  type RunningTurn,
+} from "./chat.turnRegistry";
 export { type PreparedChatStream, prepareChatStream } from "./chat.prepare";
 export {
   devLog,

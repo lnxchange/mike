@@ -33,7 +33,12 @@ import {
     claimChatTurn,
     discardChatInputMessage,
     releaseChatTurn,
+    startChatTurnHeartbeat,
+    finishRunningTurn,
+    recordTurnFrame,
+    startRunningTurn,
     type ChatTurnLease,
+    type RunningTurn,
 } from "../chat/chat.service";
 import { generateAssistantChatTitle } from "../chat/chat.service";
 import { titleModelForChat } from "../../lib/modelSelection";
@@ -178,11 +183,29 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             turnLease = claim.lease;
         }
 
-        // The same SSE setup the chat and word-chat routes use: headers,
-        // flush, an abort controller wired to the client hanging up, and a
-        // write that drops a line raised after the response has ended.
-        const stream = openAssistantSse(res);
-        const write = stream.write;
+        // The socket is one viewer of the turn, not its owner: a closed
+        // connection does not stop generation. Cancel comes through the
+        // chat cancel endpoint or the heartbeat; frames are recorded so a
+        // returning client can reattach.
+        const stream = openAssistantSse(res, { abortOnClose: false });
+        const runningTurn: RunningTurn | null =
+            turnLease
+                ? startRunningTurn({
+                      turnId: turnLease.turnId,
+                      chatId,
+                      assistantMessageId: turnLease.assistantMessageId,
+                      userId,
+                  })
+                : null;
+        const turnSignal = runningTurn?.controller.signal ?? stream.signal;
+        const stopHeartbeat =
+            turnLease && runningTurn
+                ? startChatTurnHeartbeat(db, turnLease, runningTurn.controller)
+                : () => {};
+        const write = (line: string) => {
+            if (runningTurn) recordTurnFrame(runningTurn, line);
+            return stream.write(line);
+        };
 
         try {
             write(
@@ -221,7 +244,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                           });
                           if (!saved.ok) throw saved.error;
                           chatTitle = title;
-                          if (!stream.signal.aborted) {
+                          if (!turnSignal.aborted) {
                               write(
                                   `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                               );
@@ -256,7 +279,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 model: selectedModel,
                 reasoning: selectedReasoningLevel,
                 apiKeys,
-                signal: stream.signal,
+                signal: turnSignal,
                 projectId,
                 includeMemory: true,
                 memoryProjectId: projectId,
@@ -308,7 +331,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 const title = lastUser.content.slice(0, 120);
                 await updateChatTitle(db, { chatId, title });
                 chatTitle = title;
-                if (shouldGenerateTitle && !stream.signal.aborted) {
+                if (shouldGenerateTitle && !turnSignal.aborted) {
                     write(
                         `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                     );
@@ -396,7 +419,11 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                             saveError,
                         );
                     }
+                    for (const event of partial.events.slice(-2)) {
+                        write(`data: ${JSON.stringify(event)}\n\n`);
+                    }
                 }
+                write("data: [DONE]\n\n");
                 return;
             }
             console.error("[project-chat/stream] error:", err);
@@ -448,6 +475,8 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 /* ignore */
             }
         } finally {
+            stopHeartbeat();
+            if (runningTurn) finishRunningTurn(runningTurn);
             stream.finish();
         }
     } finally {

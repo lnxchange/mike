@@ -137,6 +137,37 @@ export async function heartbeatChatTurn(
   return { alive: row.alive, cancelRequested: row.cancel_requested };
 }
 
+/**
+ * Keep the lease alive while the turn runs and abort it when a cancel was
+ * requested from another connection or process, or when the lease was lost.
+ */
+export function startChatTurnHeartbeat(
+  db: Db,
+  lease: ChatTurnLease,
+  controller: AbortController,
+  intervalMs: number = CHAT_TURN_HEARTBEAT_MS,
+): () => void {
+  let inFlight = false;
+  const timer = setInterval(() => {
+    if (controller.signal.aborted) {
+      clearInterval(timer);
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    void heartbeatChatTurn(db, lease)
+      .then((beat) => {
+        if (beat.cancelRequested) controller.abort("cancelled");
+        else if (!beat.alive) controller.abort("lease_lost");
+      })
+      .finally(() => {
+        inFlight = false;
+      });
+  }, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
 export async function requestChatTurnCancel(
   db: Db,
   args: { chatId: string; assistantMessageId: string },
@@ -148,6 +179,35 @@ export async function requestChatTurnCancel(
   if (error) return { requested: false, turnId: null };
   const row = firstRow<{ requested: boolean; turn_id: string | null }>(data);
   return { requested: row?.requested ?? false, turnId: row?.turn_id ?? null };
+}
+
+/**
+ * The transcript plus one synthetic assistant row for a turn that is still
+ * running, so a client that loads the chat mid-turn can show it as working
+ * and reattach instead of treating the question as unanswered.
+ */
+export function withRunningTurnMessage<T extends { id?: unknown }>(
+  messages: T[],
+  chatRow: Parameters<typeof activeTurnFromChatRow>[0] & { id?: string },
+): Array<T | Record<string, unknown>> {
+  const active = activeTurnFromChatRow(chatRow);
+  if (!active?.assistantMessageId) return messages;
+  if (messages.some((message) => message.id === active.assistantMessageId)) {
+    return messages;
+  }
+  return [
+    ...messages,
+    {
+      id: active.assistantMessageId,
+      chat_id: chatRow.id ?? null,
+      role: "assistant",
+      content: null,
+      citations: null,
+      status: "running",
+      started_at: active.startedAt,
+      created_at: active.startedAt,
+    },
+  ];
 }
 
 /** The lease as a client sees it, or null when nothing is running. */

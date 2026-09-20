@@ -25,6 +25,9 @@ function fakeSseResponse() {
         on: vi.fn((event: string, cb: () => void) => {
             (listeners[event] ??= []).push(cb);
         }),
+        emit: (event: string) => {
+            for (const cb of listeners[event] ?? []) cb();
+        },
     };
     return res;
 }
@@ -51,5 +54,33 @@ describe("openAssistantSse", () => {
         sse.finish();
 
         expect(res.end).toHaveBeenCalledTimes(1);
+    });
+
+    it("aborts generation when the client hangs up by default", () => {
+        const res = fakeSseResponse();
+        const sse = openAssistantSse(res as unknown as Response);
+
+        res.emit("close");
+
+        expect(sse.signal.aborted).toBe(true);
+        expect(sse.clientGone()).toBe(true);
+    });
+
+    it("keeps generating after the client hangs up when the route owns the turn", () => {
+        const res = fakeSseResponse();
+        const sse = openAssistantSse(res as unknown as Response, {
+            abortOnClose: false,
+        });
+
+        res.emit("close");
+
+        expect(sse.signal.aborted).toBe(false);
+        expect(sse.clientGone()).toBe(true);
+        // Nothing is listening any more, so frames are dropped, not buffered.
+        expect(sse.write("data: later\n\n")).toBe(false);
+        expect(res.write).not.toHaveBeenCalled();
+
+        sse.abort("cancelled");
+        expect(sse.signal.aborted).toBe(true);
     });
 });
