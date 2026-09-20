@@ -1,5 +1,53 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — S155 / 242814 matter-sync unstuck
+
+Stall cause: the live Azure drain (`attuneemailfiler-flex` Durable `colleague_drain_orchestrator`) kept re-uploading the first Graph page as `document_create`. Filer skip in `_continue_slice` only skipped when stored `external_ctag` exactly matched Graph `cTag`/`eTag`. About 15 already-mirrored SharePoint item ids looped forever. Mike upserted a new UUID then died on `documents_project_external_item_unique`. Railway upload-worker logs from 10:30Z on 2026-09-20 through 20:50Z were that unique-key loop. Budget never reached new files. Postgres sat at ~113 ready docs (newest `2026-09-20 05:47:18Z`) until a later dribble to 123.
+
+What changed:
+- Filer (local only, not committed, not deployed): skip any known `external_item_id` even when ctag differs; accept camelCase; unwrap `docs`/`documents`/`data`; `GET .../documents?for=sync` with a 120s timeout.
+- Mike: `processCreatedDocument` looks up `(project_id, sharepoint, item_id)` and adopts (same ctag = no-op, different ctag = version create); 23505 race adopts the same way. `GET /projects/:id/documents?for=sync` pages lite rows in 1000s.
+
+Live copy: two local `continue_pass` slices against production (Function settings loaded privately, Azure `colleague-sync` lease was held so slices ran without it). Uploaded 12 then 11. Count rose to 152 (151 ready), newest `2026-09-20 20:55:29Z`, remaining ~1151. Azure drain is still on the old ctag-strict skip and still unique-key looping; a local Mike commit does not stop that drain. Do not `ALLOW_DIRTY_DEPLOY` the filer tree. Do not push Mike. Do not apply migration `20260920_08`. Next: keep local slices, or deploy a clean filer skip, or align stored ctags so the live skip starts working.
+
+## 2026-09-20 — Quality pass on turn lease and finalize_document
+
+Reviewed the five commits (`a3a0ce6f` .. `d6526181`) and tightened what had started to drift, without changing behaviour of the lease, reattach, or clean-copy tools.
+
+- Both chat routes now bind the SSE writer through `bindChatTurnStream` (registry frames + heartbeat + finish), and return the same `turnInProgressBody` on 409. Project-chat cancel now audits as cancelled and no longer logs a closed socket as the abort reason.
+- `finalize_document` is in the mutation-gating WRITERS list. Chat-local `doc-N` labels go through one allocator. Unused `COMMENT_ANCHOR_TAGS` removed. Tracked-change pending count is one helper.
+- Reattach polling reads the transcript immediately, then every 5 s, so a just-finished 202 does not wait a full interval.
+- `AccessibleChat` / `withRunningTurnMessage` carry the lease columns instead of `Record<string, unknown>` casts.
+
+Left alone on purpose: `persistGeneratedFile` vs `runFinalizeDocument` still persist separately (different keys, source, cleanup); failed finalize/edit/replicate cards still live only on the live SSE (pre-existing). Pre-existing red suites unchanged.
+
+## 2026-09-20 — Chat turn resilience and finalize_document
+
+Second Northeon run failed three ways: Claude at `high` spent the 16k output cap thinking (finishReason `length`, no text, no tool call, mid-word cut), a second Continue ran concurrently and killed the turn that had just edited both documents, and navigating away closed the socket which aborted generation and saved "Cancelled by user."
+
+Shipped as five commits on `cursor/setup-supabase-vercel-oss-cad9` (`a3a0ce6f` .. `d6526181`):
+- `aiSdk.ts` retries an empty `length` step with the run's own `responseMessages`, a nudge, and one notch less reasoning (max 2); hosted adapters get `maxOutputTokens` 32k.
+- Migration `20260920_08_chat_turn_lease.sql`: `chats.active_turn_*` columns, RPCs `claim_chat_turn` / `heartbeat_chat_turn` / `release_chat_turn` / `request_chat_turn_cancel`. Routes claim per turn, 409 `turn_in_progress`, refused user row deleted. Code fails open if the RPCs are missing.
+- `assistantSse` no longer aborts on close for chat routes; `chat.turnRegistry.ts` records frames per turn; `POST /chat/:id/turns/:mid/cancel`, `GET /chat/:id/turns/:mid/stream` (replay + tail, 202 when not attachable); `GET /chat/:id` appends a `status: "running"` assistant row while the lease is fresh.
+- `useAssistantChat`: thread switch detaches (no abort), Stop calls the cancel endpoint, 409 attaches to the running turn, pages call `attachToTurn` for a running row, polling fallback every 5 s. Gateway forwards `request.signal`.
+- `docxTrackedChanges.ts`: `listTrackedChanges`, `acceptAllTrackedChanges` (ins/del/moves/property changes/comments, all story parts, deleted paragraph marks joined). `read_document` appends a TRACKED CHANGES inventory; new `finalize_document` tool saves "<name> (clean).docx" as a sibling document and emits `doc_finalized`.
+
+Pre-existing red tests untouched: `ProjectMemoryModal` "preserves an editor's stale draft" (flaky typing), and six backend suites failing at import on mock gaps from the matter-brief/email-PDF commits (`streaming*.test.ts`, `appJobsWorker.test.ts`, `userDataCleanup.test.ts`). docker-compose db-init now mounts migrations 04 to 08.
+
+Migration 08 is NOT applied to `gttnqqwqoirwbvalqfce` until Yule confirms; without it the lease and the "running" row on return do not function (everything else does).
+
+## 2026-09-20 — Northeon matter-status file written on production
+
+Pushed `960116d2` (email-only fenced status in project memory.md). Wrote production `memory_files` for Northeon project `e360041c-fe06-4743-8f43-23cae53a0f5b` to revision 5 (manual), fence plus working set: MSA AL Markup 260916, SOW updated 260918, Development Agreement Attune markup 260917. Stripped curator chat-failure residue. Ignore empty project `c55d2d65`.
+
+## 2026-09-20 — Leftover local Mike work shipped
+
+Committed and pushed `dc335bd0` (email PDF signatures/mojibake/blank-page fix plus Liberation fonts). Did not touch the filer.
+
+Live now:
+- Vercel `dpl_7dtvdQEQeNyx5RarkZDfTgLyNpzL` SHA `dc335bd0` on https://libris-colleague.vercel.app (READY + aliased). Live HTML has `data-profile="libris-colleague"`. Viewer, Li lockup, and Matters columns were already in `5d307c90`; this cut aliases HEAD.
+- Railway `mike` deploy `bf04341a` SUCCESS, `/health` 200. Includes the email-PDF/Dockerfile leftovers.
+
 ## 2026-09-20 — Email PDF blank page, signatures, and mojibake
 
 LibreOffice 7.4.7 (backend Docker image) was emitting a blank first page on almost every email PDF, dropping cid signature images, and garbled curly quotes/accents.

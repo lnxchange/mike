@@ -147,6 +147,8 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     memory_enabled,
     client_name,
     description,
+    zoho_deal_id,
+    sharepoint_folder_url,
   } = req.body as {
     name: string;
     cm_number?: string;
@@ -155,6 +157,8 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     memory_enabled?: boolean;
     client_name?: string;
     description?: string;
+    zoho_deal_id?: string;
+    sharepoint_folder_url?: string;
   };
   const db = createServerSupabase();
 
@@ -167,6 +171,8 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     memory_enabled,
     client_name,
     description,
+    zoho_deal_id,
+    sharepoint_folder_url,
   });
   if (!result.ok) {
     if (result.kind === "db_error")
@@ -368,6 +374,8 @@ projectsRouter.patch("/:projectId", requireAuth, asyncRoute(async (req, res) => 
   if (!result.ok) {
     if (result.kind === "forbidden")
       return void res.status(403).json({ detail: result.detail });
+    if (result.kind === "validation")
+      return void res.status(400).json({ detail: result.detail });
     if (result.kind === "db_error")
       return void sendInternalError(res, result.error);
     return void res.status(404).json({ detail: "Project not found" });
@@ -404,6 +412,7 @@ projectsRouter.get("/:projectId/documents", requireAuth, asyncRoute(async (req, 
     projectId,
     userId,
     userEmail,
+    lite: req.query.for === "sync",
   });
   if (!result.ok)
     return void res.status(404).json({ detail: "Project not found" });

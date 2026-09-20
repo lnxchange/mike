@@ -23,25 +23,45 @@ import {
   attachDocumentOwnerLabels,
 } from "./projects.shared";
 
+const DOCUMENT_LIST_PAGE = 1000;
+
 export async function listProjectDocuments(
   db: Db,
-  args: { projectId: string; userId: string; userEmail?: string },
+  args: {
+    projectId: string;
+    userId: string;
+    userEmail?: string;
+    /** Sync clients only need external ids; skip version-path enrichment. */
+    lite?: boolean;
+  },
 ): Promise<{ ok: true; docs: unknown } | { ok: false; kind: "forbidden" }> {
-  const { projectId, userId, userEmail } = args;
+  const { projectId, userId, userEmail, lite = false } = args;
 
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok) return { ok: false, kind: "forbidden" };
 
-  const { data: docs } = await db
-    .from("documents")
-    .select("*")
-    .eq("project_id", projectId)
-    .order("created_at", { ascending: true });
-  const docsTyped = (docs ?? []) as unknown as {
+  const columns = lite
+    ? "id, external_provider, external_item_id, external_ctag"
+    : "*";
+  const docsTyped: {
     id: string;
     current_version_id?: string | null;
-  }[];
-  await attachActiveVersionPaths(db, docsTyped);
+  }[] = [];
+  for (let offset = 0; ; offset += DOCUMENT_LIST_PAGE) {
+    const { data: docs } = await db
+      .from("documents")
+      .select(columns)
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true })
+      .range(offset, offset + DOCUMENT_LIST_PAGE - 1);
+    const page = (docs ?? []) as unknown as {
+      id: string;
+      current_version_id?: string | null;
+    }[];
+    docsTyped.push(...page);
+    if (page.length < DOCUMENT_LIST_PAGE) break;
+  }
+  if (!lite) await attachActiveVersionPaths(db, docsTyped);
   return { ok: true, docs: docsTyped };
 }
 

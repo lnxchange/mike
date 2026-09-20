@@ -122,6 +122,71 @@ function externalDocumentColumns(external: UploadExternalReference | null) {
   };
 }
 
+function normalizeCtag(value: unknown): string {
+  return String(value ?? "").trim().replace(/^"+|"+$/g, "");
+}
+
+function isUniqueExternalItemError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String(error.code ?? "") : "";
+  const message = "message" in error ? String(error.message ?? "") : "";
+  return (
+    code === "23505" &&
+    (message.includes("documents_project_external_item_unique") ||
+      message.includes("external_item_id"))
+  );
+}
+
+async function findLiveExternalDocument(
+  db: Db,
+  projectId: string,
+  external: UploadExternalReference,
+) {
+  const { data, error } = await db
+    .from("documents")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("external_provider", external.provider)
+    .eq("external_item_id", external.item_id)
+    .maybeSingle();
+  if (error) throw error;
+  const row = data as { id?: string; external_ctag?: string | null } | null;
+  if (!row?.id) return null;
+  return row;
+}
+
+async function adoptExistingExternalDocument(
+  db: Db,
+  session: UploadSessionRow,
+  file: UploadFileRow,
+  artifact: SealedFileArtifact,
+  projectId: string,
+  external: UploadExternalReference,
+) {
+  const existing = await findLiveExternalDocument(db, projectId, external);
+  if (!existing) return null;
+  if (normalizeCtag(existing.external_ctag) === normalizeCtag(external.ctag)) {
+    return {
+      ...existing,
+      filename: file.filename,
+      file_type: file.file_type,
+    };
+  }
+  return processNewDocumentVersion(
+    db,
+    {
+      ...session,
+      purpose: "document_version_create",
+      destination: {
+        ...session.destination,
+        document_id: existing.id,
+      },
+    },
+    file,
+    artifact,
+  );
+}
+
 type UploadJobRow = {
   id: string;
   session_id: string;
@@ -358,6 +423,21 @@ async function processCreatedDocument(
     return null;
   }
 
+  // The filer can re-send a SharePoint item that is already mirrored
+  // (cTag/eTag drift). Adopt the live row instead of inserting a second
+  // document that dies on documents_project_external_item_unique.
+  if (external && projectId) {
+    const adopted = await adoptExistingExternalDocument(
+      db,
+      session,
+      file,
+      artifact,
+      projectId,
+      external,
+    );
+    if (adopted) return adopted;
+  }
+
   // The upsert below is what makes a retry idempotent — and, on a retry, what
   // would silently RESURRECT a document the user deleted while this job was
   // running. Only a row this job already wrote can have been deleted: the
@@ -395,7 +475,20 @@ async function processCreatedDocument(
     },
     { onConflict: "id" },
   );
-  if (documentError) throw documentError;
+  if (documentError) {
+    if (external && projectId && isUniqueExternalItemError(documentError)) {
+      const adopted = await adoptExistingExternalDocument(
+        db,
+        session,
+        file,
+        artifact,
+        projectId,
+        external,
+      );
+      if (adopted) return adopted;
+    }
+    throw documentError;
+  }
 
   // Remember that the row now exists before writing anything else, so a
   // retry after any later failure checks for deletion instead of recreating.
