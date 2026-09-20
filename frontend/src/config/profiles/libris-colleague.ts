@@ -12,12 +12,14 @@ export const librisColleagueProfile: DeploymentProfile = {
     tagline: "AI colleague for legal document analysis and contract review.",
     appUrl: "https://libris-colleague-lnxchanges-projects.vercel.app",
     landingUrl: "https://libris.au",
-    // Libris bookmark glyph, copied from lnxchange/libris-design-system
-    // assets/logo/libris-bookmark.svg. The theme lives in
-    // app/themes/libris-colleague.css and keys off data-profile.
-    markSrc: "/brand/libris-bookmark.svg",
-    iconSrc: "/brand/libris-bookmark.svg",
-    // Rasterised from the same SVG (rsvg-convert, 180px, padded square).
+    // Designer Li swallowtail, not the retired tittle cut from the wordmark.
+    // Theme lives in app/themes/libris-colleague.css and keys off data-profile.
+    markSrc: "/brand/libris-li-icon.png",
+    markSrcDark: "/brand/libris-li-icon-white.png",
+    wordmarkSrc: "/brand/libris-logo-fullcolor.svg",
+    wordmarkSrcDark: "/brand/libris-logo-reverse.png",
+    wordmarkQualifier: "Colleague",
+    iconSrc: "/brand/libris-li-icon.png",
     appleTouchIconSrc: "/brand/libris-apple-touch-icon.png",
   },
   // Australian law firms work in matters, not projects.

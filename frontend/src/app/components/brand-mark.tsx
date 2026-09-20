@@ -15,6 +15,44 @@ interface BrandMarkProps {
     error?: boolean;
 }
 
+function BrandImage({
+    src,
+    darkSrc,
+    size,
+    className,
+}: {
+    src: string;
+    darkSrc?: string;
+    size: number;
+    className?: string;
+}) {
+    const image = (url: string, extraClass: string) => (
+        <Image
+            src={url}
+            alt=""
+            aria-hidden
+            unoptimized
+            width={size}
+            height={size}
+            className={extraClass}
+            style={{ height: size, width: "auto" }}
+        />
+    );
+
+    return (
+        <span className={`inline-flex shrink-0 items-center ${className ?? ""}`}>
+            {darkSrc ? (
+                <>
+                    {image(src, "dark:hidden")}
+                    {image(darkSrc, "hidden dark:block")}
+                </>
+            ) : (
+                image(src, "")
+            )}
+        </span>
+    );
+}
+
 /**
  * The product/assistant glyph. Renders the active deployment profile's
  * brand mark when one is configured, otherwise the stock Mike icon, so the
@@ -30,19 +68,12 @@ export function BrandMark({
     const markSrc = appConfig.branding.markSrc;
     if (markSrc) {
         return (
-            <span
-                className={`inline-block shrink-0 ${spin ? "animate-pulse" : ""} ${className ?? ""}`}
-            >
-                <Image
-                    src={markSrc}
-                    alt=""
-                    aria-hidden
-                    unoptimized
-                    width={size}
-                    height={size}
-                    style={{ height: size, width: "auto" }}
-                />
-            </span>
+            <BrandImage
+                src={markSrc}
+                darkSrc={appConfig.branding.markSrcDark}
+                size={size}
+                className={spin ? `animate-pulse ${className ?? ""}` : className}
+            />
         );
     }
     const icon = (

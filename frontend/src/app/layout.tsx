@@ -19,12 +19,14 @@ const appTitle = `${appConfig.branding.appName} - AI Legal Platform`;
 
 // A profile may supply its own tab icon; otherwise the stock Mike icon set
 // (SVG, .ico and raster Apple touch icon) is used unchanged.
-const appIcons: Metadata["icons"] = appConfig.branding.iconSrc
+const iconSrc = appConfig.branding.iconSrc;
+const iconType = iconSrc?.endsWith(".svg") ? "image/svg+xml" : "image/png";
+const appIcons: Metadata["icons"] = iconSrc
     ? {
-          icon: [{ url: appConfig.branding.iconSrc, type: "image/svg+xml" }],
+          icon: [{ url: iconSrc, type: iconType }],
           apple:
               appConfig.branding.appleTouchIconSrc ??
-              appConfig.branding.iconSrc,
+              iconSrc,
       }
     : {
           icon: [

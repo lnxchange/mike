@@ -27,10 +27,19 @@ describe("deployment profiles", () => {
             referenceNumber: "Matter number",
         });
         expect(librisColleagueProfile.branding.markSrc).toBe(
-            "/brand/libris-bookmark.svg",
+            "/brand/libris-li-icon.png",
+        );
+        expect(librisColleagueProfile.branding.markSrcDark).toBe(
+            "/brand/libris-li-icon-white.png",
+        );
+        expect(librisColleagueProfile.branding.wordmarkSrc).toBe(
+            "/brand/libris-logo-fullcolor.svg",
+        );
+        expect(librisColleagueProfile.branding.wordmarkQualifier).toBe(
+            "Colleague",
         );
         expect(librisColleagueProfile.branding.iconSrc).toBe(
-            "/brand/libris-bookmark.svg",
+            "/brand/libris-li-icon.png",
         );
     });
 

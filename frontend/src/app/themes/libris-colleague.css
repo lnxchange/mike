@@ -6,18 +6,28 @@
  * attribute nothing in this file takes effect, so the OSS profile renders the
  * stock Mike theme untouched.
  *
- * Token values are vendored from lnxchange/libris-design-system
- * (src/styles/tokens.css, dist/theme.css). That repo is the source of truth:
- * re-copy from it rather than tuning values here.
+ * Token values follow the Back Office handoff (20 September 2026):
+ * Grenze Semibold for display headings, Source Sans Pro for body and UI,
+ * Libris Red / Charcoal, Li bookmark as the product mark. Re-copy from that
+ * pack rather than tuning values here.
  *
- * Only tokens are adopted. The design system's React components target the
- * marketing site (Hero, Navbar, BookCard) and are not used in the app chrome.
+ * Only tokens and type are adopted. The design system's React components
+ * target the marketing site (Hero, Navbar, BookCard) and are not used in
+ * the app chrome.
  */
+@import "@fontsource/grenze/400.css";
+@import "@fontsource/grenze/500.css";
 @import "@fontsource/grenze/600.css";
+@import "@fontsource/grenze/600-italic.css";
+@import "@fontsource/grenze/700.css";
 @import "@fontsource/source-sans-pro/300.css";
+@import "@fontsource/source-sans-pro/300-italic.css";
 @import "@fontsource/source-sans-pro/400.css";
+@import "@fontsource/source-sans-pro/400-italic.css";
 @import "@fontsource/source-sans-pro/600.css";
+@import "@fontsource/source-sans-pro/600-italic.css";
 @import "@fontsource/source-sans-pro/700.css";
+@import "@fontsource/source-sans-pro/700-italic.css";
 
 html[data-profile="libris-colleague"] {
     /* Neutrals: Libris cool grey replaces Tailwind gray; 950 is Libris
@@ -49,17 +59,37 @@ html[data-profile="libris-colleague"] {
     /* Libris brand radius: rounded-lg is 0.75rem. */
     --radius: 0.75rem;
 
-    /* Grenze is display only: the wordmark and page titles (font-display). */
+    /* Grenze is the display face (wordmark qualifier, page titles, empty
+       states). Body and UI stay Source Sans Pro via the --font-inter remap. */
     --font-display-face: "Grenze", Georgia, "Times New Roman", serif;
 }
 
 /* Source Sans Pro for all body and UI text. These variables are declared by
-   next/font on <body>, so the override must sit on body too. */
+   next/font on <body>, so the override must sit on body too. font-serif in
+   document/chat copy also resolves here so Inter and EB Garamond never
+   appear on this profile. Display-size serif utilities are remapped to
+   Grenze below so page titles match Back Office. */
 html[data-profile="libris-colleague"] body {
     --font-inter: "Source Sans Pro", ui-sans-serif, system-ui, -apple-system,
         "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --font-eb-garamond: "Source Sans Pro", ui-sans-serif, system-ui,
         -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/*
+ * Page titles, empty states, auth headings, and the wordmark qualifier use
+ * display-size serif utilities (text-xl and up, or font-display). Those
+ * become Grenze Semibold so the identity matches sister Libris software
+ * without rewriting every heading class in the OSS tree.
+ */
+html[data-profile="libris-colleague"] .font-display,
+html[data-profile="libris-colleague"] .font-serif.text-xl,
+html[data-profile="libris-colleague"] .font-serif.text-2xl,
+html[data-profile="libris-colleague"] .font-serif.text-3xl,
+html[data-profile="libris-colleague"] .font-serif.text-4xl,
+html[data-profile="libris-colleague"] .font-serif.text-lg {
+    font-family: "Grenze", Georgia, "Times New Roman", serif;
+    font-weight: 600;
 }
 
 /* shadcn semantic roles, light theme only. The .dark block in globals.css

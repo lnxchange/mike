@@ -19,7 +19,7 @@ import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { BrandMark } from "@/app/components/brand-mark";
+import { SiteLogo } from "@/app/components/site-logo";
 import { appConfig } from "@/config";
 import { SidebarChatItem } from "@/app/components/shared/SidebarChatItem";
 import {
@@ -286,14 +286,11 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                 href="/assistant"
                                 className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
                             >
-                                <BrandMark size={20} />
-                                <span
-                                    className={`text-[22px] font-light font-serif ${
-                                        shouldAnimate ? "sidebar-fade-in" : ""
-                                    }`}
-                                >
-                                    {appConfig.branding.appName}
-                                </span>
+                                <SiteLogo
+                                    size="sm"
+                                    as="div"
+                                    animate={shouldAnimate}
+                                />
                             </Link>
                         </div>
                     )}

@@ -13,17 +13,24 @@ export default function GlobalError({
         console.error("Global error:", error);
     }, [error]);
 
+    const libris = appConfig.id === "libris-colleague";
+    const sans = libris ? "Source Sans Pro" : "Inter";
+    const display = libris ? "Grenze" : "EB Garamond";
+    const fontHref = libris
+        ? "https://fonts.googleapis.com/css2?family=Grenze:wght@600&family=Source+Sans+Pro:wght@400;600&display=swap"
+        : "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=EB+Garamond:wght@400;500&display=swap";
+
     return (
         <html lang="en">
             <head>
                 <title>{`Something went wrong – ${appConfig.branding.appName}`}</title>
                 <style>{`
-                    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=EB+Garamond:wght@400;500&display=swap');
-                    
+                    @import url('${fontHref}');
+
                     * { margin: 0; padding: 0; box-sizing: border-box; }
-                    
+
                     body {
-                        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+                        font-family: '${sans}', -apple-system, BlinkMacSystemFont, sans-serif;
                         background-color: #ffffff;
                         color: #111;
                         min-height: 100vh;
@@ -39,9 +46,9 @@ export default function GlobalError({
                     }
 
                     .error-title {
-                        font-family: 'EB Garamond', Georgia, serif;
+                        font-family: '${display}', Georgia, serif;
                         font-size: 1.75rem;
-                        font-weight: 400;
+                        font-weight: ${libris ? 600 : 400};
                         color: #111;
                         margin-bottom: 0.75rem;
                     }
@@ -53,7 +60,7 @@ export default function GlobalError({
                         margin-bottom: 2rem;
                     }
 
-                    .btn-back { font-family: 'Inter', sans-serif; }
+                    .btn-back { font-family: '${sans}', sans-serif; }
                 `}</style>
             </head>
             <body>
