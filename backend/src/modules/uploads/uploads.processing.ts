@@ -383,10 +383,15 @@ async function processCreatedDocument(
   let orgId = resolvedOrg.orgId;
   if (!orgId && scope === "library") {
     const actor = await resolveLibraryActor(db, session.user_id);
-    const target = await resolveLibraryWriteTarget(db, actor, libraryKind, {
-      folder_id: libraryFolderId,
-      org_id: (destination.org_id as string | null | undefined) ?? null,
-    });
+    const target = await resolveLibraryWriteTarget(
+      db,
+      actor,
+      destination.library_kind as "file" | "template",
+      {
+        folder_id: libraryFolderId,
+        org_id: (destination.org_id as string | null | undefined) ?? null,
+      },
+    );
     if (!target.ok) {
       throw new Error(
         target.failure === "status" ? target.detail : "Library destination is not writable",

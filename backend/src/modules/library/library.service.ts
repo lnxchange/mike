@@ -189,7 +189,7 @@ async function loadLibraryFolder(
 }
 
 function applyDocumentShelf(
-  query: ReturnType<Db["from"]>,
+  query: any,
   actor: LibraryActor,
   kind: LibraryKind,
   orgId: string | null,
@@ -203,7 +203,7 @@ function applyDocumentShelf(
 }
 
 function applyFolderShelf(
-  query: ReturnType<Db["from"]>,
+  query: any,
   actor: LibraryActor,
   kind: LibraryKind,
   orgId: string | null,
@@ -297,16 +297,16 @@ async function loadLibraryLevel(
   const rawDocs = docs ?? [];
   const documentsHasMore = rawDocs.length > pagination.limit;
   const pageDocs = documentsHasMore ? rawDocs.slice(0, pagination.limit) : rawDocs;
-  const docsTyped = pageDocs.map((doc) =>
-    mapLibraryDocument(actor, doc as Record<string, unknown>),
+  const docsTyped = pageDocs.map((doc: Record<string, unknown>) =>
+    mapLibraryDocument(actor, doc),
   ) as { id: string; current_version_id?: string | null }[];
   await attachLatestVersionNumbers(db, docsTyped);
   await attachActiveVersionPaths(db, docsTyped);
   return {
     error: null,
     documents: docsTyped,
-    folders: (folders ?? []).map((folder) =>
-      decorateFolder(actor, folder as Record<string, unknown>),
+    folders: (folders ?? []).map((folder: Record<string, unknown>) =>
+      decorateFolder(actor, folder),
     ),
     documentsHasMore,
   };
@@ -802,7 +802,7 @@ export async function deleteLibraryFolder(
     folder.org_id,
   );
   if (foldersError) return internalErr(foldersError);
-  if (!(allFolders ?? []).some((row) => row.id === folderId)) {
+  if (!(allFolders ?? []).some((row: { id: string }) => row.id === folderId)) {
     return err(404, "Folder not found");
   }
 
@@ -815,7 +815,7 @@ export async function deleteLibraryFolder(
   ).in("library_folder_id", [...folderIds]);
   if (docsError) return internalErr(docsError);
 
-  const docIds = (docs ?? []).map((doc) => doc.id as string);
+  const docIds = (docs ?? []).map((doc: { id: string }) => doc.id);
   const deleteDocsResult = await deleteCollectionDocuments(
     db,
     {

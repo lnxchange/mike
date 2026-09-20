@@ -28,7 +28,7 @@ export async function deleteCollectionDocuments(
   if (!documentIds.length) return ok({ deletedIds: [] });
   let eligibleIds = documentIds;
   if (scope.kind === "library") {
-    const applyKind = (query: ReturnType<Db["from"]>) =>
+    const applyKind = (query: any) =>
       scope.libraryKind === "file"
         ? query.or("library_kind.eq.file,library_kind.is.null")
         : query.eq("library_kind", scope.libraryKind);
