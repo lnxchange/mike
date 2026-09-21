@@ -27,6 +27,8 @@ import {
     DocReadBlock,
     DocReplicatedBlock,
     EventBlock,
+    OutlookConnectBlock,
+    OutlookDraftBlock,
     ReasoningBlock,
     WorkflowAppliedBlock,
     type CourtListenerBlockItem,
@@ -759,6 +761,29 @@ export function AssistantMessage({
                     detail={detail}
                     isStreaming={!!event.isStreaming}
                     hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "outlook_draft_created") {
+            return (
+                <OutlookDraftBlock
+                    key={globalIdx}
+                    subject={event.subject}
+                    to={event.to}
+                    attachmentNames={event.attachment_names}
+                    threaded={event.threaded}
+                    webLink={event.web_link}
+                    isStreaming={event.isStreaming}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "outlook_auth_required") {
+            return (
+                <OutlookConnectBlock
+                    key={globalIdx}
+                    isStreaming={event.isStreaming}
                     showConnector={showConnector}
                 />
             );

@@ -21,6 +21,7 @@ import { downloadsRouter } from "./modules/downloads/downloads.routes";
 import { sourceDocumentsRouter } from "./modules/source-documents/sourceDocuments.routes";
 import { auditRouter } from "./modules/audit/audit.routes";
 import { authRouter } from "./modules/auth/auth.routes";
+import { integrationsRouter } from "./modules/integrations/integrations.routes";
 import { uploadSessionsRouter } from "./modules/uploads/uploads.routes";
 import {
   projectMemoryRouter,
@@ -286,6 +287,7 @@ app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.post("/auth/login", authLoginAccountLimiter);
 
 app.use("/auth", authRouter);
+app.use("/integrations", integrationsRouter);
 app.use("/chat", chatRouter);
 app.use("/word-chat", wordChatRouter);
 app.use("/models", modelsRouter);

@@ -219,6 +219,37 @@ HttpOnly cookie. No Supabase access or refresh token enters add-in JavaScript or
 OfficeRuntime storage. The add-in also does not retain Google's provider access
 token or request Google Drive or Gmail access.
 
+## Microsoft authentication and Outlook drafts
+
+Microsoft login is opt-in and separate from SAML SSO. It is the only sign-in
+path that can grant delegated Graph mail access. SAML Entra SSO remains
+identity-only and does not stage Outlook drafts.
+
+1. Register an Entra app that allows accounts in any organisational directory.
+   Request delegated `openid`, `profile`, `email`, `offline_access`,
+   `User.Read`, and `Mail.ReadWrite`. Do **not** request `Mail.Send`.
+2. Set the redirect URI to the Supabase Auth callback, the same pattern as
+   Google: `https://<project-ref>.supabase.co/auth/v1/callback`.
+3. Enable the **Azure** provider in Supabase Auth with that client ID and
+   secret. In **Authentication > URL Configuration**, allow the same Mike
+   callbacks used for Google.
+4. Turn on automatic identity linking on matching email in GoTrue so an
+   existing password or Google user is not given a second Mike account.
+5. Grant admin consent in the tenant that will first enable the feature.
+6. Set backend env:
+
+```text
+MICROSOFT_OAUTH_ENABLED=true
+MICROSOFT_OAUTH_CLIENT_ID=<same client id as the Supabase Azure provider>
+MICROSOFT_OAUTH_CLIENT_SECRET=<same client secret>
+```
+
+`MICROSOFT_OAUTH_ENABLED` is false unless it is exactly `true`. Mike stores
+each user's Graph tokens encrypted after the OAuth exchange and refreshes them
+with these client credentials. Existing accounts connect Microsoft from
+Settings → Security. Chat can then stage a review-only draft in that user's
+mailbox; it never calls Graph `/send`.
+
 ## Enterprise SSO (SAML)
 
 Self-hosted Mike can use SAML providers registered in Supabase Auth (GoTrue),

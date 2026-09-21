@@ -469,6 +469,23 @@ create table if not exists public.user_mcp_oauth_tokens (
 
 alter table public.user_mcp_oauth_tokens enable row level security;
 
+create table if not exists public.user_microsoft_tokens (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  encrypted_access_token text not null,
+  access_token_iv text not null,
+  access_token_tag text not null,
+  encrypted_refresh_token text not null,
+  refresh_token_iv text not null,
+  refresh_token_tag text not null,
+  access_token_expires_at timestamptz not null,
+  granted_scopes text not null,
+  mailbox_upn text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_microsoft_tokens enable row level security;
+
 create table if not exists public.user_mcp_oauth_states (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -704,6 +721,7 @@ create table if not exists public.documents (
   library_folder_id uuid references public.library_folders(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  email_internet_message_id text,
   constraint documents_library_kind_check
     check (library_kind in ('file', 'template', 'workflow_asset'))
 );
@@ -720,6 +738,10 @@ create index if not exists idx_documents_library_kind_folder
 
 create index if not exists idx_documents_org
   on public.documents(org_id);
+
+create index if not exists idx_documents_email_internet_message_id
+  on public.documents(email_internet_message_id)
+  where email_internet_message_id is not null;
 
 create table if not exists public.document_versions (
   id uuid primary key default gen_random_uuid(),
@@ -6345,6 +6367,7 @@ revoke all on public.user_mcp_oauth_tokens from anon, authenticated;
 revoke all on public.user_mcp_oauth_states from anon, authenticated;
 revoke all on public.user_mcp_connector_tools from anon, authenticated;
 revoke all on public.user_mcp_tool_audit_logs from anon, authenticated;
+revoke all on public.user_microsoft_tokens from anon, authenticated;
 revoke all on public.courtlistener_citation_index from anon, authenticated;
 revoke all on public.courtlistener_opinion_cluster_index from anon, authenticated;
 revoke all on public.audit_events from anon, authenticated;

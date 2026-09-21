@@ -30,6 +30,7 @@ const user = {
     email: "lawyer@example.test",
     pendingEmail: null,
     createdWithGoogle: false,
+    microsoftConnected: false,
 };
 
 function Consumer() {

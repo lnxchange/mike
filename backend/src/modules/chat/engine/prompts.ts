@@ -1,4 +1,5 @@
 import { COURTLISTENER_SYSTEM_PROMPT } from "./tools/courtlistenerTools";
+import { OUTLOOK_DRAFT_SYSTEM_PROMPT } from "./tools/outlookDraftTools";
 
 const SYSTEM_PROMPT_BEFORE_RESEARCH = `You are Mike, an AI legal assistant for lawyers and legal professionals. Help analyze documents, answer legal questions, and draft legal documents.
 
@@ -103,8 +104,13 @@ GENERAL GUIDANCE:
  * false they are omitted entirely so the model is not told about tools it
  * does not have.
  */
-export function buildSystemPrompt(includeResearchTools = true): string {
-  return includeResearchTools
-    ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${COURTLISTENER_SYSTEM_PROMPT}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
-    : `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${SYSTEM_PROMPT_AFTER_RESEARCH}`;
+export function buildSystemPrompt(
+  includeResearchTools = true,
+  includeOutlookDrafts = false,
+): string {
+  const sections = [SYSTEM_PROMPT_BEFORE_RESEARCH];
+  if (includeResearchTools) sections.push(COURTLISTENER_SYSTEM_PROMPT);
+  if (includeOutlookDrafts) sections.push(OUTLOOK_DRAFT_SYSTEM_PROMPT);
+  sections.push(SYSTEM_PROMPT_AFTER_RESEARCH);
+  return sections.join("\n\n");
 }

@@ -852,6 +852,7 @@ export async function deleteUserAccountData(
         // excerpts, so account erasure must remove them as well.
         db.from("audit_events").delete().eq("user_id", userId),
         db.from("quick_actions").delete().eq("user_id", userId),
+        db.from("user_microsoft_tokens").delete().eq("user_id", userId),
         db
             .from("default_workflow_installations")
             .delete()

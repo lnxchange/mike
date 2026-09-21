@@ -20,6 +20,8 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/app/lib/authApi", () => ({
     login,
     startGoogleOAuth,
+    getAuthConfig: vi.fn(async () => ({ microsoftEnabled: false })),
+    startMicrosoftOAuth: vi.fn(),
 }));
 
 vi.mock("@/app/contexts/AuthContext", () => ({

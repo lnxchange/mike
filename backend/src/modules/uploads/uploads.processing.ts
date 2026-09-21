@@ -14,7 +14,7 @@ import {
 
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transform } from "node:stream";
@@ -26,6 +26,7 @@ import { recordAudit } from "../../lib/audit";
 import { enqueueStorageCleanup } from "../../lib/dbq/enqueue";
 import { convertedPdfKey, officeFileToPdf } from "../../lib/convert";
 import { shouldConvertToPdf } from "../../lib/documentTypes";
+import { extractInternetMessageId } from "../../lib/emailMessage";
 import { uploadJobWallClockMs } from "../../lib/runtimeConfig";
 import {
   copyFile,
@@ -52,6 +53,19 @@ type UploadSessionRow = {
   destination: Record<string, unknown>;
   status: string;
 };
+
+async function emailInternetMessageIdMeta(
+  fileType: string,
+  filePath: string,
+): Promise<{ email_internet_message_id?: string }> {
+  if (fileType !== "eml" && fileType !== "msg") return {};
+  try {
+    const messageId = extractInternetMessageId(await readFile(filePath), fileType);
+    return messageId ? { email_internet_message_id: messageId } : {};
+  } catch {
+    return {};
+  }
+}
 
 type UploadFileRow = {
   id: string;
@@ -415,11 +429,16 @@ async function processCreatedDocument(
     throw new DeletedDocumentError(documentId, [sourcePath, pdfPath]);
   if (versionError) throw versionError;
 
+  const emailMeta = await emailInternetMessageIdMeta(
+    file.file_type,
+    artifact.filePath,
+  );
   const { data: document, error: updateError } = await db
     .from("documents")
     .update({
       status: "ready",
       updated_at: new Date().toISOString(),
+      ...emailMeta,
     })
     .eq("id", documentId)
     .eq("user_id", session.user_id)
