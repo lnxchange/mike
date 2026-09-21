@@ -45,14 +45,16 @@ async function loadMailboxSignature(
       const needed = referencedContentIds(html);
       const images = needed.length
         ? (await listInlineFileAttachments(accessToken, message.id)).filter(
-            (attachment) =>
-              attachment.contentId &&
-              needed.some(
+            (attachment) => {
+              const contentId = attachment.contentId;
+              if (!contentId) return false;
+              return needed.some(
                 (id) =>
-                  id === attachment.contentId ||
-                  id.startsWith(`${attachment.contentId}@`) ||
-                  attachment.contentId.startsWith(`${id}@`),
-              ),
+                  id === contentId ||
+                  id.startsWith(`${contentId}@`) ||
+                  contentId.startsWith(`${id}@`),
+              );
+            },
           )
         : [];
       return { html, images };

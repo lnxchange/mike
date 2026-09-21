@@ -285,21 +285,21 @@ export async function listInlineFileAttachments(
     accessToken,
     `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=name,contentType,contentId,isInline,contentBytes`,
   );
-  return (data.value ?? [])
-    .map((attachment) => {
-      const contentId = attachment.contentId?.replace(/^<|>$/g, "").trim();
-      if (!attachment.isInline || !contentId || !attachment.contentBytes) {
-        return null;
-      }
-      return {
-        filename: attachment.name || contentId,
-        contentType: attachment.contentType || "application/octet-stream",
-        bytes: Buffer.from(attachment.contentBytes, "base64"),
-        isInline: true,
-        contentId,
-      } satisfies OutlookAttachment;
-    })
-    .filter((attachment): attachment is OutlookAttachment => !!attachment);
+  const attachments: OutlookAttachment[] = [];
+  for (const attachment of data.value ?? []) {
+    const contentId = attachment.contentId?.replace(/^<|>$/g, "").trim();
+    if (!attachment.isInline || !contentId || !attachment.contentBytes) {
+      continue;
+    }
+    attachments.push({
+      filename: attachment.name || contentId,
+      contentType: attachment.contentType || "application/octet-stream",
+      bytes: Buffer.from(attachment.contentBytes, "base64"),
+      isInline: true,
+      contentId,
+    });
+  }
+  return attachments;
 }
 
 export async function searchMailboxMessages(
