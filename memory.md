@@ -1,5 +1,13 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Library lookup, email columns, and date fix shipped
+
+HEAD `5b7987f1` on `cursor/setup-supabase-vercel-oss-cad9`. Pushed. Feature commit `b233c4b4` (library lookup, email metadata, DocTable columns, AU execution blocks, 1970 date fix, Zoho/SharePoint pills). Follow-ups: `b6b4647b` (docxStyles tsc), `5b7987f1` (Library sortKey union).
+
+Railway `mike` `4483df33` SUCCESS on SHA `b6b4647b` (backend-complete; frontend-only type fix after that). https://mike-production-68f2.up.railway.app `/health` 200. Vercel production `dpl_CBkvJ3UWtWob87jG65uPN9utTfG6` READY on SHA `5b7987f1`, aliased to https://libris-colleague.vercel.app.
+
+Did not apply migration `20260920_08`. Email meta `20260921_04` already on production. Did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`. Left sharepoint-email-filer alone (dirty tree). Did not invent a login for `/library` smoke.
+
 ## 2026-09-21 — Empty Attune Legal Files folder and 1970 dates
 
 Yule was on Library → Files (`/library`). Attune Legal and personal source folders looked empty with Created/Updated as 1 January 1970.
