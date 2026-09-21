@@ -53,6 +53,7 @@ interface Props {
         clientId: string;
         filename: string;
     }>;
+    sharepointIngest?: { expected: number; ready: number } | null;
 }
 
 export interface ProjectExplorerHandle {
@@ -86,6 +87,7 @@ export const ProjectExplorer = forwardRef<ProjectExplorerHandle, Props>(function
     onMoveDoc,
     onMoveFolder,
     uploadingDocuments = [],
+    sharepointIngest = null,
 }: Props, ref) {
     const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -480,7 +482,9 @@ export const ProjectExplorer = forwardRef<ProjectExplorerHandle, Props>(function
                 uploadingDocuments.length === 0 &&
                 creatingIn === undefined && (
                     <li className="px-4 py-2 text-xs text-gray-400">
-                        No documents in this project.
+                        {sharepointIngest
+                            ? `Processing documents from SharePoint, ${sharepointIngest.ready} of ${sharepointIngest.expected} ready`
+                            : "No documents in this project."}
                     </li>
                 )}
 

@@ -15,14 +15,20 @@ export const MATTER_SYNC_POLL_MS = 15_000;
  * the status unknown (null) and stops polling rather than surfacing an error.
  *
  * `onDocumentCountIncreased` fires when a poll reports more documents than
- * the previous one, so the page can refresh its document list.
+ * the previous one, so the page can refresh its document list. It also fires
+ * when the filer already counts files that are not yet visible: upload
+ * sessions can complete minutes before the worker marks the documents ready,
+ * and Idle must not freeze an empty page.
  */
 export function useMatterSyncStatus(args: {
     projectId: string;
     enabled: boolean;
+    /** Ready documents already rendered. Keep polling after Idle until this catches the filer. */
+    visibleDocumentCount?: number;
     onDocumentCountIncreased?: () => void;
 }) {
-    const { projectId, enabled, onDocumentCountIncreased } = args;
+    const { projectId, enabled, visibleDocumentCount, onDocumentCountIncreased } =
+        args;
     // Keyed by project so a navigation to another matter reads as "unknown"
     // without an effect having to clear the previous answer.
     const [reading, setReading] = useState<{
@@ -33,9 +39,13 @@ export function useMatterSyncStatus(args: {
         null,
     );
     const increasedRef = useRef(onDocumentCountIncreased);
+    const visibleCountRef = useRef(visibleDocumentCount);
     useEffect(() => {
         increasedRef.current = onDocumentCountIncreased;
     }, [onDocumentCountIncreased]);
+    useEffect(() => {
+        visibleCountRef.current = visibleDocumentCount;
+    }, [visibleDocumentCount]);
 
     const refresh = useCallback(async (): Promise<MatterSyncStatusResult | null> => {
         if (!enabled) return null;
@@ -44,9 +54,13 @@ export function useMatterSyncStatus(args: {
             setReading({ projectId, status: next });
             if (next.found) {
                 const previous = lastCountRef.current;
+                const visible = visibleCountRef.current;
+                const filerAhead =
+                    typeof visible === "number" && next.documentCount > visible;
                 if (
-                    previous?.projectId === projectId &&
-                    next.documentCount > previous.count
+                    (previous?.projectId === projectId &&
+                        next.documentCount > previous.count) ||
+                    filerAhead
                 ) {
                     increasedRef.current?.();
                 }
@@ -67,7 +81,15 @@ export function useMatterSyncStatus(args: {
         const tick = async () => {
             const next = await refresh();
             if (cancelled) return;
-            if (next?.found && isMatterSyncInProgress(next.status)) {
+            const visible = visibleCountRef.current;
+            const waitingForVisible =
+                typeof visible === "number" &&
+                !!next?.found &&
+                next.documentCount > visible;
+            if (
+                next?.found &&
+                (isMatterSyncInProgress(next.status) || waitingForVisible)
+            ) {
                 timer = window.setTimeout(() => void tick(), MATTER_SYNC_POLL_MS);
             }
         };

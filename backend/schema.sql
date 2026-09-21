@@ -4730,6 +4730,30 @@ $$;
 -- backend verifies the user's JWT. Do not grant the browser anon/authenticated
 -- roles direct table privileges for backend-owned data.
 
+-- These tables were created without ENABLE ROW LEVEL SECURITY. Deny-all (no
+-- policies) is the firewall; service_role bypasses it for the backend path.
+alter table public.user_profiles enable row level security;
+alter table public.projects enable row level security;
+alter table public.project_subfolders enable row level security;
+alter table public.library_folders enable row level security;
+alter table public.documents enable row level security;
+alter table public.document_versions enable row level security;
+alter table public.document_edits enable row level security;
+alter table public.workflows enable row level security;
+alter table public.hidden_workflows enable row level security;
+alter table public.workflow_shares enable row level security;
+alter table public.default_workflow_installations enable row level security;
+alter table public.quick_actions enable row level security;
+alter table public.mike_workflows enable row level security;
+alter table public.mike_workflow_assets enable row level security;
+alter table public.workflow_addons enable row level security;
+alter table public.chats enable row level security;
+alter table public.chat_messages enable row level security;
+alter table public.tabular_reviews enable row level security;
+alter table public.tabular_cells enable row level security;
+alter table public.tabular_review_chats enable row level security;
+alter table public.tabular_review_chat_messages enable row level security;
+
 -- Audit history of user actions (queried via the service-role backend only).
 -- Defined here — above the service_role grant block — so `grant ... on all
 -- tables in schema public` below covers it on a fresh install. Like every other

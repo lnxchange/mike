@@ -29,6 +29,7 @@ import {
 import {
     describeMatterSync,
     isMatterSyncInProgress,
+    isMatterSyncProcessing,
     sharepointFolderUrl,
     zohoMatterUrl,
 } from "@/app/lib/matterSync";
@@ -147,6 +148,8 @@ type ProjectWorkspaceValue = {
      * closed until the server has told us it may open.
      */
     canDo: (capability: Capability) => boolean;
+    /** Filer has counted SharePoint files that are not yet ready on the page. */
+    sharepointIngest: { expected: number; ready: number } | null;
 };
 
 const ProjectWorkspaceContext =
@@ -279,12 +282,25 @@ export function ProjectWorkspaceProvider({
     const matterNumber = project?.cm_number?.trim() || null;
     const matterSyncEnabled =
         ZOHO_PULL_ENABLED && showShell && !!project && !!matterNumber;
+    const visibleDocumentCount =
+        project?.documents?.filter((d) => d.status === "ready").length ?? 0;
     const { status: matterSyncStatus, refresh: refreshMatterSyncStatus } =
         useMatterSyncStatus({
             projectId,
             enabled: matterSyncEnabled,
+            visibleDocumentCount,
             onDocumentCountIncreased: () => void refreshProjectCollection(),
         });
+    const sharepointIngest = useMemo(() => {
+        if (!isMatterSyncProcessing(matterSyncStatus, visibleDocumentCount)) {
+            return null;
+        }
+        if (!matterSyncStatus?.found) return null;
+        return {
+            expected: matterSyncStatus.documentCount,
+            ready: visibleDocumentCount,
+        };
+    }, [matterSyncStatus, visibleDocumentCount]);
 
     useEffect(() => {
         if (!project || !matterSyncStatus?.found) return;
@@ -597,6 +613,7 @@ export function ProjectWorkspaceProvider({
             setOwnerOnlyAction,
             accessRole,
             canDo,
+            sharepointIngest,
         }),
         [
             projectId,
@@ -616,6 +633,7 @@ export function ProjectWorkspaceProvider({
             setDocumentUploadHeaderAction,
             accessRole,
             canDo,
+            sharepointIngest,
         ],
     );
 
@@ -653,8 +671,10 @@ export function ProjectWorkspaceProvider({
                     matterSync={
                         matterSyncEnabled && matterSyncStatus?.found
                             ? {
-                                  statusLine:
-                                      describeMatterSync(matterSyncStatus),
+                                  statusLine: describeMatterSync(
+                                      matterSyncStatus,
+                                      { visibleDocumentCount },
+                                  ),
                                   onSyncNow: () => void requestSyncNow(),
                                   syncing:
                                       syncNowPending ||

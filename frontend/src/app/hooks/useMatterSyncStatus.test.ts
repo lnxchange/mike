@@ -96,6 +96,43 @@ describe("useMatterSyncStatus", () => {
         expect(getMatterSyncStatus).toHaveBeenCalledTimes(3);
     });
 
+    it("keeps polling Idle when the filer counts files the page has not rendered", async () => {
+        vi.mocked(getMatterSyncStatus).mockResolvedValue({
+            ...syncing(3, 0),
+            status: "Idle",
+        });
+        const onIncrease = vi.fn();
+        const { result, rerender } = renderHook(
+            (props: { visible: number }) =>
+                useMatterSyncStatus({
+                    projectId: "p1",
+                    enabled: true,
+                    visibleDocumentCount: props.visible,
+                    onDocumentCountIncreased: onIncrease,
+                }),
+            { initialProps: { visible: 0 } },
+        );
+        await waitFor(() => expect(result.current.loaded).toBe(true));
+        expect(onIncrease).toHaveBeenCalled();
+        expect(getMatterSyncStatus).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(MATTER_SYNC_POLL_MS);
+        });
+        expect(getMatterSyncStatus).toHaveBeenCalledTimes(2);
+
+        rerender({ visible: 3 });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(MATTER_SYNC_POLL_MS);
+        });
+        expect(getMatterSyncStatus).toHaveBeenCalledTimes(3);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(MATTER_SYNC_POLL_MS * 2);
+        });
+        expect(getMatterSyncStatus).toHaveBeenCalledTimes(3);
+    });
+
     it("treats a failed read as unknown and stops polling", async () => {
         vi.mocked(getMatterSyncStatus).mockRejectedValue(new Error("503"));
         const { result } = renderHook(() =>

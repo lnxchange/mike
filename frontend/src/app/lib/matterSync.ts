@@ -88,20 +88,41 @@ export function isMatterSyncInProgress(status: MatterSyncStatus): boolean {
     );
 }
 
+export type MatterSyncVisible = {
+    visibleDocumentCount?: number;
+};
+
+/** True when the filer has counted files that are not yet ready on the page. */
+export function isMatterSyncProcessing(
+    result: MatterSyncStatusResult | null,
+    visibleDocumentCount?: number,
+): boolean {
+    if (!result?.found) return false;
+    if (typeof visibleDocumentCount !== "number") return false;
+    return result.documentCount > visibleDocumentCount;
+}
+
 /**
  * The one-line, plain-text summary the matter header shows. Returns null when
  * there is nothing to say (no sync row).
  */
 export function describeMatterSync(
     result: MatterSyncStatusResult | null,
+    options?: MatterSyncVisible,
 ): string | null {
     if (!result || !result.found) return null;
+    const visible = options?.visibleDocumentCount;
+    const processing =
+        typeof visible === "number" && result.documentCount > visible;
     switch (result.status) {
         case "AwaitingFolder":
             return "Waiting for the SharePoint folder";
         case "Creating":
             return "Setting up the SharePoint sync";
         case "Syncing": {
+            if (processing && result.remaining === 0) {
+                return describeProcessing(visible ?? 0, result.documentCount);
+            }
             const soFar = `${result.documentCount} ${
                 result.documentCount === 1 ? "document" : "documents"
             } so far`;
@@ -110,11 +131,17 @@ export function describeMatterSync(
                 : `Syncing from SharePoint, ${soFar}`;
         }
         case "Idle":
-            return "Up to date with SharePoint";
+            return processing
+                ? describeProcessing(visible ?? 0, result.documentCount)
+                : "Up to date with SharePoint";
         case "Paused":
             return "Sync paused";
         case "Failed":
         case "TimedOut":
             return "Sync failed, see Back Office";
     }
+}
+
+function describeProcessing(ready: number, expected: number): string {
+    return `Processing documents from SharePoint, ${ready} of ${expected} ready`;
 }

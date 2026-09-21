@@ -1,5 +1,31 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Zoho pull of 263403 looked empty
+
+Yule pulled Zoho matter 263403 (Shout Web Strategy Pty Ltd - T&C review, Deal `3849704000065103001`) at 11:36 AEST. Project `5bc0b4e6-7039-42b1-b96d-e17bef0d01b0` was created. Both pull and Sync now returned 200 (37s / 36s). The filer uploaded the three root PDFs immediately. The upload worker was saturated by the ACCC s155 drain (`41cfbdbf`, ~7k docs; GET `/documents?for=sync` 28–30s, often 499). Processing jobs sat from 11:36 until 11:50. Sync now at 11:45 re-uploaded the same three files because no `external_item_id` rows existed yet. Documents ready since 11:50: LegalRequestForm.pdf, Blue_NRG_-_Social_Ads___Creative_Agreement.pdf, Shout_Master_Terms_and_Conditions__Blue_NRG.pdf. `sharepoint_folder_url` still null (persist ran before docs existed). UI stopped polling on filer Idle, so the page stayed empty.
+
+Uncommitted, not deployed: `useMatterSyncStatus` keeps polling after Idle while filer `documentCount` > visible ready docs, and refreshes the collection. Header and empty states now say "Processing documents from SharePoint, N of M ready" instead of "Up to date" / "Upload documents". Tests: `useMatterSyncStatus.test.ts`, ProjectWorkspace, ProjectPageParts.matterSync, ProjectExplorer. Did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`. Did not deploy. Did not touch the dirty filer tree.
+
+Yule waited about 10 minutes after Sync, with an empty folder, until this session queried the matter. The Idle header plus the upload empty state was the lie. The three PDFs have been ready since 11:50 AEST.
+
+Deny-all RLS is now on in production (`gttnqqwqoirwbvalqfce`) for the 21 backend-owned tables that had shipped without it. Migration `20260921_05_backend_table_rls.sql` / applied name `backend_table_rls`. No policies. service_role still reads. Browser grants were already revoked. Not shipped in git until this tree is committed. He later said he waited ~10 minutes, clicked Sync, and the folder stayed empty until this session queried it. The Idle header plus the upload empty state was the lie.
+
+## 2026-09-21 — Filer listItem email mapping and S155 backfill
+
+Leftover plan items `filer-listitem` and `email-backfill` from `library_metadata_styles_ea241fd2`.
+
+### Filer (`sharepoint-email-filer`)
+
+Isolated commit `1eb1bb0` on `cursor/fix-manage-chat-500`: `src/email_meta.py` plus `_upload_one` Graph `item_list_item` for `.eml`/`.msg` or an `Emails -` path. Maps EmSubject / EmFrom / EmTo / EmDateReceived with legacy OriginalSubject / From / To / EmailDate, then sends the existing upload `email` object. Unit tests: `python3 -m unittest tests.test_email_meta -q` (7 OK). Deployed `--code-only` to `attuneemailfiler-flex` (SHA stamped `1eb1bb0-dirty` because untracked `tmp-*` dirs were in the zip; Python src was the isolated commit). Did not use `ALLOW_DIRTY_DEPLOY`. Did not push (branch ahead 2). Working tree is dirty again with unrelated admin_chat / ctag-skip / zoho URL WIP. Do not redeploy until that is isolated.
+
+### S155 backfill (project `41cfbdbf-a1f8-47a2-be4d-1208eb375b0f`)
+
+Graph `az rest` over 531 mirrored rows that still had empty `email_*`. Attempted 531, updated 165, skipped 366 (listItem had no email fields, mostly DR Title-only), failed 0. SQL applied all 165 via Supabase MCP on `gttnqqwqoirwbvalqfce`, skip-if-already-filled. After apply: 706 S155 rows have any `email_*` (641 have `email_received_at`). All 641 arrived dates differ from Railway `created_at` (0 equal). 366 mirrored rows remain empty because SharePoint had nothing to copy. Northeon `e360041c-fe06-4743-8f43-23cae53a0f5b` has 0 `external_item_id`, skipped.
+
+Mike was not committed. Browser on https://libris-colleague.vercel.app stopped at `/login` (no session). DocTable will show Arrived / From / To / Subject on S155 once Yule is logged in, because any loaded email_* row turns that column group on. Did not apply migration 08. Did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`. Wiped `/tmp/s155-graph.env`.
+
+Yule: hard-refresh S155. Arrived should be the SharePoint email date (2023–2026 correspondence), not 20 September 2026 ingest.
+
 ## 2026-09-21 — Library lookup, email columns, and date fix shipped
 
 HEAD `5b7987f1` on `cursor/setup-supabase-vercel-oss-cad9`. Pushed. Feature commit `b233c4b4` (library lookup, email metadata, DocTable columns, AU execution blocks, 1970 date fix, Zoho/SharePoint pills). Follow-ups: `b6b4647b` (docxStyles tsc), `5b7987f1` (Library sortKey union).

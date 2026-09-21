@@ -327,6 +327,8 @@ interface DocTableProps {
     search: string;
     operations: DocTableOperations;
     emptyStateTitle: string;
+    emptyStateDescription?: string;
+    hideEmptyStateAction?: boolean;
     emptyFolderMessage?: string;
     renderAddDocumentsModal?: (
         open: boolean,
@@ -520,6 +522,8 @@ export function DocTable({
     search,
     operations,
     emptyStateTitle,
+    emptyStateDescription,
+    hideEmptyStateAction = false,
     emptyFolderMessage,
     renderAddDocumentsModal,
     onAddDocumentsActionChange,
@@ -4343,25 +4347,38 @@ export function DocTable({
                                     </div>
                                 ) : (
                                     <div
-                                        onClick={openAddDocuments}
-                                        className="flex flex-1 cursor-pointer"
+                                        onClick={
+                                            hideEmptyStateAction
+                                                ? undefined
+                                                : openAddDocuments
+                                        }
+                                        className={
+                                            hideEmptyStateAction
+                                                ? "flex flex-1"
+                                                : "flex flex-1 cursor-pointer"
+                                        }
                                     >
                                         <TableEmptyState>
                                             <EmptyState
                                                 icon={<LibrarySkeuoIcon />}
                                                 title={emptyStateTitle}
-                                                description="Upload documents or drop files and folders here"
+                                                description={
+                                                    emptyStateDescription ??
+                                                    "Upload documents or drop files and folders here"
+                                                }
                                                 action={
-                                                    <PillButtonUI
-                                                        tone="black"
-                                                        size="sm"
-                                                        onClick={(event) => {
-                                                            event.stopPropagation();
-                                                            openAddDocuments();
-                                                        }}
-                                                    >
-                                                        Upload
-                                                    </PillButtonUI>
+                                                    hideEmptyStateAction ? undefined : (
+                                                        <PillButtonUI
+                                                            tone="black"
+                                                            size="sm"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                openAddDocuments();
+                                                            }}
+                                                        >
+                                                            Upload
+                                                        </PillButtonUI>
+                                                    )
                                                 }
                                             />
                                         </TableEmptyState>

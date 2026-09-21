@@ -87,6 +87,9 @@ vi.mock("@/app/hooks/useAssistantMessageLayout", () => ({
         scrollLatestUserToTop: vi.fn(),
     }),
 }));
+vi.mock("@/app/components/projects/ProjectWorkspace", () => ({
+    useProjectWorkspaceOptional: () => null,
+}));
 vi.mock("@/app/components/projects/ProjectExplorer", () => ({
     ProjectExplorer: ({
         documents,

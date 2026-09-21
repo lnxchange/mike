@@ -58,6 +58,7 @@ import {
     type ProjectExplorerHandle,
 } from "@/app/components/projects/ProjectExplorer";
 import { ProjectMemoryModal } from "@/app/components/projects/ProjectMemoryModal";
+import { useProjectWorkspaceOptional } from "@/app/components/projects/ProjectWorkspace";
 import { ChatPanelHeader } from "@/app/components/shared/ChatPanelHeader";
 import { ProjectDocumentTabs } from "@/app/components/projects/ProjectDocumentTabs";
 import {
@@ -279,6 +280,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const { setSidebarOpen } = useSidebar();
     const { user, authLoading } = useAuth();
     const { profile } = useUserProfile();
+    const sharepointIngest =
+        useProjectWorkspaceOptional()?.sharepointIngest ?? null;
     const username =
         profile?.displayName?.trim() || user?.email?.split("@")[0] || "there";
     const explorerDownload = useExplorerDownload();
@@ -1678,6 +1681,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                 onMoveDoc={handleMoveDoc}
                                 onMoveFolder={handleMoveFolder}
                                 uploadingDocuments={uploadingDocuments}
+                                sharepointIngest={sharepointIngest}
                             />
                         </div>
                     </div>

@@ -62,6 +62,7 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
         setDocumentUploadHeaderAction,
         accessRole,
         canDo,
+        sharepointIngest,
     } = workspace;
     // Null while the project row is in flight. The folder controls keep their
     // place in the toolbar during that window — removing them would reflow the
@@ -392,6 +393,12 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 search={search}
                 operations={operations}
                 emptyStateTitle="Documents"
+                emptyStateDescription={
+                    sharepointIngest
+                        ? `Processing documents from SharePoint, ${sharepointIngest.ready} of ${sharepointIngest.expected} ready`
+                        : undefined
+                }
+                hideEmptyStateAction={sharepointIngest != null}
                 onAddDocumentsActionChange={
                     canDo("content.edit")
                         ? handleSavedFilesActionChange

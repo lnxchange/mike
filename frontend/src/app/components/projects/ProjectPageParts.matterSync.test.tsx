@@ -164,6 +164,28 @@ describe("describeMatterSync", () => {
             }),
         ).toBe("Up to date with SharePoint");
         expect(
+            describeMatterSync(
+                {
+                    ...base,
+                    status: "Idle",
+                    documentCount: 3,
+                    remaining: 0,
+                },
+                { visibleDocumentCount: 0 },
+            ),
+        ).toBe("Processing documents from SharePoint, 0 of 3 ready");
+        expect(
+            describeMatterSync(
+                {
+                    ...base,
+                    status: "Syncing",
+                    documentCount: 3,
+                    remaining: 0,
+                },
+                { visibleDocumentCount: 0 },
+            ),
+        ).toBe("Processing documents from SharePoint, 0 of 3 ready");
+        expect(
             describeMatterSync({
                 ...base,
                 status: "Paused",
