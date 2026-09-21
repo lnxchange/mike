@@ -246,7 +246,7 @@ export async function addFileAttachment(
         "Content-Length": String(chunk.length),
         "Content-Range": `bytes ${start}-${end - 1}/${attachment.bytes.length}`,
       },
-      body: chunk,
+      body: new Uint8Array(chunk),
     });
     if (!response.ok && response.status !== 201 && response.status !== 200) {
       throw new Error("graph_request_failed");

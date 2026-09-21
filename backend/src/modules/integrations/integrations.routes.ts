@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendInternalError } from "../../lib/httpError";
 import { createServerSupabase } from "../../lib/supabase";
 import { requireAuth } from "../../middleware/auth";
@@ -22,7 +23,7 @@ integrationsRouter.get(
   "/microsoft",
   requireAuth,
   asyncRoute(async (_req, res) => {
-    const client = res.locals.authClient;
+    const client = res.locals.authClient as SupabaseClient | undefined;
     if (!client) {
       res.status(401).json({
         code: "unauthenticated",
@@ -54,7 +55,7 @@ integrationsRouter.delete(
   "/microsoft",
   requireAuth,
   asyncRoute(async (_req, res) => {
-    const client = res.locals.authClient;
+    const client = res.locals.authClient as SupabaseClient | undefined;
     if (!client) {
       res.status(401).json({
         code: "unauthenticated",
