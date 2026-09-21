@@ -1,7 +1,9 @@
 import { normalizeMailboxSubject } from "../../lib/emailMessage";
+import { logError } from "../../lib/log";
 import type { Db } from "../../lib/supabase";
-import { GraphAuthError } from "./integrations.graph";
 import {
+  GraphAuthError,
+  GraphRequestError,
   addFileAttachment,
   createDraftMessage,
   createReplyDraft,
@@ -44,8 +46,10 @@ function mailboxSearchQuery(subject: string, participants: string[]) {
   const terms = [
     normalizeMailboxSubject(subject),
     ...participants.map((address) => address.trim()).filter(Boolean),
-  ].filter(Boolean);
-  return terms.map((term) => `"${term.replace(/"/g, "")}"`).join(" AND ");
+  ]
+    .map((term) => term.replace(/["\\]/g, "").trim())
+    .filter(Boolean);
+  return terms.join(" AND ");
 }
 
 async function resolveThreadMessage(
@@ -53,22 +57,35 @@ async function resolveThreadMessage(
   input: CreateOutlookDraftInput,
 ): Promise<GraphMessage | null | "ambiguous"> {
   if (input.inReplyToInternetMessageId) {
-    const exact = await findMessageByInternetMessageId(
-      accessToken,
-      input.inReplyToInternetMessageId,
-    );
-    if (exact) return exact;
+    try {
+      const exact = await findMessageByInternetMessageId(
+        accessToken,
+        input.inReplyToInternetMessageId,
+      );
+      if (exact) return exact;
+    } catch (error) {
+      if (error instanceof GraphAuthError) throw error;
+      logError("integrations/outlook-draft", error, {
+        stage: "message-id-lookup",
+      });
+    }
   }
 
   const participants = [...input.to, ...(input.cc ?? [])];
   const query = mailboxSearchQuery(input.subject, participants);
   if (!query) return null;
 
-  const matches = await searchMailboxMessages(accessToken, query);
-  if (matches.length === 0) return null;
-  const conversations = uniqueConversationIds(matches);
-  if (conversations.length !== 1) return "ambiguous";
-  return newestInConversation(matches) ?? null;
+  try {
+    const matches = await searchMailboxMessages(accessToken, query);
+    if (matches.length === 0) return null;
+    const conversations = uniqueConversationIds(matches);
+    if (conversations.length !== 1) return "ambiguous";
+    return newestInConversation(matches) ?? null;
+  } catch (error) {
+    if (error instanceof GraphAuthError) throw error;
+    logError("integrations/outlook-draft", error, { stage: "mailbox-search" });
+    return null;
+  }
 }
 
 export async function createOutlookDraft(
@@ -144,6 +161,20 @@ export async function createOutlookDraft(
         await deleteMicrosoftTokens(db, userId).catch(() => undefined);
       }
       return { kind: "outlook_auth_required" };
+    }
+    logError("integrations/outlook-draft", error, {
+      stage: "create",
+      status: error instanceof GraphRequestError ? error.status : undefined,
+      graphCode: error instanceof GraphRequestError ? error.graphCode : undefined,
+      operation:
+        error instanceof GraphRequestError ? error.operation : undefined,
+    });
+    if (error instanceof GraphRequestError && error.status === 403) {
+      return {
+        kind: "error",
+        message:
+          "Microsoft did not allow mailbox access. Reconnect Microsoft from Settings.",
+      };
     }
     return {
       kind: "error",

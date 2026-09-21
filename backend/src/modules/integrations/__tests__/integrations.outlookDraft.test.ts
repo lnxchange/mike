@@ -1,19 +1,43 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const graph = vi.hoisted(() => ({
-  addFileAttachment: vi.fn(),
-  createDraftMessage: vi.fn(),
-  createReplyDraft: vi.fn(),
-  findMessageByInternetMessageId: vi.fn(),
-  patchDraftMessage: vi.fn(),
-  searchMailboxMessages: vi.fn(),
-  getGraphAccessToken: vi.fn(),
+const { graph, GraphAuthError, GraphRequestError } = vi.hoisted(() => {
+  class GraphAuthError extends Error {
+    invalidGrant = true;
+  }
+  class GraphRequestError extends Error {
+    readonly status: number;
+    readonly graphCode: string | null;
+    readonly operation: string;
+    constructor(status: number, graphCode: string | null, operation: string) {
+      super("graph_request_failed");
+      this.name = "GraphRequestError";
+      this.status = status;
+      this.graphCode = graphCode;
+      this.operation = operation;
+    }
+  }
+  return {
+    GraphAuthError,
+    GraphRequestError,
+    graph: {
+      addFileAttachment: vi.fn(),
+      createDraftMessage: vi.fn(),
+      createReplyDraft: vi.fn(),
+      findMessageByInternetMessageId: vi.fn(),
+      patchDraftMessage: vi.fn(),
+      searchMailboxMessages: vi.fn(),
+      getGraphAccessToken: vi.fn(),
+    },
+  };
+});
+
+vi.mock("../../../lib/log", () => ({
+  logError: vi.fn(),
 }));
 
 vi.mock("../integrations.graph", () => ({
-  GraphAuthError: class GraphAuthError extends Error {
-    invalidGrant = true;
-  },
+  GraphAuthError,
+  GraphRequestError,
   addFileAttachment: graph.addFileAttachment,
   createDraftMessage: graph.createDraftMessage,
   createReplyDraft: graph.createReplyDraft,
@@ -120,7 +144,7 @@ describe("createOutlookDraft", () => {
     });
     expect(graph.searchMailboxMessages).toHaveBeenCalledWith(
       "token",
-      '"Schedule" AND "alissa@example.com"',
+      "Schedule AND alissa@example.com",
     );
     expect(graph.createReplyDraft).toHaveBeenCalledWith("token", "new");
   });
@@ -138,6 +162,52 @@ describe("createOutlookDraft", () => {
       threadStatus: "ambiguous",
     });
     expect(graph.createReplyDraft).not.toHaveBeenCalled();
+  });
+
+  it("creates a new draft when mailbox search fails", async () => {
+    graph.findMessageByInternetMessageId.mockResolvedValue(null);
+    graph.searchMailboxMessages.mockRejectedValue(
+      new Error("graph_request_failed"),
+    );
+    const result = await createOutlookDraft({} as never, "user-1", input);
+    expect(result).toMatchObject({
+      kind: "outlook_draft_created",
+      threaded: false,
+      threadStatus: "not_found",
+    });
+    expect(graph.createDraftMessage).toHaveBeenCalled();
+  });
+
+  it("creates a new draft when Message-ID lookup fails", async () => {
+    graph.findMessageByInternetMessageId.mockRejectedValue(
+      new Error("graph_request_failed"),
+    );
+    graph.searchMailboxMessages.mockResolvedValue([]);
+    const result = await createOutlookDraft({} as never, "user-1", {
+      ...input,
+      inReplyToInternetMessageId: "<chain-123@example.com>",
+    });
+    expect(result).toMatchObject({
+      kind: "outlook_draft_created",
+      threaded: false,
+      threadStatus: "not_found",
+    });
+    expect(graph.createDraftMessage).toHaveBeenCalled();
+  });
+
+  it("asks the user to reconnect when Graph denies mailbox access", async () => {
+    graph.findMessageByInternetMessageId.mockResolvedValue(null);
+    graph.searchMailboxMessages.mockResolvedValue([]);
+    graph.createDraftMessage.mockRejectedValue(
+      new GraphRequestError(403, "ErrorAccessDenied", "/me/messages"),
+    );
+    await expect(
+      createOutlookDraft({} as never, "user-1", input),
+    ).resolves.toEqual({
+      kind: "error",
+      message:
+        "Microsoft did not allow mailbox access. Reconnect Microsoft from Settings.",
+    });
   });
 
   it("rejects oversized attachments", async () => {

@@ -1,3 +1,4 @@
+import { logError } from "../../lib/log";
 import {
   GRAPH_BASE,
   SIMPLE_ATTACHMENT_BYTES,
@@ -13,6 +14,36 @@ export class GraphAuthError extends Error {
     this.name = "GraphAuthError";
     this.invalidGrant = invalidGrant;
   }
+}
+
+export class GraphRequestError extends Error {
+  readonly status: number;
+  readonly graphCode: string | null;
+  readonly operation: string;
+  constructor(status: number, graphCode: string | null, operation: string) {
+    super("graph_request_failed");
+    this.name = "GraphRequestError";
+    this.status = status;
+    this.graphCode = graphCode;
+    this.operation = operation;
+  }
+}
+
+/** Graph $search is one quoted string. Inner quotes are stripped, not nested. */
+export function graphSearchParameter(query: string): string {
+  return `"${query.replace(/"/g, "").trim()}"`;
+}
+
+function graphOperation(path: string): string {
+  const bare = path.split("?")[0] ?? path;
+  return bare.replace(/\/messages\/[^/]+/g, "/messages/*");
+}
+
+function graphErrorCode(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const error = (payload as { error?: { code?: unknown } }).error;
+  if (!error || typeof error !== "object") return null;
+  return typeof error.code === "string" ? error.code : null;
 }
 
 type TokenResponse = {
@@ -92,7 +123,15 @@ export async function graphJson<T>(
     throw new GraphAuthError("Microsoft authorization expired", true);
   }
   if (!response.ok) {
-    throw new Error("graph_request_failed");
+    const payload = await response.json().catch(() => null);
+    const graphCode = graphErrorCode(payload);
+    const operation = graphOperation(path);
+    logError("integrations/graph", "graph_request_failed", {
+      status: response.status,
+      graphCode,
+      operation,
+    });
+    throw new GraphRequestError(response.status, graphCode, operation);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -190,7 +229,7 @@ export async function searchMailboxMessages(
   query: string,
 ): Promise<GraphMessage[]> {
   const params = new URLSearchParams({
-    $search: `"${query}"`,
+    $search: graphSearchParameter(query),
     $select:
       "id,conversationId,internetMessageId,subject,webLink,receivedDateTime",
     $top: "15",
