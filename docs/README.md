@@ -31,6 +31,9 @@
   setup, sideloading, builds, storage behavior, testing, and troubleshooting
 - [Tamper-evident exports](tamper-evident-exports.md) — document hashes and
   optional signed manifests
+- [Microsoft login and Outlook draft staging](integrations/microsoft-outlook-drafts.md)
+  — approved design for Microsoft OAuth login and review-only Outlook drafts
+  (not implemented yet)
 
 ## Backend
 

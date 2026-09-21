@@ -1,5 +1,18 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Microsoft login and Outlook draft spec parked for a cloud agent
+
+Approved design is in `docs/integrations/microsoft-outlook-drafts.md`. Microsoft
+becomes a login type (parallel to Google) and grants delegated `Mail.ReadWrite`.
+Any user who authorises mail can stage a draft in their own mailbox, attach Mike
+documents, and join a live thread (Message-ID, then subject + participant search).
+Drafts only; never send. Filer stays matter-sync only.
+
+Yule asked this to be committed and pushed so a cloud agent can implement it after
+this machine is off. Do not apply the new migration to production, do not deploy,
+and do not touch the dirty filer tree, until he confirms. Entra app + Supabase
+Azure provider + admin consent are still operator setup.
+
 ## 2026-09-21 — Zoho pull of 263403 looked empty
 
 Yule pulled Zoho matter 263403 (Shout Web Strategy Pty Ltd - T&C review, Deal `3849704000065103001`) at 11:36 AEST. Project `5bc0b4e6-7039-42b1-b96d-e17bef0d01b0` was created. Both pull and Sync now returned 200 (37s / 36s). The filer uploaded the three root PDFs immediately. The upload worker was saturated by the ACCC s155 drain (`41cfbdbf`, ~7k docs; GET `/documents?for=sync` 28–30s, often 499). Processing jobs sat from 11:36 until 11:50. Sync now at 11:45 re-uploaded the same three files because no `external_item_id` rows existed yet. Documents ready since 11:50: LegalRequestForm.pdf, Blue_NRG_-_Social_Ads___Creative_Agreement.pdf, Shout_Master_Terms_and_Conditions__Blue_NRG.pdf. `sharepoint_folder_url` still null (persist ran before docs existed). UI stopped polling on filer Idle, so the page stayed empty.
@@ -8,7 +21,9 @@ Uncommitted, not deployed: `useMatterSyncStatus` keeps polling after Idle while 
 
 Yule waited about 10 minutes after Sync, with an empty folder, until this session queried the matter. The Idle header plus the upload empty state was the lie. The three PDFs have been ready since 11:50 AEST.
 
-Deny-all RLS is now on in production (`gttnqqwqoirwbvalqfce`) for the 21 backend-owned tables that had shipped without it. Migration `20260921_05_backend_table_rls.sql` / applied name `backend_table_rls`. No policies. service_role still reads. Browser grants were already revoked. Not shipped in git until this tree is committed. He later said he waited ~10 minutes, clicked Sync, and the folder stayed empty until this session queried it. The Idle header plus the upload empty state was the lie.
+Deny-all RLS is now on in production (`gttnqqwqoirwbvalqfce`) for the 21 backend-owned tables that had shipped without it. Migration `20260921_05_backend_table_rls.sql` / applied name `backend_table_rls`. No policies. service_role still reads. Browser grants were already revoked.
+
+Shipped `548cd038` on `cursor/setup-supabase-vercel-oss-cad9`. Vercel production `dpl_FQ6TgaJnLnLJjsxBAFE8qjf33FmP` READY + aliased to https://libris-colleague.vercel.app. Did not bounce Railway (no backend runtime change; a redeploy would restart the upload-worker mid s155 drain). Did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`. Did not deploy the dirty filer tree.
 
 ## 2026-09-21 — Filer listItem email mapping and S155 backfill
 
