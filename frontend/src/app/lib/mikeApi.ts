@@ -1609,7 +1609,17 @@ interface LibraryPagination {
 interface LibrarySearchParams extends LibraryPagination {
     search?: string;
     fileType?: string;
-    sortKey?: "name" | "type" | "size" | "version" | "created" | "updated";
+    sortKey?:
+        | "name"
+        | "type"
+        | "size"
+        | "version"
+        | "created"
+        | "updated"
+        | "arrived"
+        | "from"
+        | "to"
+        | "subject";
     sortDirection?: "asc" | "desc";
     signal?: AbortSignal;
 }
