@@ -1,5 +1,14 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Exa fallback and org keys shipped to production
+
+Pushed `ef8699b8` on `cursor/setup-supabase-vercel-oss-cad9`. Applied
+`20260921_07_legal_source_documents` and `20260921_08_org_api_keys` on
+`gttnqqwqoirwbvalqfce`. Railway `mike` `8c3d400d` SUCCESS on SHA
+`ef8699b`, `/health` 200. Vercel production aliased to
+https://libris-colleague.vercel.app. `EXA_API_KEY` is already on Railway.
+Test official Vic/energy reads there. Local `backend/.env` is still empty.
+
 ## 2026-09-21 — Railway EXA_API_KEY works; app code not shipped
 
 Yule set `EXA_API_KEY` on Railway `mike` production. Live Exa Contents
