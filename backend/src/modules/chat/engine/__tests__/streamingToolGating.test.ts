@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The tool loop is the second door into a project's documents. Standing in a
 // CHAT (its creator, or an email on its share list) is not standing in the
@@ -221,5 +221,29 @@ describe("runLLMStream document-mutation gating", () => {
       (call) => call.function.name,
     );
     expect(dispatched).toEqual(["edit_document"]);
+  });
+});
+
+describe("runLLMStream Outlook draft gating", () => {
+  afterEach(() => {
+    delete process.env.MICROSOFT_OAUTH_ENABLED;
+  });
+
+  it("withholds the Outlook draft tool when Microsoft OAuth is disabled", async () => {
+    delete process.env.MICROSOFT_OAUTH_ENABLED;
+    await runLLMStream(baseParams());
+    expect(advertisedToolNames()).not.toContain("create_outlook_draft");
+  });
+
+  it("advertises the Outlook draft tool when Microsoft OAuth is enabled", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    await runLLMStream(baseParams());
+    expect(advertisedToolNames()).toContain("create_outlook_draft");
+  });
+
+  it("keeps the Outlook draft tool for a read-only chat caller", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    await runLLMStream({ ...baseParams(), allowDocumentMutation: false });
+    expect(advertisedToolNames()).toContain("create_outlook_draft");
   });
 });

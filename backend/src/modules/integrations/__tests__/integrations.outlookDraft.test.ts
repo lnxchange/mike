@@ -90,6 +90,37 @@ describe("createOutlookDraft", () => {
     expect(graph.createReplyDraft).toHaveBeenCalledWith("token", "msg-1");
   });
 
+  it("replies when mailbox search finds one conversation", async () => {
+    graph.findMessageByInternetMessageId.mockResolvedValue(null);
+    graph.searchMailboxMessages.mockResolvedValue([
+      {
+        id: "old",
+        conversationId: "conv-1",
+        receivedDateTime: "2026-09-20T00:00:00Z",
+      },
+      {
+        id: "new",
+        conversationId: "conv-1",
+        receivedDateTime: "2026-09-21T00:00:00Z",
+      },
+    ]);
+    graph.createReplyDraft.mockResolvedValue({ id: "reply-draft" });
+    graph.patchDraftMessage.mockResolvedValue({
+      id: "reply-draft",
+      webLink: "https://outlook.office.com/mail/reply-draft",
+    });
+    const result = await createOutlookDraft({} as never, "user-1", input);
+    expect(result).toMatchObject({
+      kind: "outlook_draft_created",
+      threaded: true,
+    });
+    expect(graph.searchMailboxMessages).toHaveBeenCalledWith(
+      "token",
+      '"Schedule" AND "alissa@example.com"',
+    );
+    expect(graph.createReplyDraft).toHaveBeenCalledWith("token", "new");
+  });
+
   it("creates a new draft when two conversations match", async () => {
     graph.findMessageByInternetMessageId.mockResolvedValue(null);
     graph.searchMailboxMessages.mockResolvedValue([

@@ -1,7 +1,6 @@
 # Microsoft login and Outlook draft staging
 
-**Status: implementing.** Cloud agents should implement this spec in this
-repository. Do not apply the new migration to production, do not
+**Status: implemented.** Do not apply the new migration to production, do not
 deploy Railway or Vercel, and do not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`
 or the dirty filer tree, until Yule confirms.
 

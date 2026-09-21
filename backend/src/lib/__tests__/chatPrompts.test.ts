@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildSystemPrompt } from "../../modules/chat/engine/prompts";
 import { COURTLISTENER_SYSTEM_PROMPT } from "../../modules/chat/engine/tools/courtlistenerTools";
+import { OUTLOOK_DRAFT_SYSTEM_PROMPT } from "../../modules/chat/engine/tools/outlookDraftTools";
 
 describe("buildSystemPrompt", () => {
     it("always contains the core identity and rules", () => {
@@ -103,5 +104,11 @@ describe("buildSystemPrompt", () => {
 
     it("defaults to including research tools", () => {
         expect(buildSystemPrompt()).toBe(buildSystemPrompt(true));
+    });
+
+    it("omits Outlook draft instructions unless they are requested", () => {
+        expect(buildSystemPrompt(true)).not.toContain("OUTLOOK DRAFTS:");
+        expect(buildSystemPrompt(true, true)).toContain(OUTLOOK_DRAFT_SYSTEM_PROMPT);
+        expect(buildSystemPrompt(true, true)).toContain("Kind regards,");
     });
 });
