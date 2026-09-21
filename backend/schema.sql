@@ -6368,6 +6368,7 @@ revoke all on public.user_mcp_oauth_states from anon, authenticated;
 revoke all on public.user_mcp_connector_tools from anon, authenticated;
 revoke all on public.user_mcp_tool_audit_logs from anon, authenticated;
 revoke all on public.user_microsoft_tokens from anon, authenticated;
+grant select, insert, update, delete on public.user_microsoft_tokens to service_role;
 revoke all on public.courtlistener_citation_index from anon, authenticated;
 revoke all on public.courtlistener_opinion_cluster_index from anon, authenticated;
 revoke all on public.audit_events from anon, authenticated;

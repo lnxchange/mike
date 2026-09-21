@@ -20,6 +20,7 @@ create table if not exists public.user_microsoft_tokens (
 alter table public.user_microsoft_tokens enable row level security;
 
 revoke all on public.user_microsoft_tokens from anon, authenticated;
+grant select, insert, update, delete on public.user_microsoft_tokens to service_role;
 
 alter table public.documents
   add column if not exists email_internet_message_id text;

@@ -111,7 +111,7 @@ export function MicrosoftConnectionSection() {
                     <PillButtonUI
                         type="button"
                         tone="white"
-                        size="small"
+                        size="sm"
                         disabled={busy}
                         onClick={() => void disconnect()}
                     >
@@ -121,7 +121,7 @@ export function MicrosoftConnectionSection() {
                     <PillButtonUI
                         type="button"
                         tone="black"
-                        size="small"
+                        size="sm"
                         disabled={busy}
                         onClick={() => void connect()}
                     >

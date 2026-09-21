@@ -13,7 +13,9 @@ import {
     logout,
     requestPasswordReset,
     signup,
+    getAuthConfig,
     startGoogleOAuth,
+    startMicrosoftOAuth,
     startSso,
     unenrollMfa,
     updateAuthEmail,
@@ -167,6 +169,37 @@ describe("cookie auth client", () => {
             "/api/auth/oauth",
             "POST",
             { provider: "google", next: "/onboarding" },
+        ],
+        [
+            "Microsoft OAuth",
+            () => startMicrosoftOAuth("/onboarding"),
+            "/api/auth/oauth",
+            "POST",
+            { provider: "azure", next: "/onboarding" },
+        ],
+        [
+            "Microsoft identity link",
+            () =>
+                startMicrosoftOAuth(
+                    "/settings/security",
+                    "link",
+                    "/oauth-dialog.html",
+                ),
+            "/api/auth/oauth",
+            "POST",
+            {
+                provider: "azure",
+                next: "/settings/security",
+                intent: "link",
+                callbackPath: "/oauth-dialog.html",
+            },
+        ],
+        [
+            "auth config",
+            () => getAuthConfig(),
+            "/api/auth/config",
+            undefined,
+            undefined,
         ],
         [
             "code exchange",
