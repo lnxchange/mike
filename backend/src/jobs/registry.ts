@@ -5,6 +5,7 @@ import { handleDocumentCleanup, handleDocumentPrecomputeText, handleConversionCo
 import { handleExtractionExtract, markExtractionJobFailed } from "../modules/tabular/tabular.service";
 import { handleMemoryConsolidation, handleMemoryMatterBrief, markMemoryConsolidationFailed } from "../modules/memory/memory.service";
 import { handleStorageCleanup } from "../lib/dbq/storageCleanup";
+import { handleLegalShelfRefresh } from "../lib/legalSourceShelf";
 import { type DbJobHandlers } from "../lib/dbq/types";
 import { type DbJobFailureHook } from "../lib/dbq/runner";
 
@@ -12,6 +13,7 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
   "audit.chat_turn": handleChatTurnAudit,
   "account.delete": handleAccountDelete,
   "storage.cleanup": handleStorageCleanup,
+  "legal.shelf.refresh": handleLegalShelfRefresh,
   "document.cleanup": handleDocumentCleanup,
   "export.build": handleExportBuild,
   "conversion.convert": handleConversionConvert,
@@ -35,5 +37,6 @@ export {
   handleConversionConvert,
   handleExtractionExtract,
   handleStorageCleanup,
+  handleLegalShelfRefresh,
 };
 export { EXPORT_TYPES, MAX_ZIP_EXPORT_DOCUMENTS, MCP_TOKEN_REFRESH_WINDOW_MS, type ExportType } from "../modules/user/user.service";

@@ -21,6 +21,11 @@ import {
     MCP_TOKEN_REFRESH_WINDOW_MS,
 } from "./jobs/registry";
 import { enqueueDbJob } from "./lib/dbq/enqueue";
+import {
+    enqueueLegalShelfRefreshIfDue,
+    legalShelfCheckIntervalMs,
+    logLegalShelfEnqueueFailure,
+} from "./lib/legalSourceShelf";
 import { runStaleWorkSweep } from "./jobs/staleWork";
 import { startUploadProcessingWorkers } from "./modules/uploads/uploads.service";
 import { uploadProcessingConfiguration } from "./lib/runtimeConfig";
@@ -46,6 +51,8 @@ const MCP_REFRESH_MAX_EXPIRED_AGE_MS = 24 * 60 * 60 * 1000;
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let initialSweep: ReturnType<typeof setTimeout> | null = null;
 let mcpRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let legalShelfTimer: ReturnType<typeof setInterval> | null = null;
+let initialLegalShelf: ReturnType<typeof setTimeout> | null = null;
 let stopUploadWorker: (() => void) | null = null;
 
 /**
@@ -129,6 +136,17 @@ export function startAllWorkers(): void {
         );
     mcpRefreshTimer = setInterval(runMcpRefresh, MCP_REFRESH_SWEEP_INTERVAL_MS);
     mcpRefreshTimer.unref();
+
+    // Energy / Vic legislation shelf: cheap official currency check weekly.
+    // The daily due-check enqueues at most one live db_jobs row.
+    const runLegalShelfDueCheck = () =>
+        void enqueueLegalShelfRefreshIfDue(createServerSupabase()).catch(
+            logLegalShelfEnqueueFailure,
+        );
+    initialLegalShelf = setTimeout(runLegalShelfDueCheck, 60_000);
+    initialLegalShelf.unref();
+    legalShelfTimer = setInterval(runLegalShelfDueCheck, legalShelfCheckIntervalMs());
+    legalShelfTimer.unref();
 }
 
 /** Stop everything gracefully; safe to call more than once. */
@@ -136,9 +154,13 @@ export async function stopAllWorkers(): Promise<void> {
     if (initialSweep) clearTimeout(initialSweep);
     if (sweepTimer) clearInterval(sweepTimer);
     if (mcpRefreshTimer) clearInterval(mcpRefreshTimer);
+    if (initialLegalShelf) clearTimeout(initialLegalShelf);
+    if (legalShelfTimer) clearInterval(legalShelfTimer);
     initialSweep = null;
     sweepTimer = null;
     mcpRefreshTimer = null;
+    initialLegalShelf = null;
+    legalShelfTimer = null;
     if (stopUploadWorker) {
         stopUploadWorker();
         stopUploadWorker = null;

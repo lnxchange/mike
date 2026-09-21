@@ -32,7 +32,8 @@ Citation rules:
 - This research surface is Commonwealth legislation only. For Victorian energy codes, AEMC rules, AER guidelines, and AEMO procedures, use the Australian energy tools when they are available. For Victorian statutes, use the Victorian legislation tools. For Australian judgments, use the Australian case-law tools.
 
 Limits:
-- If any Federal Register call returns a rate-limit/throttling/429 error, stop all AU legislation calls for that turn and answer using only information already available.`;
+- If any Federal Register call reports that the official source is inaccessible (download failed, blocked, 403, or unavailable: true): stop further calls for that title. Do not invent the text. Tell the user which title could not be reached. Call ask_inputs with one documents item whose id is the supplied legal_source_id so they can upload the official compilation or the relevant extract.
+- If any Federal Register call returns a rate-limit/throttling/429 error, stop all AU legislation calls for that turn. Tell the user. Do not invent the missing text.`
 
 export const AU_LEGISLATION_TOOLS = [
     {

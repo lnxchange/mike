@@ -160,7 +160,13 @@ services:
       - ./backend/migrations/20260920_06_user_profile_legal_research_au_energy.sql:/legal-research-au-energy-migration.sql:ro
       - ./backend/migrations/20260920_07_user_profile_legal_research_au_vic_cases.sql:/legal-research-au-vic-cases-migration.sql:ro
       - ./backend/migrations/20260920_08_chat_turn_lease.sql:/chat-turn-lease-migration.sql:ro
+      - ./backend/migrations/20260921_01_project_external_links.sql:/project-external-links-migration.sql:ro
+      - ./backend/migrations/20260921_02_org_memory_files.sql:/org-memory-files-migration.sql:ro
+      - ./backend/migrations/20260921_03_org_library.sql:/org-library-migration.sql:ro
+      - ./backend/migrations/20260921_04_document_email_meta.sql:/document-email-meta-migration.sql:ro
+      - ./backend/migrations/20260921_05_backend_table_rls.sql:/backend-table-rls-migration.sql:ro
       - ./backend/migrations/20260921_06_microsoft_outlook_drafts.sql:/microsoft-outlook-drafts-migration.sql:ro
+      - ./backend/migrations/20260921_07_legal_source_documents.sql:/legal-source-documents-migration.sql:ro
     entrypoint: ["bash", "-c"]
     command:
       - |
@@ -205,7 +211,13 @@ services:
         psql "$$DB" -v ON_ERROR_STOP=1 -f /legal-research-au-energy-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /legal-research-au-vic-cases-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /chat-turn-lease-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /project-external-links-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /org-memory-files-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /org-library-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /document-email-meta-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /backend-table-rls-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /microsoft-outlook-drafts-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /legal-source-documents-migration.sql;
         psql "$$DB" -c "grant usage on schema public to service_role;
           grant all privileges on all tables in schema public to service_role;
           grant all privileges on all sequences in schema public to service_role;

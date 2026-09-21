@@ -11,6 +11,8 @@ storage instead of the infrastructure bundled with Docker Compose.
 - A Cloudflare R2, MinIO, or other S3-compatible bucket
 - At least one supported model-provider API key, or an accessible Ollama server
 - Optional: a CourtListener API token for case-law tools
+- Optional: an Exa API key (`EXA_API_KEY`) so official-source reads can pull
+  page or PDF text when a host blocks Mike's own download
 - LibreOffice when DOC/DOCX-to-PDF conversion is required
 
 ## Database setup
@@ -167,9 +169,14 @@ Deployments must therefore run `backend/src/index.ts`
 without starting its worker.
 
 Model-provider keys and the CourtListener token can be configured globally in
-`backend/.env` or per user under **Settings > API Keys**. A personal key takes
-precedence over the matching globally configured key; removing the personal
-key restores the global key as the fallback.
+`backend/.env`, on an organisation (admins, under the organisation **API keys**
+menu), or per user under **Settings > API Keys**. A personal key takes
+precedence over the matching organisation key, which takes precedence over the
+matching globally configured key. Removing a personal key restores the
+organisation key, then the global key. Invited staff inherit organisation keys
+automatically and do not need their own. `EXA_API_KEY` is server-only
+(there is no per-user Exa setting) and is used only as a fallback after an
+official host blocks a direct download.
 
 ## Authentication email
 

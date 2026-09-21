@@ -8,7 +8,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { Brain, Check, ChevronDown, Loader2, Pencil, Trash2 } from "lucide-react";
+import { Brain, Check, ChevronDown, KeyRound, Loader2, Pencil, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { PageHeader } from "@/app/components/shared/PageHeader";
@@ -63,6 +63,7 @@ import {
 } from "@/app/lib/mikeApi";
 import { ORG_ROLE_LABELS, type OrgRole } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { OrganizationApiKeysModal } from "./OrganizationApiKeysModal";
 import { OrganizationMemoryModal } from "./OrganizationMemoryModal";
 import {
   InviteOrganizationMemberModal,
@@ -125,6 +126,7 @@ export function OrganizationWorkspace({ orgId }: { orgId: string }) {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [apiKeysOpen, setApiKeysOpen] = useState(false);
   const [busyMemberId, setBusyMemberId] = useState<string | null>(null);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [removeSelectedOpen, setRemoveSelectedOpen] = useState(false);
@@ -313,6 +315,11 @@ export function OrganizationWorkspace({ orgId }: { orgId: string }) {
                       title="Organization settings"
                       items={[
                         {
+                          label: "API keys",
+                          icon: KeyRound,
+                          onSelect: () => setApiKeysOpen(true),
+                        },
+                        {
                           label: "Organization memory",
                           icon: Brain,
                           onSelect: () => setMemoryOpen(true),
@@ -416,6 +423,12 @@ export function OrganizationWorkspace({ orgId }: { orgId: string }) {
             orgId={org.id}
             orgName={org.name}
             canEdit={isAdmin}
+          />
+          <OrganizationApiKeysModal
+            open={apiKeysOpen}
+            onClose={() => setApiKeysOpen(false)}
+            orgId={org.id}
+            orgName={org.name}
           />
         </>
       ) : null}

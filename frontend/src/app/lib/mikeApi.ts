@@ -858,7 +858,7 @@ export type ApiKeyProvider =
     | "vercel"
     | "opencode-go"
     | "courtlistener";
-type ApiKeySource = "user" | "env" | null;
+export type ApiKeySource = "user" | "org" | "env" | null;
 export type ApiKeyState = Record<
     ApiKeyProvider,
     {
@@ -944,6 +944,34 @@ export async function saveApiKey(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: apiKey }),
     });
+}
+
+export async function getOrgApiKeyStatus(
+    orgId: string,
+): Promise<ApiKeyStatus> {
+    return apiRequest<ApiKeyStatus>(
+        `/orgs/${encodeURIComponent(orgId)}/api-keys`,
+    );
+}
+
+export async function saveOrgApiKey(
+    orgId: string,
+    provider: ApiKeyProvider,
+    apiKey: string | null,
+    options?: { usePersonal?: boolean },
+): Promise<ApiKeyStatus> {
+    return apiRequest<ApiKeyStatus>(
+        `/orgs/${encodeURIComponent(orgId)}/api-keys/${encodeURIComponent(provider)}`,
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+                options?.usePersonal
+                    ? { use_personal: true }
+                    : { api_key: apiKey },
+            ),
+        },
+    );
 }
 
 interface McpToolSummary {

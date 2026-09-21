@@ -15,11 +15,12 @@ export const AU_ENERGY_SYSTEM_PROMPT = `AUSTRALIAN ENERGY LAW RESEARCH:
 Use the energy tools for Victorian energy codes and determinations, the national energy Laws and rule books, AER guidelines, AEMO procedures, and participating-jurisdiction adoption Acts. This includes the Essential Services Commission Energy Retail Code of Practice, Electricity Distribution Code of Practice, Gas Distribution Code of Practice, Victorian Default Offer, and Compliance and Performance Reporting Guideline; the National Energy Retail Law, National Electricity Law, and National Gas Law (South Australian host Acts) plus NSW, Queensland, and ACT adoption Acts; the AEMC National Energy Retail Rules, National Electricity Rules, and National Gas Rules; AER guidelines such as hardship, Better Bills, retailer authorisation, retail pricing information, retail compliance, and the Default Market Offer; and AEMO procedures such as B2B, MSATS, metering, and power system operating procedures.
 
 Workflow:
-1. Search with au_search_energy to obtain an instrument id (for example esc:ercop, aemc:nerr, sa:nerl, aer:hardship, or aemo:msats). Do not guess ids.
-2. Read the current instrument with au_get_energy. Prefer a clause number (for example 71, 120B, or 3).
-3. For the instrument as it stood on a date, call au_get_energy_as_at with yyyy-mm-dd.
-4. For version history, call au_energy_versions rather than fetching two full instruments.
-5. After an instrument has been fetched in this turn, use au_find_in_energy for short 1-3 word probes. Maximum 3 searches per assistant turn.
+1. If you already know the instrument id (for example esc:ercop, sa:nerl, or aemc:nerr), call au_get_energy with that id. Do not call au_search_energy first.
+2. Search with au_search_energy only when you need an id.
+3. Read with au_get_energy. The clause argument may be a clause number (71, 120B, 3) or a heading or defined term (Definitions, small customer). One get of the instrument plus that phrase is enough. Do not hunt with six tool rounds. If the definition only points to an Act, say so and continue the user's actual task.
+4. For the instrument as it stood on a date, call au_get_energy_as_at with yyyy-mm-dd.
+5. For version history, call au_energy_versions rather than fetching two full instruments.
+6. After an instrument has been fetched in this turn, use au_find_in_energy for short 1-3 word probes. Maximum 3 searches per assistant turn.
 
 Citation rules:
 - Final energy citations must be based on text supplied in this turn. Do not cite a clause from memory, search results, or title metadata alone.
@@ -32,7 +33,10 @@ Citation rules:
 - Victorian statutes and case law are separate research surfaces. Use those tools when they are available.
 
 Limits:
-- If any energy call returns a rate-limit/throttling/429 error, stop all energy calls for that turn and answer using only information already available.`;
+- The server may retrieve official page or PDF text through Exa when the official host blocks a direct download. Cite the official URL returned in citationLinks, never Exa.
+- Instruments already held in the background legislation repository are reused after a currency check against the official version list. If currency_status is unconfirmed, say that the held copy has not been confirmed as current.
+- If any energy call reports that an official source is inaccessible (download failed, blocked, 403, or unavailable: true) and no held copy exists: stop further calls for that instrument. Do not invent the text. Tell the user which instrument could not be reached and its official URL. Call ask_inputs with one documents item whose id is the supplied legal_source_id (legal-source:energy:<instrumentId>) so they can upload the official compilation or the relevant extract. Other reachable official sources may still be used if they independently answer the question.
+- If any energy call returns a rate-limit/throttling/429 error, stop all energy calls for that turn. Tell the user. Do not invent the missing text.`
 
 export const AU_ENERGY_TOOLS = [
     {
@@ -63,18 +67,19 @@ export const AU_ENERGY_TOOLS = [
         function: {
             name: AU_ENERGY_TOOL_NAMES.get,
             description:
-                "Read the current official text of a Victorian energy instrument, national energy Law or adoption Act, AEMC rule book, AER guideline, or AEMO procedure. Prefer a clause or section.",
+                "Read the current official text of a Victorian energy instrument, national energy Law or adoption Act, AEMC rule book, AER guideline, or AEMO procedure. Pass a known id such as esc:ercop directly. Clause may be a number, heading, or defined term.",
             parameters: {
                 type: "object",
                 properties: {
                     instrumentId: {
                         type: "string",
                         description:
-                            "Instrument id from au_search_energy, e.g. esc:ercop or aemc:nerr.",
+                            "Instrument id, e.g. esc:ercop or aemc:nerr. Use a known id directly; search only if you need one.",
                     },
                     clause: {
                         type: "string",
-                        description: "Clause or rule number, e.g. 71, 120B, or 3.",
+                        description:
+                            "Clause number (71, 120B, 3), heading (Definitions), or defined term (small customer).",
                     },
                     page: {
                         type: "integer",
@@ -98,7 +103,7 @@ export const AU_ENERGY_TOOLS = [
                     instrumentId: {
                         type: "string",
                         description:
-                            "Instrument id from au_search_energy, e.g. esc:ercop.",
+                            "Instrument id, e.g. esc:ercop. Use a known id directly.",
                     },
                     date: {
                         type: "string",
@@ -106,7 +111,8 @@ export const AU_ENERGY_TOOLS = [
                     },
                     clause: {
                         type: "string",
-                        description: "Clause or rule number, e.g. 71 or 3.",
+                        description:
+                            "Clause number (71 or 3), heading (Definitions), or defined term (small customer).",
                     },
                     page: {
                         type: "integer",

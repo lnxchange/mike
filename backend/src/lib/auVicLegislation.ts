@@ -1,8 +1,18 @@
+import { fetchExaContents, type ExaContentsFetch } from "./exaContents";
+import {
+    resolveLegalSourceText,
+    type LegalSourceStore,
+} from "./legalSourceStore";
 import {
     cacheForInjectedFetch,
     fetchOfficialBytes,
     type OfficialFileCache,
 } from "./officialFileCache";
+import {
+    looksLikeBotChallenge,
+    officialSourceUnavailableMessage,
+    type OfficialSourceKind,
+} from "./officialSourceAccess";
 import { extractPdfText } from "./pdfText";
 import { devLog } from "./log";
 
@@ -15,6 +25,8 @@ const NUMBER_RE = /Act number\s+(\d+)\s*\/\s*(\d{4})/i;
 
 export class AuVicError extends Error {
     status?: number;
+    kind?: OfficialSourceKind;
+    officialUrl?: string;
 
     constructor(message: string, status?: number) {
         super(message);
@@ -69,6 +81,10 @@ type VicOptions = {
     fetchImpl?: VicFetch;
     extractPdf?: (bytes: ArrayBuffer) => Promise<string>;
     cache?: OfficialFileCache;
+    store?: LegalSourceStore;
+    exaFetch?: ExaContentsFetch;
+    /** Return the whole compilation instead of a section or page. */
+    returnFullText?: boolean;
 };
 
 const KNOWN: Array<{
@@ -743,32 +759,63 @@ export async function getVicLegislationText(
     if (!version) {
         throw new AuVicError(`No ${title.name} version covers ${options.asAt}.`);
     }
-    if (!version.fileUrl) {
+    const fileUrl = version.fileUrl;
+    if (!fileUrl) {
         throw new AuVicError(
             `No authorised file URL could be built for ${title.name} ${version.label}.`,
         );
     }
-    const fetchImpl = options.fetchImpl ?? fetch;
-    const downloaded = await fetchOfficialBytes(
-        (url, init) => request(fetchImpl, url, init),
-        version.fileUrl,
-        {},
-        cacheForInjectedFetch(options.fetchImpl, options.cache),
-    );
-    if (downloaded.status !== 200) {
-        throw new AuVicError(
-            `Could not download the authorised ${title.name} ${version.label}.`,
-            downloaded.status,
-        );
-    }
-    const bytes = downloaded.bytes;
-    const view = bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength,
-    ) as ArrayBuffer;
-    const extract = options.extractPdf ?? extractPdfText;
-    const fullText = await extract(view);
-    const found = findVicSection(fullText, options.section, options.page);
+    const loaded = await resolveLegalSourceText({
+        store: options.store,
+        family: "vic_legislation",
+        instrumentId: title.id,
+        name: title.name,
+        versionLabel: version.label,
+        officialUrl: fileUrl,
+        fetchOfficial: async () => {
+            const fetchImpl = options.fetchImpl ?? fetch;
+            const downloaded = await fetchOfficialBytes(
+                (url, init) => request(fetchImpl, url, init),
+                fileUrl,
+                {},
+                cacheForInjectedFetch(options.fetchImpl, options.cache),
+            );
+            if (
+                downloaded.status !== 200 ||
+                looksLikeBotChallenge(downloaded.bytes)
+            ) {
+                const err = new AuVicError(
+                    officialSourceUnavailableMessage({
+                        name: title.name,
+                        site: "legislation.vic.gov.au",
+                    }),
+                    downloaded.status,
+                );
+                err.kind = "unavailable";
+                err.officialUrl = title.url;
+                throw err;
+            }
+            const bytes = downloaded.bytes;
+            const view = bytes.buffer.slice(
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength,
+            ) as ArrayBuffer;
+            const extract = options.extractPdf ?? extractPdfText;
+            return {
+                fullText: await extract(view),
+                officialUrl: fileUrl,
+            };
+        },
+        fetchExa: options.exaFetch ?? (options.fetchImpl ? undefined : fetchExaContents),
+    });
+    const found = options.returnFullText
+        ? {
+              text: loaded.fullText,
+              section: null,
+              page: 1,
+              pageCount: 1,
+          }
+        : findVicSection(loaded.fullText, options.section, options.page);
     devLog("[au-vic] get", {
         id: title.id,
         version: version.label,
@@ -781,7 +828,7 @@ export async function getVicLegislationText(
         versionLabel: version.label,
         start: version.start,
         end: version.end,
-        url: version.fileUrl,
+        url: loaded.officialUrl || fileUrl,
         ...found,
         attribution:
             "Legislative material © State of Victoria, sourced from legislation.vic.gov.au.",

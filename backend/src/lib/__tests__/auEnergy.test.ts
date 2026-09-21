@@ -8,6 +8,7 @@ import {
     findEnergyClause,
     flattenAemcToc,
     getEnergyText,
+    isEnergyClauseNumber,
     listEnergyVersions,
     parseAemcVersions,
     parseEscVersions,
@@ -180,9 +181,98 @@ describe("energy clause extraction", () => {
         expect(findEnergyClause(text, "71").text).not.toContain("Payment methods");
         expect(findEnergyClause(text).pageCount).toBe(1);
     });
+
+    it("skips a version-history table numbered like clauses", () => {
+        const text = [
+            "Version history",
+            "3 1 October 2024 Minor amendments to numbering.",
+            "4 30 September 2025 Minor administrative amendment",
+            "5 1 February 2026 improving awareness of dispute resolution.",
+            "6 1 July 2026 Amendments to implement consumer reforms.",
+            "3 Application",
+            "This Code applies to the sale of energy.",
+            "5 Definitions",
+            "small customer means a customer who is a small customer under the Act.",
+            "6 Billing",
+        ].join("\n");
+        expect(findEnergyClause(text, "3").text).toContain("This Code applies");
+        expect(findEnergyClause(text, "3").text).not.toContain("Version history");
+        expect(findEnergyClause(text, "5").text).toContain("small customer means");
+        expect(findEnergyClause(text, "5").text).not.toContain("1 February 2026");
+    });
+
+    it("treats a heading or defined term as a lookup, not only a clause number", () => {
+        const text = [
+            "3 Application",
+            "This Code applies to the sale of energy.",
+            "5 Definitions",
+            "small customer means a customer who is a small customer under the Act.",
+            "retailer means a person who is licensed to sell energy.",
+            "6 Billing",
+            "A retailer must issue a bill.",
+        ].join("\n");
+        expect(isEnergyClauseNumber("120B")).toBe(true);
+        expect(isEnergyClauseNumber("Definitions")).toBe(false);
+        expect(findEnergyClause(text, "Definitions").text).toContain(
+            "small customer means",
+        );
+        expect(findEnergyClause(text, "Definitions").text).not.toContain(
+            "A retailer must issue a bill",
+        );
+        expect(findEnergyClause(text, "small customer").text).toContain(
+            "under the Act",
+        );
+        expect(findEnergyClause(text, "small customer").text).not.toContain(
+            "A retailer must issue a bill",
+        );
+        expect(() => findEnergyClause(text, "large customer")).toThrow(
+            /not found/,
+        );
+    });
+});
+
+describe("energy instrument search", () => {
+    it("matches when the query adds a topic after the instrument name", () => {
+        expect(
+            searchEnergyInstruments(
+                "Energy Retail Code of Practice small customer definition",
+            )[0]?.id,
+        ).toBe("esc:ercop");
+        expect(
+            searchEnergyInstruments("National Energy Retail Law small customer")[0]
+                ?.id,
+        ).toBe("sa:nerl");
+    });
 });
 
 describe("getEnergyText against recorded responses", () => {
+    it("reads a defined term from the full ESC compilation", async () => {
+        const fetched = await getEnergyText("esc:ercop", {
+            clause: "small customer",
+            fetchImpl: async (url) => {
+                if (String(url).includes("energy-retail-code-practice") && !String(url).includes(".docx")) {
+                    return new Response(fixture, { status: 200 });
+                }
+                if (String(url).endsWith(".docx")) {
+                    return new Response(Buffer.from("docx"), { status: 200 });
+                }
+                throw new Error(`unexpected ${url}`);
+            },
+            extractDocx: async () =>
+                [
+                    "3 Application",
+                    "This Code applies to the sale of energy.",
+                    "5 Definitions",
+                    "small customer means a customer who is a small customer under the Act.",
+                    "6 Billing",
+                ].join("\n"),
+        });
+        expect(fetched.instrumentId).toBe("esc:ercop");
+        expect(fetched.clause).toBe("small customer");
+        expect(fetched.text).toContain("small customer under the Act");
+        expect(fetched.text).not.toContain("6 Billing");
+    });
+
     it("fetches the current ESC Word compilation", async () => {
         const fetched = await getEnergyText("esc:ercop", {
             clause: "71",
@@ -276,6 +366,46 @@ describe("getEnergyText against recorded responses", () => {
         await expect(getEnergyText("made-up")).rejects.toBeInstanceOf(
             AuEnergyError,
         );
+    });
+
+    it("marks a blocked official download as unavailable", async () => {
+        await expect(
+            getEnergyText("sa:nerl", {
+                clause: "5",
+                fetchImpl: async () =>
+                    new Response("<html><title>Just a moment...</title></html>", {
+                        status: 403,
+                    }),
+            }),
+        ).rejects.toMatchObject({
+            name: "AuEnergyError",
+            kind: "unavailable",
+            status: 403,
+        });
+    });
+
+    it("pulls official text through Exa after a blocked download", async () => {
+        const fetched = await getEnergyText("sa:nerl", {
+            clause: "5",
+            fetchImpl: async () =>
+                new Response("<html><title>Just a moment...</title></html>", {
+                    status: 403,
+                }),
+            exaFetch: async () => ({
+                text: [
+                    "4 Interpretation",
+                    "5 Application",
+                    "This Law applies to the sale and supply of energy.",
+                    "6 Crown",
+                ].join("\n"),
+                url: "https://www.legislation.sa.gov.au/nerl.pdf",
+                title: "NERL",
+            }),
+        });
+        expect(fetched.clause).toBe("5");
+        expect(fetched.text).toContain("sale and supply of energy");
+        expect(fetched.retrievedVia).toBe("exa");
+        expect(fetched.url).toContain("legislation.sa.gov.au");
     });
 
     it("lists ESC versions from the official page", async () => {

@@ -1,3 +1,4 @@
+import { officialSourceUnavailableMessage, type OfficialSourceKind } from "./officialSourceAccess";
 import { devLog } from "./log";
 import {
     findProvision,
@@ -23,6 +24,8 @@ const AFFECT_NAMES = [
 
 export class FrlError extends Error {
     status?: number;
+    kind?: OfficialSourceKind;
+    officialUrl?: string;
 
     constructor(message: string, status?: number) {
         super(message);
@@ -192,11 +195,17 @@ function parseFrlError(status: number, detail: string, path: string): FrlError {
     } catch {
         // Non-JSON bodies stay as-is.
     }
-    if (status === 429) {
-        return new FrlError(
-            `Federal Register of Legislation rate limit exceeded. ${message || "Try again shortly."}`,
+    if (status === 429 || status === 403 || status === 401 || status === 503) {
+        const err = new FrlError(
+            officialSourceUnavailableMessage({
+                name: "this Federal Register title",
+                site: "legislation.gov.au",
+            }),
             status,
         );
+        err.kind = "unavailable";
+        err.officialUrl = FRL_WEB_BASE;
+        return err;
     }
     return new FrlError(
         message

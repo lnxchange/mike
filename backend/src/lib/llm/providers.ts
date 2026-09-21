@@ -87,7 +87,7 @@ function requiredKey(
     "";
   if (!key) {
     throw new Error(
-      `${label} API key is not configured. Set ${environmentVariable} or add a user ${label} key.`,
+      `${label} API key is not configured. Set ${environmentVariable}, add an organisation ${label} key, or add a user ${label} key.`,
     );
   }
   return key;
@@ -118,7 +118,7 @@ function routerKey(provider: RouterProvider, apiKeys?: UserApiKeys): string {
     routerUserKey(provider, apiKeys)?.trim() || routerEnvironmentKey(provider);
   if (!key) {
     throw new Error(
-      `${ROUTER_LABELS[provider]} API key is not configured. Set ${ROUTER_KEY_ENV_HINTS[provider]} or add a user ${ROUTER_LABELS[provider]} key.`,
+      `${ROUTER_LABELS[provider]} API key is not configured. Set ${ROUTER_KEY_ENV_HINTS[provider]}, add an organisation ${ROUTER_LABELS[provider]} key, or add a user ${ROUTER_LABELS[provider]} key.`,
     );
   }
   return key;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   INCOMPLETE_TURN_MESSAGE,
+  SOURCE_UNAVAILABLE_TURN_MESSAGE,
   isIncompleteDeliverableTurn,
   withIncompleteTurnEvent,
 } from "../incompleteTurn";
@@ -92,5 +93,22 @@ describe("isIncompleteDeliverableTurn", () => {
         { type: "content", text: "Here is the email." },
       ]),
     ).toHaveLength(1);
+  });
+
+  it("asks for an upload when an official source was inaccessible", () => {
+    const events: AssistantEvent[] = [
+      {
+        type: "au_get_energy",
+        title_id: "sa:nerl",
+        section: "5",
+        error: "I could not download the official text of National Energy Retail Law.",
+        safe_to_display: true,
+      },
+    ];
+    expect(withIncompleteTurnEvent(events).at(-1)).toEqual({
+      type: "error",
+      message: SOURCE_UNAVAILABLE_TURN_MESSAGE,
+      safe_to_display: true,
+    });
   });
 });

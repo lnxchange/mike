@@ -1,11 +1,25 @@
+import { mapWithConcurrency } from "./concurrency";
 import { extractDocxBodyText } from "./docxTrackedChanges";
+import { fetchExaContents, type ExaContentsFetch } from "./exaContents";
+import {
+    resolveLegalSourceText,
+    type LegalSourceStore,
+} from "./legalSourceStore";
 import {
     cacheForInjectedFetch,
     fetchOfficialBytes,
     type OfficialFileCache,
 } from "./officialFileCache";
+import {
+    looksLikeBotChallenge,
+    officialSourceUnavailableMessage,
+    type OfficialSourceKind,
+} from "./officialSourceAccess";
 import { extractPdfText } from "./pdfText";
 import { devLog } from "./log";
+
+/** AEMC books larger than this are not snapshotted into the shelf. */
+export const AEMC_SNAPSHOT_MAX_NODES = 500;
 
 const ESC_ORIGIN = "https://www.esc.vic.gov.au";
 const AEMC_API = "https://energy-rules.aemc.gov.au/api/v1";
@@ -31,12 +45,30 @@ const MONTHS: Record<string, string> = {
 
 export class AuEnergyError extends Error {
     status?: number;
+    kind?: OfficialSourceKind;
+    officialUrl?: string;
 
     constructor(message: string, status?: number) {
         super(message);
         this.name = "AuEnergyError";
         this.status = status;
     }
+}
+
+function unavailableEnergyDownload(
+    instrument: EnergyInstrument,
+    status?: number,
+): AuEnergyError {
+    const err = new AuEnergyError(
+        officialSourceUnavailableMessage({
+            name: instrument.name,
+            site: new URL(instrument.landingUrl).hostname,
+        }),
+        status,
+    );
+    err.kind = "unavailable";
+    err.officialUrl = instrument.landingUrl;
+    return err;
 }
 
 export type EnergyFetch = (
@@ -90,6 +122,8 @@ export type EnergyText = {
     pageCount: number;
     text: string;
     attribution: string;
+    retrievedVia?: "official" | "exa" | "store" | "upload";
+    currencyStatus?: "current" | "unconfirmed";
 };
 
 export const ENERGY_INSTRUMENTS: EnergyInstrument[] = [
@@ -540,6 +574,12 @@ type EnergyOptions = {
     extractDocx?: (bytes: Buffer) => Promise<string>;
     extractPdf?: (bytes: ArrayBuffer) => Promise<string>;
     cache?: OfficialFileCache;
+    store?: LegalSourceStore;
+    exaFetch?: ExaContentsFetch;
+    /** Fetch every AEMC TOC node and store the concatenated book. */
+    fullSnapshot?: boolean;
+    /** Return the whole instrument instead of a clause or page. */
+    returnFullText?: boolean;
 };
 
 function defaultFetch(input: string, init?: RequestInit): Promise<Response> {
@@ -598,22 +638,26 @@ export function searchEnergyInstruments(
     const needle = query.trim().toLowerCase();
     if (!needle) return ENERGY_INSTRUMENTS.slice(0, limit);
     const scored = ENERGY_INSTRUMENTS.map((instrument) => {
+        const name = instrument.name.toLowerCase();
+        const aliases = instrument.aliases.map((alias) => alias.toLowerCase());
         const haystack = [
             instrument.id,
-            instrument.name,
+            name,
             instrument.jurisdiction,
             instrument.publisher,
-            ...instrument.aliases,
-        ]
-            .join(" ")
-            .toLowerCase();
+            ...aliases,
+        ].join(" ");
         const exact =
             instrument.id === needle ||
-            instrument.name.toLowerCase() === needle ||
-            instrument.aliases.includes(needle);
+            name === needle ||
+            aliases.includes(needle);
+        const contained =
+            haystack.includes(needle) ||
+            needle.includes(name) ||
+            aliases.some((alias) => alias.length > 4 && needle.includes(alias));
         return {
             instrument,
-            score: exact ? 0 : haystack.includes(needle) ? 1 : 99,
+            score: exact ? 0 : contained ? 1 : 99,
         };
     })
         .filter((row) => row.score < 99)
@@ -751,6 +795,132 @@ function stripHtml(value: string): string {
         .trim();
 }
 
+const VERSION_HISTORY_AFTER = new RegExp(
+    `^\\s*\\d{1,2}\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+20\\d{2}\\b`,
+    "i",
+);
+const CLAUSE_HEADING =
+    /(?:^|\n)\s*(?:clause\s+)?(\d+[A-Za-z]?(?:\.\d+)*)(?!\()(?=\s|[—–-])([^\n]*)/gi;
+
+function isVersionHistoryHeading(afterNumber: string): boolean {
+    return VERSION_HISTORY_AFTER.test(afterNumber);
+}
+
+function collectEnergyHeadings(
+    text: string,
+): { index: number; number: string }[] {
+    const heading = new RegExp(CLAUSE_HEADING.source, "gi");
+    return [...text.matchAll(heading)]
+        .filter((match) => !isVersionHistoryHeading(match[2] ?? ""))
+        .map((match) => ({
+            index: match.index ?? 0,
+            number: (match[1] ?? "").toLowerCase(),
+        }));
+}
+
+export function isEnergyClauseNumber(value: string): boolean {
+    return /^\d+[A-Za-z]?(?:\.\d+)*$/.test(value.trim());
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sliceToNextHeading(text: string, from: number, after = from): string {
+    const next = collectEnergyHeadings(text).find(
+        (heading) => heading.index > after,
+    );
+    const to = next?.index ?? Math.min(text.length, from + 4000);
+    return text.slice(from, to).trim();
+}
+
+function findEnergyDefinition(
+    text: string,
+    phrase: string,
+): { text: string; clause: string; page: number; pageCount: number } | null {
+    const escaped = escapeRegExp(phrase);
+    const re = new RegExp(
+        `(^|\\n)[ \\t]*["“”']?${escaped}["“”']?[ \\t]*(?:\\n[ \\t]*)?(?:means|has the (?:same )?meaning|includes)\\b[\\s\\S]{0,1800}`,
+        "i",
+    );
+    const match = re.exec(text);
+    if (!match) return null;
+    const from = match.index + (match[1] ? match[1].length : 0);
+    return {
+        text: sliceToNextHeading(text, from, from + phrase.length),
+        clause: phrase,
+        page: 1,
+        pageCount: 1,
+    };
+}
+
+function findEnergyHeadingPhrase(
+    text: string,
+    phrase: string,
+): { text: string; clause: string; page: number; pageCount: number } | null {
+    const compactPhrase = compactToken(phrase);
+    if (compactPhrase.length < 4) return null;
+    const lines = text.split("\n");
+    let offset = 0;
+    for (const line of lines) {
+        const compactLine = compactToken(line);
+        const looksShort = line.trim().length > 0 && line.trim().length <= 90;
+        const numbered = /^(?:clause\s+)?\d+[A-Za-z]?(?:\.\d+)*\s+\S/i.test(
+            line.trim(),
+        );
+        if (
+            compactLine.includes(compactPhrase) &&
+            (looksShort || numbered) &&
+            compactLine.length <= compactPhrase.length + 24
+        ) {
+            const passage = sliceToNextHeading(text, offset, offset + line.length);
+            if (passage) {
+                return {
+                    text: passage,
+                    clause: phrase,
+                    page: 1,
+                    pageCount: 1,
+                };
+            }
+        }
+        offset += line.length + 1;
+    }
+    return null;
+}
+
+function findEnergyLoosePhrase(
+    text: string,
+    phrase: string,
+): { text: string; clause: string; page: number; pageCount: number } | null {
+    const idx = text.toLowerCase().indexOf(phrase.toLowerCase());
+    if (idx < 0) return null;
+    const paraStart = text.lastIndexOf("\n\n", idx);
+    const from = paraStart >= 0 ? paraStart + 2 : Math.max(0, idx - 200);
+    return {
+        text: sliceToNextHeading(text, from, idx),
+        clause: phrase,
+        page: 1,
+        pageCount: 1,
+    };
+}
+
+function findEnergyPhrase(
+    text: string,
+    phrase: string,
+): { text: string; clause: string | null; page: number; pageCount: number } {
+    const wanted = phrase.trim();
+    const found =
+        findEnergyDefinition(text, wanted) ??
+        findEnergyHeadingPhrase(text, wanted) ??
+        findEnergyLoosePhrase(text, wanted);
+    if (found) return found;
+    const err = new AuEnergyError(
+        `"${wanted}" was not found in the fetched instrument.`,
+    );
+    err.kind = "not_found";
+    throw err;
+}
+
 export function findEnergyClause(
     text: string,
     clause?: string | null,
@@ -769,19 +939,24 @@ export function findEnergyClause(
         };
     }
     const wanted = clause.trim().replace(/^cl(?:ause)?\s+/i, "");
-    const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const heading = new RegExp(
-        `(^|\\n)\\s*(?:clause\\s+)?${escaped}\\b[\\s\\S]*?(?=\\n\\s*(?:clause\\s+)?(?!${escaped}\\b)\\d+[A-Za-z]?(?:\\.\\d+)*\\s+[A-Za-z]|$)`,
-        "i",
+    if (!isEnergyClauseNumber(wanted)) {
+        return findEnergyPhrase(text, wanted);
+    }
+    const headings = collectEnergyHeadings(text);
+    const startAt = headings.findIndex(
+        (heading) => heading.number === wanted.toLowerCase(),
     );
-    const match = text.match(heading);
-    if (!match) {
-        throw new AuEnergyError(
+    if (startAt < 0) {
+        const err = new AuEnergyError(
             `Clause ${wanted} was not found in the fetched instrument.`,
         );
+        err.kind = "not_found";
+        throw err;
     }
+    const from = headings[startAt]!.index;
+    const to = headings[startAt + 1]?.index ?? text.length;
     return {
-        text: match[0].trim(),
+        text: text.slice(from, to).trim(),
         clause: wanted,
         page: 1,
         pageCount: 1,
@@ -819,10 +994,14 @@ async function readJson(
 ): Promise<unknown> {
     const response = await request(fetchImpl, url);
     if (response.status === 429) {
-        throw new AuEnergyError(
-            "The energy source rate-limited this request. Stop further energy calls this turn.",
+        const err = new AuEnergyError(
+            officialSourceUnavailableMessage({
+                name: "this energy instrument",
+            }),
             429,
         );
+        err.kind = "unavailable";
+        throw err;
     }
     if (!response.ok) {
         throw new AuEnergyError(
@@ -1107,6 +1286,12 @@ export async function listEnergyVersions(
     return listRegulatorVersions(instrument, options);
 }
 
+function energyExaFetch(options: EnergyOptions): ExaContentsFetch | undefined {
+    if (options.exaFetch) return options.exaFetch;
+    if (options.fetchImpl) return undefined;
+    return fetchExaContents;
+}
+
 async function getEscText(
     instrument: EnergyInstrument,
     version: EnergyVersion,
@@ -1114,40 +1299,76 @@ async function getEscText(
     clause?: string,
     page?: number,
 ): Promise<EnergyText> {
-    if (!version.downloadUrl) {
+    const officialUrl = version.downloadUrl ?? instrument.fileUrl ?? instrument.landingUrl;
+    if (!version.downloadUrl && !options.store) {
         throw new AuEnergyError(
             `No official file is listed for ${instrument.name} ${version.label}.`,
         );
     }
-    const fetchImpl = options.fetchImpl ?? defaultFetch;
-    const downloaded = await fetchOfficialBytes(
-        (url, init) => request(fetchImpl, url, init),
-        version.downloadUrl,
-        {},
-        cacheForInjectedFetch(options.fetchImpl, options.cache),
-    );
-    if (downloaded.status !== 200) {
-        throw new AuEnergyError(
-            `Could not download ${instrument.name} ${version.label}.`,
-            downloaded.status,
-        );
-    }
-    const fullText = await extractEnergyFile(
-        version.downloadUrl,
-        downloaded.bytes,
-        options,
-    );
-    const found = findEnergyClause(fullText, clause, page);
+    const loaded = await resolveLegalSourceText({
+        store: options.store,
+        family: "energy",
+        instrumentId: instrument.id,
+        name: instrument.name,
+        versionLabel: version.label,
+        officialUrl,
+        fetchOfficial: async () => {
+            if (!version.downloadUrl) {
+                throw unavailableEnergyDownload(instrument);
+            }
+            const fetchImpl = options.fetchImpl ?? defaultFetch;
+            let downloaded;
+            try {
+                downloaded = await fetchOfficialBytes(
+                    (url, init) => request(fetchImpl, url, init),
+                    version.downloadUrl,
+                    {},
+                    cacheForInjectedFetch(options.fetchImpl, options.cache),
+                );
+            } catch (err) {
+                if (err instanceof AuEnergyError) throw err;
+                throw unavailableEnergyDownload(instrument);
+            }
+            if (
+                downloaded.status !== 200 ||
+                looksLikeBotChallenge(downloaded.bytes)
+            ) {
+                throw unavailableEnergyDownload(instrument, downloaded.status);
+            }
+            return {
+                fullText: await extractEnergyFile(
+                    version.downloadUrl,
+                    downloaded.bytes,
+                    options,
+                ),
+                officialUrl: version.downloadUrl,
+            };
+        },
+        fetchExa: energyExaFetch(options),
+    });
+    const found = options.returnFullText
+        ? {
+              text: loaded.fullText,
+              clause: null,
+              page: 1,
+              pageCount: 1,
+          }
+        : findEnergyClause(loaded.fullText, clause, page);
     return {
         instrumentId: instrument.id,
         name: instrument.name,
         asAt: version.isLatest ? null : version.start,
-        versionLabel: version.label,
+        versionLabel: loaded.versionLabel ?? version.label,
         start: version.start,
         end: version.end,
-        url: version.downloadUrl,
+        url: loaded.officialUrl || officialUrl,
         ...found,
         attribution: attribution(instrument),
+        retrievedVia: loaded.retrievedVia,
+        currencyStatus:
+            loaded.currencyStatus === "superseded"
+                ? "unconfirmed"
+                : loaded.currencyStatus,
     };
 }
 
@@ -1170,6 +1391,29 @@ async function getAemcText(
     );
     if (clause) {
         const node = findAemcTocNode(toc, clause);
+        if (!node && options.store && !isEnergyClauseNumber(clause)) {
+            const held = await options.store.lookupLatest("energy", instrument.id);
+            if (held?.fullText) {
+                await options.store.touch(held.id);
+                const found = findEnergyClause(held.fullText, clause, page);
+                return {
+                    instrumentId: instrument.id,
+                    name: instrument.name,
+                    asAt: version.isLatest ? null : version.start,
+                    versionLabel: held.versionLabel ?? version.label,
+                    start: version.start,
+                    end: version.end,
+                    url: held.officialUrl || version.url,
+                    ...found,
+                    attribution: attribution(instrument),
+                    retrievedVia: "store",
+                    currencyStatus:
+                        held.currencyStatus === "superseded"
+                            ? "unconfirmed"
+                            : held.currencyStatus,
+                };
+            }
+        }
         if (!node) {
             throw new AuEnergyError(
                 `Clause ${clause} was not found in ${instrument.name} ${version.label}.`,
@@ -1236,12 +1480,40 @@ export async function getEnergyText(
             `"${instrumentId}" is not a known Australian energy instrument. Search first.`,
         );
     }
-    const versions =
-        instrument.source === "aemc"
-            ? await listAemcVersions(instrument, options, options.asAt)
-            : instrument.source === "esc"
-              ? await listEscVersions(instrument, options)
-              : await listRegulatorVersions(instrument, options);
+    let versions: EnergyVersion[] = [];
+    try {
+        versions =
+            instrument.source === "aemc"
+                ? await listAemcVersions(instrument, options, options.asAt)
+                : instrument.source === "esc"
+                  ? await listEscVersions(instrument, options)
+                  : await listRegulatorVersions(instrument, options);
+    } catch (err) {
+        if (instrument.source === "aemc" || !options.store) throw err;
+        const held = await options.store.lookupLatest("energy", instrument.id);
+        if (!held) throw err;
+        const found = options.returnFullText
+            ? {
+                  text: held.fullText,
+                  clause: null,
+                  page: 1,
+                  pageCount: 1,
+              }
+            : findEnergyClause(held.fullText, options.clause, options.page);
+        return {
+            instrumentId: instrument.id,
+            name: instrument.name,
+            asAt: options.asAt ?? null,
+            versionLabel: held.versionLabel,
+            start: null,
+            end: null,
+            url: held.officialUrl || instrument.landingUrl,
+            ...found,
+            attribution: attribution(instrument),
+            retrievedVia: "store",
+            currencyStatus: "unconfirmed",
+        };
+    }
     const version = options.asAt
         ? selectEnergyVersionAsAt(versions, options.asAt)
         : versions[0];
@@ -1256,9 +1528,93 @@ export async function getEnergyText(
         clause: options.clause ?? null,
     });
     if (instrument.source === "aemc") {
+        if (options.fullSnapshot) {
+            return getAemcSnapshotText(instrument, version, options);
+        }
         return getAemcText(instrument, version, options, options.clause, options.page);
     }
     return getEscText(instrument, version, options, options.clause, options.page);
+}
+
+async function getAemcSnapshotText(
+    instrument: EnergyInstrument,
+    version: EnergyVersion,
+    options: EnergyOptions,
+): Promise<EnergyText> {
+    if (!version.aemcVersionId) {
+        throw new AuEnergyError(`Missing AEMC version id for ${instrument.name}.`);
+    }
+    const fetchImpl = options.fetchImpl ?? defaultFetch;
+    const toc = flattenAemcToc(
+        await readJson(
+            fetchImpl,
+            `${AEMC_API}/rules/${version.aemcVersionId}/toc`,
+        ),
+    );
+    if (toc.length > AEMC_SNAPSHOT_MAX_NODES) {
+        throw new AuEnergyError(
+            `${instrument.name} has ${toc.length} AEMC nodes; snapshot skipped as impractical.`,
+        );
+    }
+    const officialUrl = version.url;
+    const loaded = await resolveLegalSourceText({
+        store: options.store,
+        family: "energy",
+        instrumentId: instrument.id,
+        name: instrument.name,
+        versionLabel: version.label,
+        officialUrl,
+        fetchOfficial: async () => {
+            const parts = await mapWithConcurrency(toc, 5, async (node) => {
+                try {
+                    const payload = await readJson(
+                        fetchImpl,
+                        `${AEMC_API}/rules/${version.aemcVersionId}/content/${node.id}`,
+                    );
+                    const data =
+                        asRecord(asRecord(payload)?.data) ?? asRecord(payload);
+                    const html =
+                        (typeof data?.content === "string" && data.content) ||
+                        (typeof data?.description === "string" &&
+                            data.description) ||
+                        "";
+                    const body = stripHtml(html);
+                    return body
+                        ? `${node.index} ${node.title}\n${body}`.trim()
+                        : "";
+                } catch {
+                    return "";
+                }
+            });
+            const fullText = parts.filter(Boolean).join("\n\n");
+            if (!fullText.trim()) {
+                throw new AuEnergyError(
+                    `No AEMC content was returned for ${instrument.name}.`,
+                );
+            }
+            return { fullText, officialUrl };
+        },
+        fetchExa: energyExaFetch(options),
+    });
+    return {
+        instrumentId: instrument.id,
+        name: instrument.name,
+        asAt: version.isLatest ? null : version.start,
+        versionLabel: loaded.versionLabel ?? version.label,
+        start: version.start,
+        end: version.end,
+        url: loaded.officialUrl || officialUrl,
+        clause: null,
+        page: 1,
+        pageCount: 1,
+        text: loaded.fullText,
+        attribution: attribution(instrument),
+        retrievedVia: loaded.retrievedVia,
+        currencyStatus:
+            loaded.currencyStatus === "superseded"
+                ? "unconfirmed"
+                : loaded.currencyStatus,
+    };
 }
 
 async function extractEnergyFile(

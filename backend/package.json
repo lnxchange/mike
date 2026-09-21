@@ -10,6 +10,7 @@
     "typecheck:contracts": "tsc -p ../packages/contracts/tsconfig.json",
     "verify": "npm run typecheck && npm run build",
     "check:supabase": "tsx scripts/check-supabase.ts",
+    "seed:energy-shelf": "tsx scripts/seed-energy-shelf.ts",
     "start": "node dist/index.js",
     "sync:workflows": "node dist/jobs/syncWorkflows.js",
     "test": "vitest run",

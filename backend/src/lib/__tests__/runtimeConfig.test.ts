@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  exaConfiguration,
   filerConfiguration,
   uploadConversionTimeoutMs,
   uploadJobWallClockMs,
@@ -188,5 +189,14 @@ describe("filer (matter sync) configuration", () => {
       }).configured,
     ).toBe(false);
     expect(filerConfiguration({}).configured).toBe(false);
+  });
+});
+
+describe("Exa configuration", () => {
+  it("is optional and trims the API key", () => {
+    expect(exaConfiguration({}).configured).toBe(false);
+    expect(
+      exaConfiguration({ EXA_API_KEY: "  exa-key  " }),
+    ).toEqual({ configured: true, apiKey: "exa-key" });
   });
 });

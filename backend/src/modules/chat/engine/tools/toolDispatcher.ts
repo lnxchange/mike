@@ -27,6 +27,11 @@ import {
   getAuCase,
   searchAuCases,
 } from "../../../../lib/auCaseLaw";
+import { officialSourceToolFailure } from "../../../../lib/officialSourceAccess";
+import {
+  createLegalSourceStore,
+  legalSourceAskId,
+} from "../../../../lib/legalSourceStore";
 import { normalizeCaseDocument } from "../../../../lib/sourceDocuments";
 import {
   COURTLISTENER_TOOL_NAMES,
@@ -498,6 +503,10 @@ export async function runToolCalls(
     | OutlookDraftCreatedEvent
     | OutlookAuthRequiredEvent
   )[] = [];
+  const legalSourceStore = createLegalSourceStore(db, {
+    userId,
+    projectId: projectId ?? null,
+  });
   const courtState: CourtlistenerTurnState = courtlistenerState ?? {
     casesByClusterId: new Map(),
   };
@@ -1718,12 +1727,15 @@ export async function runToolCalls(
           }),
         });
       } catch (err) {
-        const error =
+        const failure = officialSourceToolFailure(
+          err,
           err instanceof FrlError
             ? err.message
             : err instanceof Error
               ? err.message
-              : "Federal Register read failed.";
+              : "Federal Register read failed.",
+          { legalSourceId: legalSourceAskId("legislation", titleId) },
+        );
         const event: AuLegislationToolEvent =
           eventType === "au_get_legislation_as_at"
             ? {
@@ -1731,20 +1743,22 @@ export async function runToolCalls(
                 title_id: titleId,
                 date: asAt ?? "",
                 section: section ?? null,
-                error,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
               }
             : {
                 type: "au_get_legislation",
                 title_id: titleId,
                 section: section ?? null,
-                error,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
               };
         write(`data: ${JSON.stringify(event)}\n\n`);
         auLegislationEvents.push(event);
         toolResults.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({ error }),
+          content: failure.content,
         });
       }
     } else if (tc.function.name === AU_LEGISLATION_TOOL_NAMES.versions) {
@@ -1946,6 +1960,7 @@ export async function runToolCalls(
           asAt,
           clause,
           page: typeof args.page === "number" ? args.page : undefined,
+          store: legalSourceStore,
         });
         const record = upsertAuEnergy(auState, fetched);
         legislationCitationEvents.push(energyCitationEventFromRecord(record));
@@ -1990,15 +2005,20 @@ export async function runToolCalls(
             ],
             text: fetched.text,
             attribution: fetched.attribution,
+            retrieved_via: fetched.retrievedVia ?? null,
+            currency_status: fetched.currencyStatus ?? null,
           }),
         });
       } catch (err) {
-        const error =
+        const failure = officialSourceToolFailure(
+          err,
           err instanceof AuEnergyError
             ? err.message
             : err instanceof Error
               ? err.message
-              : "Energy instrument read failed.";
+              : "Energy instrument read failed.",
+          { legalSourceId: legalSourceAskId("energy", instrumentId) },
+        );
         const event: AuEnergyToolEvent =
           eventType === "au_get_energy_as_at"
             ? {
@@ -2006,20 +2026,22 @@ export async function runToolCalls(
                 title_id: instrumentId,
                 date: asAt ?? "",
                 section: clause ?? null,
-                error,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
               }
             : {
                 type: "au_get_energy",
                 title_id: instrumentId,
                 section: clause ?? null,
-                error,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
               };
         write(`data: ${JSON.stringify(event)}\n\n`);
         auEnergyEvents.push(event);
         toolResults.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({ error }),
+          content: failure.content,
         });
       }
     } else if (tc.function.name === AU_ENERGY_TOOL_NAMES.versions) {
@@ -2221,6 +2243,7 @@ export async function runToolCalls(
           asAt,
           section,
           page: typeof args.page === "number" ? args.page : undefined,
+          store: legalSourceStore,
         });
         const record = upsertAuVicLegislation(auState, fetched);
         legislationCitationEvents.push(vicCitationEventFromRecord(record));
@@ -2268,12 +2291,15 @@ export async function runToolCalls(
           }),
         });
       } catch (err) {
-        const error =
+        const failure = officialSourceToolFailure(
+          err,
           err instanceof AuVicError
             ? err.message
             : err instanceof Error
               ? err.message
-              : "Victorian legislation read failed.";
+              : "Victorian legislation read failed.",
+          { legalSourceId: legalSourceAskId("vic_legislation", titleId) },
+        );
         const event: AuVicLegislationToolEvent =
           eventType === "au_get_vic_legislation_as_at"
             ? {
@@ -2281,20 +2307,22 @@ export async function runToolCalls(
                 title_id: titleId,
                 date: asAt ?? "",
                 section: section ?? null,
-                error,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
               }
             : {
                 type: "au_get_vic_legislation",
                 title_id: titleId,
                 section: section ?? null,
-                error,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
               };
         write(`data: ${JSON.stringify(event)}\n\n`);
         auVicLegislationEvents.push(event);
         toolResults.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({ error }),
+          content: failure.content,
         });
       }
     } else if (tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.versions) {
@@ -2480,6 +2508,7 @@ export async function runToolCalls(
         const fetched = await getAuCase(caseId, {
           paragraph,
           page: typeof args.page === "number" ? args.page : undefined,
+          store: legalSourceStore,
         });
         const record = upsertAuCase(auState, fetched);
         legislationCitationEvents.push(caseCitationEventFromAuRecord(record));
@@ -2515,24 +2544,28 @@ export async function runToolCalls(
           }),
         });
       } catch (err) {
-        const error =
+        const failure = officialSourceToolFailure(
+          err,
           err instanceof AuCaseError
             ? err.message
             : err instanceof Error
               ? err.message
-              : "Australian case read failed.";
+              : "Australian case read failed.",
+          { legalSourceId: legalSourceAskId("case_law", caseId) },
+        );
         const event: AuCaseLawToolEvent = {
           type: "au_get_case",
           title_id: caseId,
           section: paragraph ?? null,
-          error,
+          error: failure.error,
+          ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
         };
         write(`data: ${JSON.stringify(event)}\n\n`);
         auCaseLawEvents.push(event);
         toolResults.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({ error }),
+          content: failure.content,
         });
       }
     } else if (tc.function.name === AU_CASE_LAW_TOOL_NAMES.findIn) {

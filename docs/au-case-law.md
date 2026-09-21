@@ -47,5 +47,9 @@ If a tool reports a rate limit, wait and retry. The assistant should stop
 further Australian case-law calls for that turn and answer from text
 already fetched.
 
+If a court host blocks a PDF download, the server may pull the judgment
+through Exa Contents when `EXA_API_KEY` is set, or reuse a held copy.
+Cite the official court URL, not Exa.
+
 If a case id is rejected, search again rather than constructing an id.
 Ids look like `nsw:<decision-id>`, `hca:2024:12`, or `fca:[2024]FCA1`.

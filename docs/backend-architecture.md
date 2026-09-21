@@ -121,6 +121,9 @@ BullMQ workers are transport adapters to those same domain operations.
 
 Stale-work sweeps live in documents and tabular. `jobs/maintenance.ts` composes
 them. Account erasure and export orchestration belong to the user module.
+`legal.shelf.refresh` is a lib helper (`legalSourceShelf.ts`) enrolled from
+the worker runtime: a weekly currency check of held energy and Victorian
+instruments, queued through the existing `db_jobs` table.
 
 ## Shared operations and caller-specific policy
 

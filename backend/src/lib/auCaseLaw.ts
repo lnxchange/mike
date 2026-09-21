@@ -1,8 +1,14 @@
+import { fetchExaContents, type ExaContentsFetch } from "./exaContents";
+import type { LegalSourceStore } from "./legalSourceStore";
 import {
     cacheForInjectedFetch,
     fetchOfficialBytes,
     type OfficialFileCache,
 } from "./officialFileCache";
+import {
+    officialSourceUnavailableMessage,
+    type OfficialSourceKind,
+} from "./officialSourceAccess";
 import { extractPdfText } from "./pdfText";
 import { devLog } from "./log";
 
@@ -17,6 +23,8 @@ const VSC_JUDGMENTS =
 
 export class AuCaseError extends Error {
     status?: number;
+    kind?: OfficialSourceKind;
+    officialUrl?: string;
 
     constructor(message: string, status?: number) {
         super(message);
@@ -58,6 +66,8 @@ type CaseOptions = {
     fetchImpl?: CaseFetch;
     extractPdf?: (bytes: ArrayBuffer) => Promise<string>;
     cache?: OfficialFileCache;
+    store?: LegalSourceStore;
+    exaFetch?: ExaContentsFetch;
 };
 
 const MNC_RE =
@@ -441,6 +451,11 @@ async function downloadCaseFile(
     options: CaseOptions,
 ): Promise<{ text: string; url: string }> {
     if (url.toLowerCase().includes(".pdf")) {
+        const held = await options.store?.lookup("case_law", url, "current");
+        if (held) {
+            await options.store?.touch(held.id, { currencyStatus: "current" });
+            return { text: held.fullText, url: held.officialUrl || url };
+        }
         const downloaded = await fetchOfficialBytes(
             (href, init) => request(fetchImpl, href, init),
             url,
@@ -448,17 +463,48 @@ async function downloadCaseFile(
             cacheForInjectedFetch(options.fetchImpl, options.cache),
         );
         if (downloaded.status !== 200) {
-            throw new AuCaseError(
-                `Could not download the official judgment PDF.`,
+            const exaFetch =
+                options.exaFetch ??
+                (options.fetchImpl ? undefined : fetchExaContents);
+            const exa = exaFetch ? await exaFetch(url) : null;
+            if (exa?.text) {
+                await options.store?.upsert({
+                    family: "case_law",
+                    instrumentId: url,
+                    name: "judgment",
+                    versionLabel: "current",
+                    officialUrl: url,
+                    retrievedVia: "exa",
+                    fullText: exa.text,
+                });
+                return { text: exa.text, url };
+            }
+            const err = new AuCaseError(
+                officialSourceUnavailableMessage({
+                    name: "this judgment",
+                }),
                 downloaded.status,
             );
+            err.kind = "unavailable";
+            err.officialUrl = url;
+            throw err;
         }
         const view = downloaded.bytes.buffer.slice(
             downloaded.bytes.byteOffset,
             downloaded.bytes.byteOffset + downloaded.bytes.byteLength,
         ) as ArrayBuffer;
         const extract = options.extractPdf ?? extractPdfText;
-        return { text: await extract(view), url };
+        const text = await extract(view);
+        await options.store?.upsert({
+            family: "case_law",
+            instrumentId: url,
+            name: "judgment",
+            versionLabel: "current",
+            officialUrl: url,
+            retrievedVia: "official",
+            fullText: text,
+        });
+        return { text, url };
     }
     const response = await request(fetchImpl, url);
     if (!response.ok) {

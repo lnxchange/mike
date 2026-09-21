@@ -26,7 +26,9 @@ Citation rules:
 - US case law is a separate CourtListener surface.
 
 Limits:
-- If any Australian case-law call returns a rate-limit/throttling/429 error, stop all Australian case-law calls for that turn and answer using only information already available.`;
+- The server may retrieve official judgment text through Exa when a court host blocks a direct download. Cite the official court URL, never Exa. Held copies in the background repository are reused.
+- If any Australian case-law call reports that the official judgment is inaccessible (download failed, blocked, 403, or unavailable: true) and no held copy exists: stop further calls for that case. Do not invent the reasons. Tell the user which judgment could not be reached. Call ask_inputs with one documents item whose id is the supplied legal_source_id so they can upload the official judgment or the relevant extract.
+- If any Australian case-law call returns a rate-limit/throttling/429 error, stop all Australian case-law calls for that turn. Tell the user. Do not invent the missing text.`
 
 export const AU_CASE_LAW_TOOLS = [
     {

@@ -3,6 +3,10 @@ import { createServerSupabase } from "../../lib/supabase";
 import type { Db } from "../../lib/supabase";
 import { logError } from "../../lib/log";
 import type { UserApiKeys } from "../../lib/llm";
+import {
+    getMembershipOrgApiKeySources,
+    getMembershipOrgApiKeys,
+} from "../../lib/orgApiKeys";
 
 export type ApiKeyProvider =
     | "claude"
@@ -12,7 +16,7 @@ export type ApiKeyProvider =
     | "vercel"
     | "opencode-go"
     | "courtlistener";
-export type ApiKeySource = "user" | "env" | null;
+export type ApiKeySource = "user" | "org" | "env" | null;
 export type ApiKeyStatus = Record<ApiKeyProvider, boolean> & {
     sources: Record<ApiKeyProvider, ApiKeySource>;
 };
@@ -133,6 +137,7 @@ export function normalizeApiKeyProvider(value: string): ApiKeyProvider | null {
 export async function getUserApiKeyStatus(
     userId: string,
     db: Db = createServerSupabase(),
+    options?: { orgId?: string | null },
 ): Promise<ApiKeyStatus> {
     const status: ApiKeyStatus = {
         claude: false,
@@ -160,6 +165,18 @@ export async function getUserApiKeyStatus(
         }
     }
 
+    const orgSources = await getMembershipOrgApiKeySources(
+        userId,
+        db,
+        options?.orgId,
+    );
+    for (const provider of PROVIDERS) {
+        if (orgSources[provider]) {
+            status[provider] = true;
+            status.sources[provider] = "org";
+        }
+    }
+
     const { data, error } = await db
         .from("user_api_keys")
         .select("provider")
@@ -180,6 +197,7 @@ export async function getUserApiKeyStatus(
 export async function getUserApiKeys(
     userId: string,
     db: Db = createServerSupabase(),
+    options?: { orgId?: string | null },
 ): Promise<UserApiKeys> {
     const apiKeys: UserApiKeys = {
         claude: envApiKey("claude"),
@@ -191,11 +209,19 @@ export async function getUserApiKeys(
         courtlistener: envApiKey("courtlistener"),
     };
 
-    const { data, error } = await db
-        .from("user_api_keys")
-        .select("provider, encrypted_key, iv, auth_tag")
-        .eq("user_id", userId);
+    const [{ data, error }, orgResolved] = await Promise.all([
+        db
+            .from("user_api_keys")
+            .select("provider, encrypted_key, iv, auth_tag")
+            .eq("user_id", userId),
+        getMembershipOrgApiKeys(userId, db, options?.orgId),
+    ]);
     if (error) throw error;
+
+    for (const provider of PROVIDERS) {
+        const orgKey = orgResolved.keys[provider]?.trim();
+        if (orgKey) apiKeys[provider] = orgKey;
+    }
 
     for (const row of (data ?? []) as EncryptedKeyRow[]) {
         const provider = normalizeApiKeyProvider(row.provider);
@@ -205,6 +231,22 @@ export async function getUserApiKeys(
     }
 
     return apiKeys;
+}
+
+export async function getStoredUserApiKey(
+    userId: string,
+    provider: ApiKeyProvider,
+    db: Db = createServerSupabase(),
+): Promise<string | null> {
+    const { data, error } = await db
+        .from("user_api_keys")
+        .select("provider, encrypted_key, iv, auth_tag")
+        .eq("user_id", userId)
+        .eq("provider", provider)
+        .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return decrypt(data as EncryptedKeyRow)?.trim() || null;
 }
 
 export async function saveUserApiKey(

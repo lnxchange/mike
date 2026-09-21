@@ -30,7 +30,9 @@ Citation rules:
 - Commonwealth Acts and national energy rules are separate surfaces.
 
 Limits:
-- If any Victorian legislation call returns a rate-limit/throttling/429 error, stop all Victorian legislation calls for that turn and answer using only information already available.`;
+- The server may retrieve authorised text through Exa when legislation.vic.gov.au blocks a direct download. Cite the official URL, never Exa. Held copies in the background legislation repository are reused after a currency check.
+- If any Victorian legislation call reports that the official source is inaccessible (download failed, blocked, 403, or unavailable: true) and no held copy exists: stop further calls for that title. Do not invent the text. Tell the user which title could not be reached. Call ask_inputs with one documents item whose id is the supplied legal_source_id so they can upload the authorised compilation or the relevant extract.
+- If any Victorian legislation call returns a rate-limit/throttling/429 error, stop all Victorian legislation calls for that turn. Tell the user. Do not invent the missing text.`
 
 export const AU_VIC_LEGISLATION_TOOLS = [
     {

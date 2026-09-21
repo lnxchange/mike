@@ -103,6 +103,9 @@ function sanitizeAssistantEvent(event: AssistantEvent): AssistantEvent {
       : { ...event, message: ASSISTANT_ERROR_MESSAGE };
   }
   if ("error" in event && typeof event.error === "string" && event.error) {
+    if ("safe_to_display" in event && event.safe_to_display === true) {
+      return event;
+    }
     return { ...event, error: TOOL_ERROR_MESSAGE };
   }
   return event;

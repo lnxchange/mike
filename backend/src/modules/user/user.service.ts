@@ -105,6 +105,7 @@ export {
 export {
     getUserApiKeys,
     getUserApiKeyStatus,
+    getStoredUserApiKey,
     hasEnvApiKey,
     normalizeApiKeyProvider,
     saveUserApiKey,

@@ -34,3 +34,10 @@ export {
 } from "../../lib/orgs";
 
 export type { InvitationStatus, OrgResult } from "../../lib/orgs";
+
+export {
+  getOrgApiKeysStatus,
+  saveOrgApiKeyForAdmin,
+  normalizeOrgApiKeyProvider,
+} from "./orgs.apiKeys";
+export type { OrgApiKeyProvider, OrgApiKeyStatus } from "./orgs.apiKeys";

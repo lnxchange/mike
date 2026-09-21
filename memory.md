@@ -1,5 +1,41 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Railway EXA_API_KEY works; app code not shipped
+
+Yule set `EXA_API_KEY` on Railway `mike` production. Live Exa Contents
+call against the Electricity Industry Act 2000 page returned HTTP 200,
+status success, 2733 characters. Production is still commit `dc6e587`
+(Outlook draft type fix). `exaContents.ts` is untracked locally, so
+Colleague cannot use the key until that code is committed and deployed.
+Local `backend/.env` is still empty. Did not apply migration 07.
+
+## 2026-09-21 — Exa skill followed; API key slot opened
+
+Ran Exa's `build-with-exa` skill. Colleague already uses `/contents` for
+blocked official hosts, which is the correct endpoint. Aligned the request
+to `text: true`, `maxAgeHours: 0`, and `livecrawlTimeout` (no `livecrawl`
+string). Added an empty `EXA_API_KEY=` in `backend/.env`. Yule still needs
+to paste the key from the Exa dashboard, then set the same value on Railway
+`mike`. Did not deploy. Did not apply migration 07.
+
+## 2026-09-21 — Energy shelf seed and weekly currency check
+
+`au_get_energy` now accepts a clause number or a heading / defined term
+(Definitions, small customer) and searches the full held or freshly
+fetched instrument. Seed the ordinary retail shelf with
+`npm run seed:energy-shelf --prefix backend` (local DB only; needs
+`20260921_07_legal_source_documents.sql`). Weekly job
+`legal.shelf.refresh` is enrolled from the worker runtime: cheap official
+version list, re-fetch only when the compilation changed. Did not apply
+the migration to production. Did not deploy.
+
+## 2026-09-21 — Organisation API keys apply to invited staff
+
+Admins set encrypted keys on the organisation (header menu, API keys). Members
+inherit them for chat, Word, tabular, and memory without pasting their own.
+Precedence is personal BYOK, then organisation, then deployment env. Migration
+`20260921_08_org_api_keys.sql` is not applied to production yet. Did not deploy.
+
 ## 2026-09-21 — Outlook draft tool refused, then Anthropic credits ran out
 
 Yule logged in with Microsoft (vault row present, mailbox `yule@attune.legal`,
@@ -401,3 +437,13 @@ In the tree, not shipped. Do not bundle with the unshipped AU research work. Yul
 ## 2026-09-21 — Microsoft login and Outlook draft staging (ported)
 
 Cloud PR #4 implemented Outlook drafts from `main` and would have overwritten Zoho matter sync. The working branch now has the port: Azure OAuth + Graph vault (`20260921_06`), `create_outlook_draft`, Message-ID ingest, mailbox search with `ConsistencyLevel: eventual`, `threadStatus` on the card, vault clear on invalid grant. Do not apply the migration to production or deploy until Yule confirms. Do not enqueue filer `outlook.createDraft`. Drafts only, never Mail.Send.
+
+## 2026-09-21 — Outlook draft create no longer dies on mailbox search
+
+Yule's Microsoft login and token refresh were fine (`user_microsoft_tokens` updated 09:13:20Z, `Mail.ReadWrite`, mailbox `yule@attune.legal`). The Alissa staging turn failed because Graph `$search` was wrapped in a second pair of quotes, returned a non-401 error, and `createOutlookDraft` treated that as fatal before `POST /me/messages`.
+
+Shipped `1705216b` on `cursor/setup-supabase-vercel-oss-cad9`. Search now uses one quoted `$search` value. Message-ID lookup and mailbox search failures fall through to a new draft. Graph status and `error.code` are logged without the response body. 403 maps to a reconnect message; tokens are not wiped. Railway SUCCESS `5944b770` after `railway redeploy --from-source`. No Vercel, no new migration. Yule does not need to reconnect Microsoft. Do not apply `20260921_07`. Do not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER` or deploy the dirty filer tree.
+
+## 2026-09-21 — Outlook draft preview, styling, and signature
+
+Yule wanted the draft in chat first, native lists/bold/italic, and his Outlook signature. `create_outlook_draft` now defaults to an `outlook_draft_preview` card. `stage: true` is required to create the mailbox draft. Staging converts markdown/HTML to Outlook markup and copies the signature (plus inline cid images) from recent sent mail. Shipped `d76fcaa9` plus typecheck fix `dc6e587b`. Vercel production READY `dpl_Q47coDtyFqqksifGhK1gJQDzU5j1`. Railway redeployed from source after the typecheck fix.

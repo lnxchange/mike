@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   role: "admin" as "admin" | "member",
   getOrg: vi.fn(),
+  getOrgApiKeyStatus: vi.fn(),
+  getApiKeyStatus: vi.fn(),
+  saveOrgApiKey: vi.fn(),
   listOrgMembers: vi.fn(),
   listOrgResources: vi.fn(),
   listOrgInvitations: vi.fn(),
@@ -29,6 +32,9 @@ vi.mock("@/app/contexts/AuthContext", () => ({
 vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/app/lib/mikeApi")>()),
   getOrg: mocks.getOrg,
+  getOrgApiKeyStatus: mocks.getOrgApiKeyStatus,
+  getApiKeyStatus: mocks.getApiKeyStatus,
+  saveOrgApiKey: mocks.saveOrgApiKey,
   listOrgMembers: mocks.listOrgMembers,
   listOrgResources: mocks.listOrgResources,
   listOrgInvitations: mocks.listOrgInvitations,
@@ -102,6 +108,25 @@ beforeEach(() => {
     ],
   });
   mocks.listOrgInvitations.mockResolvedValue([]);
+  mocks.getOrgApiKeyStatus.mockResolvedValue({
+    claude: false,
+    gemini: false,
+    openai: false,
+    openrouter: false,
+    vercel: false,
+    "opencode-go": false,
+    courtlistener: false,
+  });
+  mocks.getApiKeyStatus.mockResolvedValue({
+    claude: false,
+    gemini: false,
+    openai: false,
+    openrouter: false,
+    vercel: false,
+    "opencode-go": false,
+    courtlistener: false,
+    sources: {},
+  });
 });
 
 describe("OrganizationWorkspace", () => {
@@ -244,6 +269,9 @@ describe("OrganizationWorkspace", () => {
     await user.click(
       screen.getByRole("button", { name: "Organization settings" }),
     );
+    expect(
+      screen.getByRole("menuitem", { name: "API keys" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("menuitem", { name: "Organization memory" }),
     ).toBeInTheDocument();

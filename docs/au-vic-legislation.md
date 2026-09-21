@@ -50,5 +50,9 @@ If a tool reports a rate limit, wait and retry. The assistant should stop
 further Victorian legislation calls for that turn and answer from text
 already fetched.
 
+If legislation.vic.gov.au blocks a download, the server may pull the
+authorised text through Exa Contents when `EXA_API_KEY` is set, or reuse
+a held copy after a currency check. Cite the official URL, not Exa.
+
 If a title id is rejected, search again rather than constructing an id.
 Ids look like `vic:electricity-industry-act-2000`.
