@@ -48,16 +48,15 @@ export async function extractDocxParagraphStyles(
     const id = String(node["@_w:styleId"] ?? node["@_styleId"] ?? "").trim();
     if (!id || seen.has(id)) continue;
     const nameNode = node["w:name"] ?? node.name;
-    const name =
-      (nameNode &&
-        typeof nameNode === "object" &&
-        (String(
-          (nameNode as { "@_w:val"?: string; "@_val"?: string })["@_w:val"] ??
-            (nameNode as { "@_val"?: string })["@_val"] ??
-            "",
-        ).trim() ||
-          null)) ||
-      id;
+    const nameFromNode =
+      nameNode && typeof nameNode === "object"
+        ? String(
+            (nameNode as { "@_w:val"?: string; "@_val"?: string })["@_w:val"] ??
+              (nameNode as { "@_val"?: string })["@_val"] ??
+              "",
+          ).trim()
+        : "";
+    const name = nameFromNode || id;
     seen.add(id);
     styles.push({ id, name });
   }
