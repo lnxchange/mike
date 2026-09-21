@@ -35,6 +35,8 @@ const {
 }));
 
 vi.mock("../../../lib/authSession", () => ({
+  authCookiesAreSecure: (env: NodeJS.ProcessEnv = process.env) =>
+    env.NODE_ENV === "production",
   createRequestSupabase,
   clearRequestAuthCookies,
   publicAuthUser: (user: {
