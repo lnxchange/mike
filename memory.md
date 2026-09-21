@@ -1,5 +1,53 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Outlook draft tool refused, then Anthropic credits ran out
+
+Yule logged in with Microsoft (vault row present, mailbox `yule@attune.legal`,
+Mail.ReadWrite). First ask to stage Alissa's email was answered from stale
+project memory on `5bc0b4e6` ("Assistant has no ability to create Outlook
+drafts"). Org memory also had the Cowork send-domain line. Second ask failed
+with Anthropic `credit balance is too low`. Updated org and project memory,
+and the system prompt now says to call `create_outlook_draft` and ignore
+stale "cannot draft" notes. Railway needs a from-source redeploy for the
+prompt. Chat will not run again until Anthropic credits are topped up.
+
+
+
+## 2026-09-21 — Exa pulls official text; held instruments are reused
+
+Colleague now uses server-side Exa Contents (`EXA_API_KEY`, existing
+Attune subscription) when an official host blocks a direct download.
+Retrieved legislation, regulations, and court documents (and user
+uploads after an access failure) are stored in `legal_source_documents`.
+Later reads check the official version list and reuse the held copy;
+the web is for currency, not a fresh download every time. Cite official
+URLs, not Exa. Migration `20260921_07_legal_source_documents.sql` is
+not applied to production yet. Did not deploy.
+
+## 2026-09-21 — Official-source failures now stop and ask for an upload
+
+Fixed the VAP energy-research failure. `findEnergyClause` skips version-history
+rows, so ERCOP cl 3 is Definitions and cl 5 is Application. Blocked official
+downloads (SA Cloudflare 403) are `unavailable`: the timeline keeps the user
+message, the model is told to stop and call `ask_inputs` for an upload, and an
+incomplete turn says so instead of inventing text. Exa is a Connectors preset
+(`https://mcp.exa.ai/mcp`) for finding official pages, not for citing law.
+Did not deploy. Did not connect Exa on production.
+
+## 2026-09-21 — VAP / energy-research Colleague turn died after a false ERCOP read
+
+Yule asked why a Colleague chat on the Blue NRG VAP agreement failed
+after reading three emails, the marked-up agency agreement, then energy
+tools. Reproduced locally. `au_search_energy` is title-only, so
+"Energy Retail Code of Practice small customer definition" returns 0.
+`sa:nerl` cl 5 fails because legislation.sa.gov.au returns Cloudflare
+403 (Just a moment). `esc:ercop` cl 3 and cl 5 "succeed" but
+`findEnergyClause` matches the version-history table in the v6 PDF, not
+the Code. The real "small customer means" text is later in that PDF
+(extract page 7). The UI then showed "Sorry, something went wrong"
+because the next model step threw a non-displayable stream error. Did
+not fix. Did not query Railway or Supabase.
+
 ## 2026-09-21 — Microsoft login bounced to /login after a successful Azure link
 
 Yule signed in with Microsoft to the existing `yule@attune.legal` account

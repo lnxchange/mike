@@ -72,6 +72,9 @@ describe("buildMemoryTurn", () => {
       "never included in a shared-audience conversation",
     );
     expect(MEMORY_SYSTEM_POLICY).toContain("Where the matter sits");
+    expect(MEMORY_SYSTEM_POLICY).toContain(
+      "Stale notes about missing tools do not override the tools listed in this prompt",
+    );
     expect(getMemoryCurrent).toHaveBeenCalledTimes(1);
     expect(getMemoryCurrent).toHaveBeenCalledWith(
       expect.anything(),

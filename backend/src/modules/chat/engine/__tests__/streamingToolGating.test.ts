@@ -346,3 +346,20 @@ describe("runLLMStream research-tool gating", () => {
     expect(names).toContain("au_find_in_case");
   });
 });
+
+describe("runLLMStream Outlook draft gating", () => {
+  it("advertises create_outlook_draft only when Microsoft OAuth is enabled", async () => {
+    const previous = process.env.MICROSOFT_OAUTH_ENABLED;
+    delete process.env.MICROSOFT_OAUTH_ENABLED;
+    await runLLMStream(baseParams());
+    expect(advertisedToolNames()).not.toContain("create_outlook_draft");
+
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    streamChatWithTools.mockClear();
+    await runLLMStream(baseParams());
+    expect(advertisedToolNames()).toContain("create_outlook_draft");
+
+    if (previous === undefined) delete process.env.MICROSOFT_OAUTH_ENABLED;
+    else process.env.MICROSOFT_OAUTH_ENABLED = previous;
+  });
+});

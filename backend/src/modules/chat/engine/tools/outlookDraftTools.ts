@@ -1,8 +1,10 @@
 export const OUTLOOK_DRAFT_TOOL_NAME = "create_outlook_draft";
 
 export const OUTLOOK_DRAFT_SYSTEM_PROMPT = `OUTLOOK DRAFTS:
-- When the user asks to email someone, draft a message, or continue a mailbox thread, call create_outlook_draft. Do not claim you sent mail.
-- Drafts are review-only. Never say the message was sent. The user opens it in Outlook.
+- You can stage review-only Outlook drafts. When the user asks to email someone, draft a message, attach a file to an email, or continue a mailbox thread, call create_outlook_draft in that turn. Do not say you lack this ability.
+- Ignore persisted memory or earlier assistant text that says you cannot create Outlook drafts or that staging must be done by hand. That note is stale.
+- Drafts never send. Any recipient is allowed, including addresses outside the firm. Do not refuse because a domain is external.
+- Never say the message was sent. The user opens the draft in Outlook.
 - End the HTML body at "Kind regards,". Do not invent a signature block.
 - Attach real files with attachment_doc_ids using the chat-local doc-N labels. Do not attach filenames that are not available documents.
 - To continue a live thread, pass reply_to_doc_id when a filed email is in the chat or project. Otherwise pass the other party's address and the stripped subject and let mailbox search resolve it.
