@@ -2111,15 +2111,54 @@ export function useAssistantChat({
             }
 
             if (data.type === "outlook_draft_start") {
-              pushEvent({
-                type: "outlook_draft_created",
-                web_link: "",
-                subject: "",
-                to: [],
-                attachment_names: [],
-                threaded: false,
-                isStreaming: true,
-              });
+              if (data.stage === true) {
+                pushEvent({
+                  type: "outlook_draft_created",
+                  web_link: "",
+                  subject: "",
+                  to: [],
+                  attachment_names: [],
+                  threaded: false,
+                  isStreaming: true,
+                });
+              } else {
+                pushEvent({
+                  type: "outlook_draft_preview",
+                  subject: "",
+                  to: [],
+                  html_body: "",
+                  attachment_names: [],
+                  isStreaming: true,
+                });
+              }
+              continue;
+            }
+
+            if (data.type === "outlook_draft_preview") {
+              const next = {
+                type: "outlook_draft_preview" as const,
+                subject: typeof data.subject === "string" ? data.subject : "",
+                to: Array.isArray(data.to)
+                  ? data.to.filter((item): item is string => typeof item === "string")
+                  : [],
+                cc: Array.isArray(data.cc)
+                  ? data.cc.filter((item): item is string => typeof item === "string")
+                  : undefined,
+                html_body:
+                  typeof data.html_body === "string" ? data.html_body : "",
+                attachment_names: Array.isArray(data.attachment_names)
+                  ? data.attachment_names.filter(
+                      (item): item is string => typeof item === "string",
+                    )
+                  : [],
+                isStreaming: false,
+              };
+              const replaced = updateMatchingEvent(
+                (e) => e.type === "outlook_draft_preview" && !!e.isStreaming,
+                () => next,
+              );
+              if (!replaced) pushEvent(next);
+              pushThinkingPlaceholder();
               continue;
             }
 

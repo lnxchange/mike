@@ -481,6 +481,7 @@ export type AssistantEvent =
   | AuVicLegislationToolEvent
   | AuCaseLawToolEvent
   | McpToolEvent
+  | OutlookDraftPreviewEvent
   | OutlookDraftCreatedEvent
   | OutlookAuthRequiredEvent
   | {
@@ -513,6 +514,15 @@ export type OutlookThreadStatus =
   | "ambiguous"
   | "not_found"
   | "new";
+
+export type OutlookDraftPreviewEvent = {
+  type: "outlook_draft_preview";
+  subject: string;
+  to: string[];
+  cc?: string[];
+  html_body: string;
+  attachment_names: string[];
+};
 
 export type OutlookDraftCreatedEvent = {
   type: "outlook_draft_created";

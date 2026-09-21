@@ -59,6 +59,7 @@ export function toolCallLabel(name: string): string {
     if (name === "au_search_case_law") return "Searching Australian cases...";
     if (name === "au_get_case") return "Reading Australian case...";
     if (name === "au_find_in_case") return "Searching Australian case...";
+    if (name === "create_outlook_draft") return "Drafting email...";
     if (name.startsWith("mcp_")) return "Using connector...";
     return name ? `Running ${name}...` : "Working...";
 }

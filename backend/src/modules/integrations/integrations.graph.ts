@@ -152,6 +152,18 @@ function recipientList(addresses: string[]) {
     .map((address) => ({ emailAddress: { address } }));
 }
 
+function fileAttachmentPayload(attachment: OutlookAttachment) {
+  return {
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: attachment.filename,
+    contentType: attachment.contentType,
+    contentBytes: attachment.bytes.toString("base64"),
+    ...(attachment.isInline
+      ? { isInline: true, contentId: attachment.contentId }
+      : {}),
+  };
+}
+
 export async function createDraftMessage(
   accessToken: string,
   args: {
@@ -160,8 +172,12 @@ export async function createDraftMessage(
     bcc?: string[];
     subject: string;
     htmlBody: string;
+    inlineAttachments?: OutlookAttachment[];
   },
 ): Promise<GraphMessage> {
+  const inline = (args.inlineAttachments ?? []).filter(
+    (attachment) => attachment.isInline && attachment.contentId,
+  );
   return graphJson<GraphMessage>(accessToken, "/me/messages", {
     method: "POST",
     body: JSON.stringify({
@@ -170,6 +186,7 @@ export async function createDraftMessage(
       toRecipients: recipientList(args.to),
       ccRecipients: recipientList(args.cc ?? []),
       bccRecipients: recipientList(args.bcc ?? []),
+      ...(inline.length ? { attachments: inline.map(fileAttachmentPayload) } : {}),
     }),
   });
 }
@@ -224,6 +241,67 @@ export async function findMessageByInternetMessageId(
   return data.value?.[0] ?? null;
 }
 
+export async function listRecentSentMessageBodies(
+  accessToken: string,
+): Promise<{ id: string; html: string }[]> {
+  const params = new URLSearchParams({
+    $select: "id,uniqueBody,body",
+    $orderby: "sentDateTime desc",
+    $top: "8",
+  });
+  const data = await graphJson<{
+    value?: {
+      id?: string;
+      uniqueBody?: { content?: string; contentType?: string };
+      body?: { content?: string; contentType?: string };
+    }[];
+  }>(accessToken, `/me/mailFolders/sentitems/messages?${params.toString()}`, {
+    headers: { Prefer: 'outlook.body-content-type="html"' },
+  });
+  return (data.value ?? [])
+    .map((message) => {
+      const html =
+        message.uniqueBody?.content?.trim() ||
+        message.body?.content?.trim() ||
+        "";
+      return message.id && html ? { id: message.id, html } : null;
+    })
+    .filter((message): message is { id: string; html: string } => !!message);
+}
+
+export async function listInlineFileAttachments(
+  accessToken: string,
+  messageId: string,
+): Promise<OutlookAttachment[]> {
+  const data = await graphJson<{
+    value?: {
+      name?: string;
+      contentType?: string;
+      contentId?: string;
+      isInline?: boolean;
+      contentBytes?: string;
+    }[];
+  }>(
+    accessToken,
+    `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=name,contentType,contentId,isInline,contentBytes`,
+  );
+  return (data.value ?? [])
+    .map((attachment) => {
+      const contentId = attachment.contentId?.replace(/^<|>$/g, "").trim();
+      if (!attachment.isInline || !contentId || !attachment.contentBytes) {
+        return null;
+      }
+      return {
+        filename: attachment.name || contentId,
+        contentType: attachment.contentType || "application/octet-stream",
+        bytes: Buffer.from(attachment.contentBytes, "base64"),
+        isInline: true,
+        contentId,
+      } satisfies OutlookAttachment;
+    })
+    .filter((attachment): attachment is OutlookAttachment => !!attachment);
+}
+
 export async function searchMailboxMessages(
   accessToken: string,
   query: string,
@@ -253,12 +331,7 @@ export async function addFileAttachment(
       `/me/messages/${encodeURIComponent(messageId)}/attachments`,
       {
         method: "POST",
-        body: JSON.stringify({
-          "@odata.type": "#microsoft.graph.fileAttachment",
-          name: attachment.filename,
-          contentType: attachment.contentType,
-          contentBytes: attachment.bytes.toString("base64"),
-        }),
+        body: JSON.stringify(fileAttachmentPayload(attachment)),
       },
     );
     return;

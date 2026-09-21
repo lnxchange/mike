@@ -24,6 +24,8 @@ const { graph, GraphAuthError, GraphRequestError } = vi.hoisted(() => {
       createDraftMessage: vi.fn(),
       createReplyDraft: vi.fn(),
       findMessageByInternetMessageId: vi.fn(),
+      listInlineFileAttachments: vi.fn(),
+      listRecentSentMessageBodies: vi.fn(),
       patchDraftMessage: vi.fn(),
       searchMailboxMessages: vi.fn(),
       getGraphAccessToken: vi.fn(),
@@ -42,6 +44,8 @@ vi.mock("../integrations.graph", () => ({
   createDraftMessage: graph.createDraftMessage,
   createReplyDraft: graph.createReplyDraft,
   findMessageByInternetMessageId: graph.findMessageByInternetMessageId,
+  listInlineFileAttachments: graph.listInlineFileAttachments,
+  listRecentSentMessageBodies: graph.listRecentSentMessageBodies,
   patchDraftMessage: graph.patchDraftMessage,
   searchMailboxMessages: graph.searchMailboxMessages,
 }));
@@ -71,6 +75,8 @@ describe("createOutlookDraft", () => {
       webLink: "https://outlook.office.com/mail/draft-1",
     });
     graph.addFileAttachment.mockResolvedValue(undefined);
+    graph.listRecentSentMessageBodies.mockResolvedValue([]);
+    graph.listInlineFileAttachments.mockResolvedValue([]);
   });
 
   it("returns connect when no Graph grant exists", async () => {
@@ -208,6 +214,36 @@ describe("createOutlookDraft", () => {
       message:
         "Microsoft did not allow mailbox access. Reconnect Microsoft from Settings.",
     });
+  });
+
+  it("appends the mailbox signature and its inline images", async () => {
+    graph.findMessageByInternetMessageId.mockResolvedValue(null);
+    graph.searchMailboxMessages.mockResolvedValue([]);
+    graph.listRecentSentMessageBodies.mockResolvedValue([
+      {
+        id: "sent-1",
+        html: '<p>Kind regards,</p><div id="Signature"><img src="cid:attune-logo"><b>Yule Guttenbeil</b><br>Principal</div>',
+      },
+    ]);
+    graph.listInlineFileAttachments.mockResolvedValue([
+      {
+        filename: "attune-logo.png",
+        contentType: "image/png",
+        bytes: Buffer.from("png"),
+        isInline: true,
+        contentId: "attune-logo",
+      },
+    ]);
+    await createOutlookDraft({} as never, "user-1", input);
+    expect(graph.createDraftMessage).toHaveBeenCalledWith(
+      "token",
+      expect.objectContaining({
+        htmlBody: expect.stringContaining('id="Signature"'),
+        inlineAttachments: [
+          expect.objectContaining({ contentId: "attune-logo" }),
+        ],
+      }),
+    );
   });
 
   it("rejects oversized attachments", async () => {

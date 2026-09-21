@@ -64,7 +64,7 @@ sequenceDiagram
 - Join a live Outlook conversation when Mike can resolve one message in that mailbox. Prefer Message-ID from a filed email; otherwise search by normalised subject and the other party's address. Ambiguous results stay a new draft.
 - Existing SAML "Continue with SSO" stays. It remains identity-only.
 - The filer Graph app stays for Zoho/SharePoint matter sync. Do not enqueue `outlook.createDraft` from Mike.
-- Graph create-draft does not apply the user's Outlook signature. End the body at "Kind regards,". A stored house signature can come later.
+- Compose in chat first. `create_outlook_draft` defaults to a preview card. Stage to Outlook only when the user asks. Staging copies the user's Outlook signature from recent sent mail (plus inline logo images) and converts lists, bold, and italic into Outlook HTML.
 - This deliberately holds **per-user delegated tokens** (encrypted) on Railway. That is a different trust model from the sync ADR, which keeps the **app-only** Graph identity on the filer.
 
 ## 1. Entra app and Supabase Azure provider (operator setup)

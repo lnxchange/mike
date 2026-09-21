@@ -97,12 +97,14 @@ import {
   type TextMatch,
 } from "./documentOps";
 import { normalizeInternetMessageId } from "../../../../lib/emailMessage";
+import { outlookInnerHtmlFromDraftBody } from "../../../../lib/outlookDraftHtml";
 import { microsoftOAuthEnabled } from "../../../../lib/microsoftOAuth";
 import { createOutlookDraft } from "../../../integrations/integrations.service";
 import { OUTLOOK_DRAFT_TOOL_NAME } from "./outlookDraftTools";
 import type {
   OutlookAuthRequiredEvent,
   OutlookDraftCreatedEvent,
+  OutlookDraftPreviewEvent,
 } from "@mike/contracts";
 import {
   spotlight,
@@ -184,6 +186,15 @@ async function loadOutlookAttachment(
     contentType: contentTypeForDocumentType(stored.file_type),
     bytes: Buffer.from(raw),
   };
+}
+
+function outlookAttachmentName(
+  rawId: string,
+  docStore: DocStore,
+  docIndex: DocIndex | undefined,
+): string | null {
+  const docId = resolveDocLabel(rawId, docStore, docIndex) ?? rawId;
+  return docStore.get(docId)?.filename ?? docIndex?.[docId]?.filename ?? null;
 }
 
 function documentSuffixFromName(filename: string) {
@@ -447,7 +458,11 @@ export async function runToolCalls(
   auCaseLawEvents: AuCaseLawToolEvent[];
   legislationCitationEvents: LegislationCitationEvent[];
   mcpEvents: McpToolEvent[];
-  outlookEvents: (OutlookDraftCreatedEvent | OutlookAuthRequiredEvent)[];
+  outlookEvents: (
+    | OutlookDraftPreviewEvent
+    | OutlookDraftCreatedEvent
+    | OutlookAuthRequiredEvent
+  )[];
 }> {
   const toolResults: unknown[] = [];
   const docsRead: {
@@ -478,8 +493,11 @@ export async function runToolCalls(
   const auCaseLawEvents: AuCaseLawToolEvent[] = [];
   const legislationCitationEvents: LegislationCitationEvent[] = [];
   const mcpEvents: McpToolEvent[] = [];
-  const outlookEvents: (OutlookDraftCreatedEvent | OutlookAuthRequiredEvent)[] =
-    [];
+  const outlookEvents: (
+    | OutlookDraftPreviewEvent
+    | OutlookDraftCreatedEvent
+    | OutlookAuthRequiredEvent
+  )[] = [];
   const courtState: CourtlistenerTurnState = courtlistenerState ?? {
     casesByClusterId: new Map(),
   };
@@ -3283,10 +3301,72 @@ export async function runToolCalls(
         "pptx",
       );
     } else if (tc.function.name === OUTLOOK_DRAFT_TOOL_NAME) {
+      const stage = args.stage === true;
       write(
-        `data: ${JSON.stringify({ type: "outlook_draft_start" })}\n\n`,
+        `data: ${JSON.stringify({ type: "outlook_draft_start", stage })}\n\n`,
       );
-      if (!microsoftOAuthEnabled()) {
+      const to = asStringList(args.to);
+      const cc = asStringList(args.cc);
+      const bcc = asStringList(args.bcc);
+      const subject =
+        typeof args.subject === "string" ? args.subject.trim() : "";
+      const htmlBody =
+        typeof args.html_body === "string" ? args.html_body : "";
+      const attachmentIds = asStringList(args.attachment_doc_ids);
+      if (!stage) {
+        const attachmentNames: string[] = [];
+        let previewAttachmentError: string | null = null;
+        for (const rawId of attachmentIds) {
+          const filename = outlookAttachmentName(rawId, docStore, docIndex);
+          if (!filename) {
+            previewAttachmentError =
+              "One of the attached documents is not available.";
+            break;
+          }
+          attachmentNames.push(filename);
+        }
+        if (previewAttachmentError) {
+          write(
+            `data: ${JSON.stringify({
+              type: "error",
+              message: previewAttachmentError,
+              safe_to_display: true,
+            })}\n\n`,
+          );
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: false,
+              error: previewAttachmentError,
+            }),
+          });
+        } else {
+          const event: OutlookDraftPreviewEvent = {
+            type: "outlook_draft_preview",
+            subject,
+            to,
+            cc,
+            html_body: outlookInnerHtmlFromDraftBody(htmlBody),
+            attachment_names: attachmentNames,
+          };
+          outlookEvents.push(event);
+          write(`data: ${JSON.stringify(event)}\n\n`);
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: true,
+              preview: true,
+              subject,
+              to,
+              attachment_names: attachmentNames,
+              next_required_action:
+                "The draft is a chat preview only. Wait for the user to ask for changes or to stage it to Outlook. Do not say it is in Outlook.",
+            }),
+          });
+        }
+      } else if (!microsoftOAuthEnabled()) {
         const event: OutlookAuthRequiredEvent = {
           type: "outlook_auth_required",
         };
@@ -3299,18 +3379,10 @@ export async function runToolCalls(
             ok: false,
             error: "outlook_auth_required",
             next_required_action:
-              "Ask the user to connect Microsoft from Settings before drafting email.",
+              "Ask the user to connect Microsoft from Settings before staging the draft.",
           }),
         });
       } else {
-        const to = asStringList(args.to);
-        const cc = asStringList(args.cc);
-        const bcc = asStringList(args.bcc);
-        const subject =
-          typeof args.subject === "string" ? args.subject.trim() : "";
-        const htmlBody =
-          typeof args.html_body === "string" ? args.html_body : "";
-        const attachmentIds = asStringList(args.attachment_doc_ids);
         const attachments: {
           filename: string;
           contentType: string;
@@ -3404,7 +3476,7 @@ export async function runToolCalls(
                 threaded: result.threaded,
                 thread_status: result.threadStatus,
                 next_required_action:
-                  "Do not paste the Outlook URL in prose. Tell the user a review-only draft is ready. Never say it was sent.",
+                  "Do not paste the Outlook URL in prose. Tell the user a review-only draft is ready in Outlook. Never say it was sent.",
               }),
             });
           } else {

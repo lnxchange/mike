@@ -61,6 +61,8 @@ export type OutlookAttachment = {
   filename: string;
   contentType: string;
   bytes: Buffer;
+  isInline?: boolean;
+  contentId?: string;
 };
 
 export type CreateOutlookDraftInput = {

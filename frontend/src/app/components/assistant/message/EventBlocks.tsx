@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import DOMPurify from "dompurify";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, Download, ExternalLink, Loader2, Mail } from "lucide-react";
@@ -311,6 +312,97 @@ function outlookThreadCopy(
         return "No matching conversation was found, so this is a new draft.";
     }
     return "This is a new draft.";
+}
+
+const DRAFT_HTML_SANITIZER = {
+    ALLOWED_TAGS: [
+        "a",
+        "b",
+        "br",
+        "div",
+        "em",
+        "i",
+        "li",
+        "ol",
+        "p",
+        "span",
+        "strong",
+        "u",
+        "ul",
+    ],
+    ALLOWED_ATTR: ["href", "rel", "target"],
+    ALLOW_DATA_ATTR: false,
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|#)/i,
+    FORBID_TAGS: ["script", "style", "iframe", "object", "embed"],
+};
+
+export function OutlookDraftPreviewBlock({
+    subject,
+    to,
+    cc,
+    htmlBody,
+    attachmentNames,
+    isStreaming,
+    showConnector,
+}: {
+    subject: string;
+    to: string[];
+    cc?: string[];
+    htmlBody: string;
+    attachmentNames: string[];
+    isStreaming?: boolean;
+    showConnector?: boolean;
+}) {
+    const sanitizedBody = useMemo(
+        () => (htmlBody ? DOMPurify.sanitize(htmlBody, DRAFT_HTML_SANITIZER) : ""),
+        [htmlBody],
+    );
+    return (
+        <EventBlock
+            showConnector={showConnector}
+            isStreaming={isStreaming}
+            dotColor="green"
+        >
+            <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-1.5">
+                    <Mail className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <EventLabel className="shrink-0">
+                        {isStreaming ? "Drafting" : "Email draft"}
+                    </EventLabel>
+                    <span className="truncate">
+                        {isStreaming ? `${subject || "email"}...` : subject}
+                    </span>
+                </div>
+                {!isStreaming ? (
+                    <div
+                        className={`${RESPONSE_GLASS_SURFACE} mt-2 px-3 py-2.5 text-sm text-gray-800`}
+                    >
+                        {to.length > 0 ? (
+                            <p className="text-xs text-gray-500">To {to.join(", ")}</p>
+                        ) : null}
+                        {cc && cc.length > 0 ? (
+                            <p className="text-xs text-gray-500">Cc {cc.join(", ")}</p>
+                        ) : null}
+                        {attachmentNames.length > 0 ? (
+                            <p className="text-xs text-gray-500">
+                                Attached {attachmentNames.join(", ")}
+                            </p>
+                        ) : null}
+                        {sanitizedBody ? (
+                            <div
+                                className="mt-2 font-serif text-[15px] leading-6 text-gray-900 [&_b]:font-semibold [&_i]:italic [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+                                dangerouslySetInnerHTML={{ __html: sanitizedBody }}
+                            />
+                        ) : null}
+                        <p className="mt-2 text-xs text-gray-500">
+                            Ask for changes, or say when to stage this to Outlook. Your
+                            signature is added on staging.
+                        </p>
+                    </div>
+                ) : null}
+            </div>
+        </EventBlock>
+    );
 }
 
 export function OutlookDraftBlock({

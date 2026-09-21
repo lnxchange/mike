@@ -31,6 +31,7 @@ import {
     EventBlock,
     OutlookConnectBlock,
     OutlookDraftBlock,
+    OutlookDraftPreviewBlock,
     ReasoningBlock,
     WorkflowAppliedBlock,
     type CourtListenerBlockItem,
@@ -494,6 +495,20 @@ export function AssistantMessage({
                                   })
                             : undefined
                     }
+                />
+            );
+        }
+        if (event.type === "outlook_draft_preview") {
+            return (
+                <OutlookDraftPreviewBlock
+                    key={globalIdx}
+                    subject={event.subject}
+                    to={event.to ?? []}
+                    cc={event.cc}
+                    htmlBody={event.html_body ?? ""}
+                    attachmentNames={event.attachment_names ?? []}
+                    isStreaming={event.isStreaming}
+                    showConnector={showConnector}
                 />
             );
         }

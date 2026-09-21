@@ -538,6 +538,10 @@ export type AssistantEvent =
       document?: PanelDocument;
     })
   | (Omit<
+      WireActivity<"outlook_draft_preview">,
+      "isStreaming"
+    > & { isStreaming?: boolean })
+  | (Omit<
       WireActivity<"outlook_draft_created">,
       "isStreaming"
     > & { isStreaming?: boolean })
