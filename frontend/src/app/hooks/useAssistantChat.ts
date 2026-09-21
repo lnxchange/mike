@@ -18,6 +18,16 @@ import type {
   Citation,
   Message,
 } from "@/app/components/shared/types";
+import type { OutlookThreadStatus } from "@mike/contracts";
+
+function parseOutlookThreadStatus(value: unknown): OutlookThreadStatus | undefined {
+  return value === "matched" ||
+    value === "ambiguous" ||
+    value === "not_found" ||
+    value === "new"
+    ? value
+    : undefined;
+}
 
 interface UseAssistantChatOptions {
   initialMessages?: Message[];
@@ -2127,13 +2137,7 @@ export function useAssistantChat({
                     )
                   : [],
                 threaded: data.threaded === true,
-                thread_status:
-                  data.thread_status === "matched" ||
-                  data.thread_status === "ambiguous" ||
-                  data.thread_status === "not_found" ||
-                  data.thread_status === "new"
-                    ? data.thread_status
-                    : undefined,
+                thread_status: parseOutlookThreadStatus(data.thread_status),
                 isStreaming: false,
               };
               const replaced = updateMatchingEvent(
