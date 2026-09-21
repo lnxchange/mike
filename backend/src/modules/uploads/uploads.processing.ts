@@ -165,6 +165,7 @@ function emailMetaFromParsed(email: ParsedEmail): UploadEmailMeta {
       : {}),
     ...(formatEmailParties(email.to) ? { to: formatEmailParties(email.to) } : {}),
     ...(email.date ? { received_at: email.date.toISOString() } : {}),
+    ...(email.messageId ? { internet_message_id: email.messageId } : {}),
   };
 }
 
@@ -178,8 +179,16 @@ function mergeEmailMeta(
     from: preferred?.from || fallback?.from,
     to: preferred?.to || fallback?.to,
     received_at: preferred?.received_at || fallback?.received_at,
+    internet_message_id:
+      preferred?.internet_message_id || fallback?.internet_message_id,
   };
-  if (!merged.subject && !merged.from && !merged.to && !merged.received_at) {
+  if (
+    !merged.subject &&
+    !merged.from &&
+    !merged.to &&
+    !merged.received_at &&
+    !merged.internet_message_id
+  ) {
     return null;
   }
   return merged;
@@ -192,6 +201,9 @@ function emailDocumentColumns(email: UploadEmailMeta | null) {
     ...(email.from ? { email_from: email.from } : {}),
     ...(email.to ? { email_to: email.to } : {}),
     ...(email.received_at ? { email_received_at: email.received_at } : {}),
+    ...(email.internet_message_id
+      ? { email_internet_message_id: email.internet_message_id }
+      : {}),
   };
 }
 

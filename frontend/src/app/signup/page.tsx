@@ -30,6 +30,7 @@ import {
 } from "@/app/components/auth/passwordPolicy";
 import { AuthDivider } from "@/app/components/auth/AuthDivider";
 import { GoogleAuthButton } from "@/app/components/auth/GoogleAuthButton";
+import { MicrosoftAuthButton } from "@/app/components/auth/MicrosoftAuthButton";
 import { FieldLabel } from "@/app/components/ui/form-field";
 
 function SignupContent() {
@@ -235,6 +236,11 @@ function SignupContent() {
                             </PillButtonUI>
                             <AuthDivider />
                             <GoogleAuthButton
+                                onError={setError}
+                                disabled={loading}
+                                onLoadingChange={setLoading}
+                            />
+                            <MicrosoftAuthButton
                                 onError={setError}
                                 disabled={loading}
                                 onLoadingChange={setLoading}

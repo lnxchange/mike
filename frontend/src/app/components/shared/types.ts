@@ -537,6 +537,14 @@ export type AssistantEvent =
   | (Omit<WireActivity<"case_opinions">, "document"> & {
       document?: PanelDocument;
     })
+  | (Omit<
+      WireActivity<"outlook_draft_created">,
+      "isStreaming"
+    > & { isStreaming?: boolean })
+  | (Omit<
+      WireActivity<"outlook_auth_required">,
+      "isStreaming"
+    > & { isStreaming?: boolean })
   | (Omit<WireActivity<"content">, "isStreaming"> & { isStreaming?: boolean });
 
 export type CaseCitationQuote = {

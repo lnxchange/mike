@@ -309,3 +309,7 @@ Settings: Features → Victorian legislation / Australian case law. Docs: `docs/
 Fat matters were dying because chat tried to read the whole library to form a picture. Project memory now gets a background `memory.matter_brief` pass: latest email thread only (not chat), a short as-at note, working files named in that thread, and a grouped index. Refresh on new ready email, Zoho pull, or existing matters that still lack the fenced block. Curator must copy `<!-- matter-status:start -->` verbatim; the server restores it if dropped. Chat still has to open current drafts for mark-up.
 
 In the tree, not shipped. Do not bundle with the unshipped AU research work. Yule tests production only.
+
+## 2026-09-21 — Microsoft login and Outlook draft staging (ported)
+
+Cloud PR #4 implemented Outlook drafts from `main` and would have overwritten Zoho matter sync. The working branch now has the port: Azure OAuth + Graph vault (`20260921_06`), `create_outlook_draft`, Message-ID ingest, mailbox search with `ConsistencyLevel: eventual`, `threadStatus` on the card, vault clear on invalid grant. Do not apply the migration to production or deploy until Yule confirms. Do not enqueue filer `outlook.createDraft`. Drafts only, never Mail.Send.

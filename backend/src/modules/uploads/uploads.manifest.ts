@@ -61,6 +61,7 @@ const emailMetaSchema = z
       .max(64)
       .refine(isIsoDateTime, "received_at must be an ISO date")
       .optional(),
+    internet_message_id: z.string().trim().max(998).optional(),
   })
   .strict();
 

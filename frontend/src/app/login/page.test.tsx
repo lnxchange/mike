@@ -3,15 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LoginPage from "./page";
 
-const { login, startGoogleOAuth, refreshSession, replace, push } = vi.hoisted(
-    () => ({
+const { login, startGoogleOAuth, refreshSession, replace, push, getAuthConfig } =
+    vi.hoisted(() => ({
         login: vi.fn(),
         startGoogleOAuth: vi.fn(),
         refreshSession: vi.fn(),
         replace: vi.fn(),
         push: vi.fn(),
-    }),
-);
+        getAuthConfig: vi.fn(),
+    }));
 
 vi.mock("next/navigation", () => ({
     useRouter: () => ({ replace, push }),
@@ -20,6 +20,8 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/app/lib/authApi", () => ({
     login,
     startGoogleOAuth,
+    getAuthConfig,
+    startMicrosoftOAuth: vi.fn(),
 }));
 
 vi.mock("@/app/contexts/AuthContext", () => ({
@@ -38,6 +40,8 @@ describe("LoginPage", () => {
     beforeEach(() => {
         login.mockReset();
         startGoogleOAuth.mockReset();
+        getAuthConfig.mockReset();
+        getAuthConfig.mockResolvedValue({ microsoftEnabled: false });
         refreshSession.mockReset();
         refreshSession.mockResolvedValue(null);
         replace.mockReset();

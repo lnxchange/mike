@@ -481,6 +481,8 @@ export type AssistantEvent =
   | AuVicLegislationToolEvent
   | AuCaseLawToolEvent
   | McpToolEvent
+  | OutlookDraftCreatedEvent
+  | OutlookAuthRequiredEvent
   | {
       type: "case_opinions";
       cluster_id: number;
@@ -505,6 +507,26 @@ export type AssistantEvent =
       reason: string | null;
     }
   | { type: "error"; message: string; safe_to_display?: boolean };
+
+export type OutlookThreadStatus =
+  | "matched"
+  | "ambiguous"
+  | "not_found"
+  | "new";
+
+export type OutlookDraftCreatedEvent = {
+  type: "outlook_draft_created";
+  web_link: string;
+  subject: string;
+  to: string[];
+  attachment_names: string[];
+  threaded: boolean;
+  thread_status?: OutlookThreadStatus;
+};
+
+export type OutlookAuthRequiredEvent = {
+  type: "outlook_auth_required";
+};
 
 export type WordEditApplyMode = "direct" | "approval";
 

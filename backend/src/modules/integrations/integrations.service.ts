@@ -551,3 +551,19 @@ export async function getMatterSyncStatus(
 function filerStatusError(status: number): Error {
   return new Error(`filer answered ${status}`);
 }
+
+export {
+  azureIdentity,
+  deleteMicrosoftTokens,
+  getGraphAccessToken,
+  hasLiveMicrosoftGrant,
+  isMicrosoftConnected,
+  persistMicrosoftTokens,
+  persistProviderSessionTokens,
+} from "./integrations.microsoftAuth";
+export { createOutlookDraft } from "./integrations.outlookDraft";
+export type {
+  CreateOutlookDraftInput,
+  OutlookDraftResult,
+  OutlookThreadStatus,
+} from "./integrations.shared";

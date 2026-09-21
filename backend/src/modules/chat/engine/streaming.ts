@@ -20,6 +20,8 @@ import { AU_LEGISLATION_TOOLS } from "./tools/auLegislationTools";
 import { AU_ENERGY_TOOLS } from "./tools/auEnergyTools";
 import { AU_VIC_LEGISLATION_TOOLS } from "./tools/auVicLegislationTools";
 import { AU_CASE_LAW_TOOLS } from "./tools/auCaseLawTools";
+import { OUTLOOK_DRAFT_TOOLS } from "./tools/outlookDraftTools";
+import { microsoftOAuthEnabled } from "../../../lib/microsoftOAuth";
 import {
   type DocStore,
   type DocIndex,
@@ -282,6 +284,7 @@ export async function runLLMStream(params: {
   const advertisedTools = [
     ...baseTools,
     ...mcpTools,
+    ...(microsoftOAuthEnabled() ? OUTLOOK_DRAFT_TOOLS : []),
     ...(extraTools ?? []),
     ...(clientTools?.schemas ?? []),
   ];
@@ -584,6 +587,7 @@ export async function runLLMStream(params: {
           auCaseLawEvents,
           legislationCitationEvents,
           mcpEvents,
+          outlookEvents,
         } = await runToolCalls(
           toolCalls,
           docStore,
@@ -692,6 +696,9 @@ export async function runLLMStream(params: {
           events.push(event);
         }
         for (const event of mcpEvents) {
+          events.push(event);
+        }
+        for (const event of outlookEvents) {
           events.push(event);
         }
         for (const event of caseCitationEvents) {

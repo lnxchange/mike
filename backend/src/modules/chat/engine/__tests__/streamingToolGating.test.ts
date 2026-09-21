@@ -30,6 +30,7 @@ const { streamChatWithTools, runToolCalls } = vi.hoisted(() => ({
     auCaseLawEvents: [],
     legislationCitationEvents: [],
     mcpEvents: [],
+    outlookEvents: [],
   })),
 }));
 
@@ -148,6 +149,7 @@ describe("runLLMStream document-mutation gating", () => {
       auCaseLawEvents: [],
       legislationCitationEvents: [],
       mcpEvents: [],
+      outlookEvents: [],
     } as never);
     streamChatWithTools.mockImplementationOnce(
       async (params: { runTools?: RunToolsFn }) => {

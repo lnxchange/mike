@@ -174,6 +174,7 @@ module.exports = async (_env, options) => {
         "@mike/model-toggle-ui": frontendSharedUi("ModelToggleUI.tsx"),
         "@mike/mike-icon-ui": frontendSharedUi("MikeIconUI.tsx"),
         "@mike/google-icon-ui": frontendSharedUi("GoogleIconUI.tsx"),
+        "@mike/microsoft-icon-ui": frontendSharedUi("MicrosoftIconUI.tsx"),
         "@mike/auth-styles-ui": frontendSharedUi("AuthStylesUI.ts"),
         "@mike/auth-divider-ui": frontendSharedUi("AuthDividerUI.tsx"),
         "@mike/workflow-slash-command-ui": frontendSharedUi(

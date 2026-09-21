@@ -87,6 +87,7 @@ import {
   runEditDocument,
   runFinalizeDocument,
   safeGeneratedFilename,
+  loadCurrentVersionBytes,
   type DocEditedResult,
   type DocFinalizedResult,
   type TurnEditState,
@@ -95,6 +96,14 @@ import {
   type DocReplicatedResult,
   type TextMatch,
 } from "./documentOps";
+import { normalizeInternetMessageId } from "../../../../lib/emailMessage";
+import { microsoftOAuthEnabled } from "../../../../lib/microsoftOAuth";
+import { createOutlookDraft } from "../../../integrations/integrations.service";
+import { OUTLOOK_DRAFT_TOOL_NAME } from "./outlookDraftTools";
+import type {
+  OutlookAuthRequiredEvent,
+  OutlookDraftCreatedEvent,
+} from "@mike/contracts";
 import {
   spotlight,
   spotlightFilename,
@@ -135,6 +144,73 @@ import {
 } from "./auCaseLawTurnState";
 import type { Db } from "../../../../lib/supabase";
 import { searchLibraryForChat } from "../../../library/library.service";
+
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function loadOutlookAttachment(
+  rawId: string,
+  docStore: DocStore,
+  docIndex: DocIndex | undefined,
+  db: Db,
+): Promise<{ filename: string; contentType: string; bytes: Buffer } | null> {
+  const docId = resolveDocLabel(rawId, docStore, docIndex) ?? rawId;
+  const stored = docStore.get(docId);
+  const indexed = docIndex?.[docId];
+  if (!stored && !indexed?.document_id) return null;
+  const documentId = indexed?.document_id;
+  if (documentId) {
+    const loaded = await loadCurrentVersionBytes(documentId, db);
+    if (!loaded) return null;
+    const filename = stored?.filename ?? indexed?.filename ?? "attachment";
+    return {
+      filename,
+      contentType: contentTypeForDocumentType(
+        stored?.file_type ?? documentSuffixFromName(filename),
+      ),
+      bytes: loaded.bytes,
+    };
+  }
+  if (!stored?.storage_path) return null;
+  const raw = await downloadFile(stored.storage_path);
+  if (!raw) return null;
+  return {
+    filename: stored.filename,
+    contentType: contentTypeForDocumentType(stored.file_type),
+    bytes: Buffer.from(raw),
+  };
+}
+
+function documentSuffixFromName(filename: string) {
+  return filename.includes(".")
+    ? filename.split(".").pop()!.toLowerCase()
+    : "";
+}
+
+async function loadFiledInternetMessageId(
+  rawId: string,
+  docStore: DocStore,
+  docIndex: DocIndex | undefined,
+  db: Db,
+): Promise<string | null> {
+  const docId = resolveDocLabel(rawId, docStore, docIndex) ?? rawId;
+  const documentId = docIndex?.[docId]?.document_id;
+  if (!documentId) return null;
+  const { data } = await db
+    .from("documents")
+    .select("email_internet_message_id")
+    .eq("id", documentId)
+    .maybeSingle();
+  return normalizeInternetMessageId(
+    (data as { email_internet_message_id?: string | null } | null)
+      ?.email_internet_message_id,
+  );
+}
 
 function sourceMaterialNotice(
   sourceKind: "document" | "library_template" | "workflow_asset" | undefined,
@@ -371,6 +447,7 @@ export async function runToolCalls(
   auCaseLawEvents: AuCaseLawToolEvent[];
   legislationCitationEvents: LegislationCitationEvent[];
   mcpEvents: McpToolEvent[];
+  outlookEvents: (OutlookDraftCreatedEvent | OutlookAuthRequiredEvent)[];
 }> {
   const toolResults: unknown[] = [];
   const docsRead: {
@@ -401,6 +478,8 @@ export async function runToolCalls(
   const auCaseLawEvents: AuCaseLawToolEvent[] = [];
   const legislationCitationEvents: LegislationCitationEvent[] = [];
   const mcpEvents: McpToolEvent[] = [];
+  const outlookEvents: (OutlookDraftCreatedEvent | OutlookAuthRequiredEvent)[] =
+    [];
   const courtState: CourtlistenerTurnState = courtlistenerState ?? {
     casesByClusterId: new Map(),
   };
@@ -3203,6 +3282,147 @@ export async function runToolCalls(
         previewFilename,
         "pptx",
       );
+    } else if (tc.function.name === OUTLOOK_DRAFT_TOOL_NAME) {
+      write(
+        `data: ${JSON.stringify({ type: "outlook_draft_start" })}\n\n`,
+      );
+      if (!microsoftOAuthEnabled()) {
+        const event: OutlookAuthRequiredEvent = {
+          type: "outlook_auth_required",
+        };
+        outlookEvents.push(event);
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            ok: false,
+            error: "outlook_auth_required",
+            next_required_action:
+              "Ask the user to connect Microsoft from Settings before drafting email.",
+          }),
+        });
+      } else {
+        const to = asStringList(args.to);
+        const cc = asStringList(args.cc);
+        const bcc = asStringList(args.bcc);
+        const subject =
+          typeof args.subject === "string" ? args.subject.trim() : "";
+        const htmlBody =
+          typeof args.html_body === "string" ? args.html_body : "";
+        const attachmentIds = asStringList(args.attachment_doc_ids);
+        const attachments: {
+          filename: string;
+          contentType: string;
+          bytes: Buffer;
+        }[] = [];
+        let attachmentError: string | null = null;
+        for (const rawId of attachmentIds) {
+          const loaded = await loadOutlookAttachment(
+            rawId,
+            docStore,
+            docIndex,
+            db,
+          );
+          if (!loaded) {
+            attachmentError = "One of the attached documents is not available.";
+            break;
+          }
+          attachments.push(loaded);
+        }
+        const replyDocId =
+          typeof args.reply_to_doc_id === "string"
+            ? args.reply_to_doc_id
+            : null;
+        const explicitMessageId = normalizeInternetMessageId(
+          typeof args.in_reply_to_internet_message_id === "string"
+            ? args.in_reply_to_internet_message_id
+            : null,
+        );
+        const filedMessageId = replyDocId
+          ? await loadFiledInternetMessageId(replyDocId, docStore, docIndex, db)
+          : null;
+        if (attachmentError) {
+          write(
+            `data: ${JSON.stringify({
+              type: "error",
+              message: attachmentError,
+              safe_to_display: true,
+            })}\n\n`,
+          );
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({ ok: false, error: attachmentError }),
+          });
+        } else {
+          const result = await createOutlookDraft(db, userId, {
+            to,
+            cc,
+            bcc,
+            subject,
+            htmlBody,
+            attachments,
+            inReplyToInternetMessageId: explicitMessageId ?? filedMessageId,
+          });
+          if (result.kind === "outlook_auth_required") {
+            const event: OutlookAuthRequiredEvent = {
+              type: "outlook_auth_required",
+            };
+            outlookEvents.push(event);
+            write(`data: ${JSON.stringify(event)}\n\n`);
+            toolResults.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                ok: false,
+                error: "outlook_auth_required",
+                next_required_action:
+                  "Ask the user to connect Microsoft. Do not claim the draft was created.",
+              }),
+            });
+          } else if (result.kind === "outlook_draft_created") {
+            const event: OutlookDraftCreatedEvent = {
+              type: "outlook_draft_created",
+              web_link: result.webLink,
+              subject: result.subject,
+              to: result.to,
+              attachment_names: result.attachmentNames,
+              threaded: result.threaded,
+              thread_status: result.threadStatus,
+            };
+            outlookEvents.push(event);
+            write(`data: ${JSON.stringify(event)}\n\n`);
+            toolResults.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                ok: true,
+                subject: result.subject,
+                to: result.to,
+                attachment_names: result.attachmentNames,
+                threaded: result.threaded,
+                thread_status: result.threadStatus,
+                next_required_action:
+                  "Do not paste the Outlook URL in prose. Tell the user a review-only draft is ready. Never say it was sent.",
+              }),
+            });
+          } else {
+            write(
+              `data: ${JSON.stringify({
+                type: "error",
+                message: result.message,
+                safe_to_display: true,
+              })}\n\n`,
+            );
+            toolResults.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({ ok: false, error: result.message }),
+            });
+          }
+        }
+      }
     }
   }
 
@@ -3243,5 +3463,6 @@ export async function runToolCalls(
     auCaseLawEvents,
     legislationCitationEvents,
     mcpEvents,
+    outlookEvents,
   };
 }

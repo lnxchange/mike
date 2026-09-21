@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, Download, Loader2 } from "lucide-react";
+import { ChevronDown, Download, ExternalLink, Loader2, Mail } from "lucide-react";
 import {
     EventDisclosureButton,
     EventLabel,
@@ -292,6 +292,112 @@ export function DocCreatedBlock({
                         <span className="truncate">{filename}</span>
                     </button>
                 )}
+            </div>
+        </EventBlock>
+    );
+}
+
+function outlookThreadCopy(
+    threaded?: boolean,
+    threadStatus?: "matched" | "ambiguous" | "not_found" | "new",
+) {
+    if (threadStatus === "matched" || (threaded && !threadStatus)) {
+        return "This draft continues the existing conversation.";
+    }
+    if (threadStatus === "ambiguous") {
+        return "More than one matching conversation was found, so this is a new draft.";
+    }
+    if (threadStatus === "not_found") {
+        return "No matching conversation was found, so this is a new draft.";
+    }
+    return "This is a new draft.";
+}
+
+export function OutlookDraftBlock({
+    subject,
+    to,
+    attachmentNames,
+    threaded,
+    threadStatus,
+    webLink,
+    isStreaming,
+    showConnector,
+}: {
+    subject: string;
+    to: string[];
+    attachmentNames: string[];
+    threaded?: boolean;
+    threadStatus?: "matched" | "ambiguous" | "not_found" | "new";
+    webLink?: string;
+    isStreaming?: boolean;
+    showConnector?: boolean;
+}) {
+    return (
+        <EventBlock
+            showConnector={showConnector}
+            isStreaming={isStreaming}
+            dotColor="green"
+        >
+            <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-1.5">
+                    <Mail className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <EventLabel className="shrink-0">
+                        {isStreaming ? "Drafting" : "Outlook draft"}
+                    </EventLabel>
+                    <span className="truncate">
+                        {isStreaming ? `${subject || "email"}...` : subject}
+                    </span>
+                </div>
+                {!isStreaming ? (
+                    <div className="mt-1 space-y-0.5 text-xs text-gray-500">
+                        {to.length > 0 ? (
+                            <p>To {to.join(", ")}</p>
+                        ) : null}
+                        {attachmentNames.length > 0 ? (
+                            <p>Attached {attachmentNames.join(", ")}</p>
+                        ) : null}
+                        <p>{outlookThreadCopy(threaded, threadStatus)}</p>
+                        {webLink ? (
+                            <a
+                                href={webLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-medium text-gray-700 transition-colors hover:text-gray-950"
+                            >
+                                Open in Outlook
+                                <ExternalLink
+                                    className="h-3 w-3"
+                                    aria-hidden="true"
+                                />
+                            </a>
+                        ) : null}
+                    </div>
+                ) : null}
+            </div>
+        </EventBlock>
+    );
+}
+
+export function OutlookConnectBlock({
+    showConnector,
+}: {
+    showConnector?: boolean;
+}) {
+    return (
+        <EventBlock showConnector={showConnector} dotColor="gray">
+            <div className="min-w-0">
+                <EventLabel>Connect Microsoft</EventLabel>
+                <p className="mt-1 text-xs text-gray-500">
+                    Connect Microsoft in Settings to stage a review-only Outlook
+                    draft.
+                </p>
+                <a
+                    href="/settings/security"
+                    className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-gray-700 transition-colors hover:text-gray-950"
+                >
+                    Open Settings
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </a>
             </div>
         </EventBlock>
     );

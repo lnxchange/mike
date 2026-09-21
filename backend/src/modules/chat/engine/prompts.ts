@@ -4,6 +4,8 @@ import { AU_LEGISLATION_SYSTEM_PROMPT } from "./tools/auLegislationTools";
 import { AU_ENERGY_SYSTEM_PROMPT } from "./tools/auEnergyTools";
 import { AU_VIC_LEGISLATION_SYSTEM_PROMPT } from "./tools/auVicLegislationTools";
 import { AU_CASE_LAW_SYSTEM_PROMPT } from "./tools/auCaseLawTools";
+import { OUTLOOK_DRAFT_SYSTEM_PROMPT } from "./tools/outlookDraftTools";
+import { microsoftOAuthEnabled } from "../../../lib/microsoftOAuth";
 
 const SYSTEM_PROMPT_BEFORE_RESEARCH = `You are ${appConfig.branding.assistantName}, an AI legal assistant for lawyers and legal professionals. Help analyze documents, answer legal questions, and draft legal documents.
 
@@ -150,6 +152,7 @@ export function buildSystemPrompt(
     energy ? AU_ENERGY_SYSTEM_PROMPT : "",
     vic ? AU_VIC_LEGISLATION_SYSTEM_PROMPT : "",
     cases ? AU_CASE_LAW_SYSTEM_PROMPT : "",
+    microsoftOAuthEnabled() ? OUTLOOK_DRAFT_SYSTEM_PROMPT : "",
   ]
     .filter(Boolean)
     .join("\n\n");

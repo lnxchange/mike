@@ -129,13 +129,18 @@ export interface PublicAuthUser {
   email: string;
   pendingEmail: string | null;
   createdWithGoogle: boolean;
+  microsoftConnected: boolean;
 }
 
-export function publicAuthUser(user: User): PublicAuthUser {
+export function publicAuthUser(
+  user: User,
+  extras?: { microsoftConnected?: boolean },
+): PublicAuthUser {
   return {
     id: user.id,
     email: user.email ?? "",
     pendingEmail: user.new_email ?? null,
     createdWithGoogle: user.app_metadata?.provider === "google",
+    microsoftConnected: extras?.microsoftConnected === true,
   };
 }

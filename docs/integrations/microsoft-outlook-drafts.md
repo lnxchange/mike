@@ -1,9 +1,9 @@
 # Microsoft login and Outlook draft staging
 
-**Status: approved design, not implemented.** Cloud agents should implement this
-spec in this repository. Do not apply the new migration to production, do not
-deploy Railway or Vercel, and do not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`
-or the dirty filer tree, until Yule confirms.
+**Status: implemented on the working branch.** Do not apply the new migration to
+production, do not deploy Railway or Vercel, and do not change
+`UPLOAD_PROCESSING_MAX_RUNNING_PER_USER` or the dirty filer tree, until Yule
+confirms.
 
 Any user who grants mail access can stage review-only Outlook drafts in their
 own mailbox, attach Mike documents, and join a live conversation by searching
@@ -12,12 +12,12 @@ filer stays the matter-sync executor; it is not the mail path.
 
 ## Implementation checklist
 
-- [ ] Document and wire Entra app + Supabase Azure provider + `MICROSOFT_OAUTH_*` env (admin consent, identity linking)
-- [ ] Add `azure` to `POST /oauth`, Microsoft login/signup button, Word handoff, Settings connect/link/disconnect
-- [ ] Migration + encrypted `user_microsoft_tokens` vault with Graph refresh and deny-all RLS
-- [ ] `create_outlook_draft` tool, SSE events, Open in Outlook / Connect cards, prompt rules
-- [ ] Attach authorised Mike docs via Graph; persist `email_internet_message_id`; reply via mailbox search (Message-ID, then subject and participants)
-- [ ] Auth/vault/tool/UI tests and this document kept current
+- [x] Document and wire Entra app + Supabase Azure provider + `MICROSOFT_OAUTH_*` env (admin consent, identity linking)
+- [x] Add `azure` to `POST /oauth`, Microsoft login/signup button, Word handoff, Settings connect/link/disconnect
+- [x] Migration + encrypted `user_microsoft_tokens` vault with Graph refresh and deny-all RLS
+- [x] `create_outlook_draft` tool, SSE events, Open in Outlook / Connect cards, prompt rules
+- [x] Attach authorised Mike docs via Graph; persist `email_internet_message_id`; reply via mailbox search (Message-ID, then subject and participants)
+- [x] Auth/vault/tool/UI tests and this document kept current
 
 ## Context
 

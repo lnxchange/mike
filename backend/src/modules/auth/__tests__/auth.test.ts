@@ -16,6 +16,7 @@ const {
       signInWithPassword: vi.fn(),
       signUp: vi.fn(),
       signInWithOAuth: vi.fn(),
+      linkIdentity: vi.fn(),
       signInWithSSO: vi.fn(),
       exchangeCodeForSession: vi.fn(),
       resetPasswordForEmail: vi.fn(),
@@ -36,17 +37,26 @@ const {
 vi.mock("../../../lib/authSession", () => ({
   createRequestSupabase,
   clearRequestAuthCookies,
-  publicAuthUser: (user: {
-    id: string;
-    email?: string;
-    new_email?: string;
-    app_metadata?: { provider?: string };
-  }) => ({
+  authCookiesAreSecure: () => false,
+  publicAuthUser: (
+    user: {
+      id: string;
+      email?: string;
+      new_email?: string;
+      app_metadata?: { provider?: string };
+    },
+    extras?: { microsoftConnected?: boolean },
+  ) => ({
     id: user.id,
     email: user.email ?? "",
     pendingEmail: user.new_email ?? null,
     createdWithGoogle: user.app_metadata?.provider === "google",
+    microsoftConnected: extras?.microsoftConnected === true,
   }),
+}));
+vi.mock("../../integrations/integrations.service", () => ({
+  isMicrosoftConnected: vi.fn(async () => false),
+  persistProviderSessionTokens: vi.fn(async () => undefined),
 }));
 vi.mock("../../../lib/authHandoff", () => ({
   issueAuthHandoff,
@@ -80,7 +90,11 @@ describe("auth routes", () => {
     process.env.FRONTEND_URL = origin;
     process.env.NODE_ENV = "production";
     delete process.env.WORD_ADDIN_URL;
-    for (const key of ["SSO_ENABLED", "SSO_ALLOWED_DOMAINS"])
+    for (const key of [
+      "SSO_ENABLED",
+      "SSO_ALLOWED_DOMAINS",
+      "MICROSOFT_OAUTH_ENABLED",
+    ])
       delete process.env[key];
     createRequestSupabase.mockReset().mockReturnValue(authClient);
     clearRequestAuthCookies.mockReset();
@@ -124,6 +138,7 @@ describe("auth routes", () => {
         email: user.email,
         pendingEmail: null,
         createdWithGoogle: false,
+        microsoftConnected: false,
       },
     });
     expect(JSON.stringify(response.body)).not.toContain("server-only-token");
@@ -153,6 +168,51 @@ describe("auth routes", () => {
         skipBrowserRedirect: true,
       },
     });
+  });
+
+  it("rejects Microsoft OAuth when the feature is disabled", async () => {
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .send({ provider: "azure" });
+    expect(response.status).toBe(403);
+    expect(authClient.auth.signInWithOAuth).not.toHaveBeenCalled();
+  });
+
+  it("starts Microsoft OAuth with Graph scopes when enabled", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    authClient.auth.signInWithOAuth.mockResolvedValue({
+      data: { url: "https://login.microsoftonline.test/authorize" },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .send({ provider: "azure" });
+
+    expect(response.status).toBe(200);
+    expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "azure",
+      options: {
+        redirectTo:
+          "https://app.example.test/auth/callback?next=%2Fonboarding%2Fprofile",
+        skipBrowserRedirect: true,
+        scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
+      },
+    });
+    expect(response.headers["set-cookie"]?.join(" ") ?? "").toContain(
+      "mike-oauth-provider=azure",
+    );
+  });
+
+  it("reports whether Microsoft login is enabled", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    const response = await request(app)
+      .get("/auth/config")
+      .set("Origin", origin);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ microsoftEnabled: true });
   });
 
   it("disables SSO initiation by default", async () => {
@@ -375,6 +435,7 @@ describe("auth routes", () => {
           email: user.email,
           pendingEmail: null,
           createdWithGoogle: false,
+          microsoftConnected: false,
         },
       });
       expect(JSON.stringify(response.body)).not.toContain("mfa-access-token");
@@ -436,6 +497,7 @@ describe("auth routes", () => {
         email: user.email,
         pendingEmail: null,
         createdWithGoogle: false,
+        microsoftConnected: false,
       },
     });
     expect(JSON.stringify(response.body)).not.toContain("handoff-access-token");

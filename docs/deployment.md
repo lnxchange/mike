@@ -225,6 +225,39 @@ HttpOnly cookie. No Supabase access or refresh token enters add-in JavaScript or
 OfficeRuntime storage. The add-in also does not retain Google's provider access
 token or request Google Drive or Gmail access.
 
+## Microsoft login and Outlook drafts
+
+Mike can use the Supabase Azure provider as a login type and, with
+`Mail.ReadWrite`, stage review-only Outlook drafts in the signed-in user's
+mailbox. This is separate from SAML SSO and from the Attune filer's app-only
+Graph identity used for Zoho/SharePoint matter sync.
+
+Register an Entra app (not the filer daemon). Request delegated
+`openid`, `profile`, `email`, `offline_access`, `User.Read`, and
+`Mail.ReadWrite`. Do not request `Mail.Send`. The redirect URI is the
+Supabase Auth callback (`https://<project>.supabase.co/auth/v1/callback`).
+Enable the Azure provider in the Supabase Auth dashboard with that client
+id and secret, grant admin consent in the tenant that will use mail, and
+turn on automatic identity linking on matching email so an existing
+password or Google user is not given a second Mike account.
+
+Backend environment:
+
+```
+MICROSOFT_OAUTH_ENABLED=true
+MICROSOFT_OAUTH_CLIENT_ID=
+MICROSOFT_OAUTH_CLIENT_SECRET=
+```
+
+`MICROSOFT_OAUTH_ENABLED` fails closed unless it is exactly `true`. The
+client id and secret must match the Supabase Azure provider so Mike can
+refresh Graph tokens after the Supabase session no longer carries
+`provider_refresh_token`. Encrypted tokens live in `user_microsoft_tokens`
+and are service-role only. Do not apply the Microsoft migration to
+production until that enablement is confirmed.
+
+See [Microsoft login and Outlook draft staging](integrations/microsoft-outlook-drafts.md).
+
 ## Enterprise SSO (SAML)
 
 Self-hosted Mike can use SAML providers registered in Supabase Auth (GoTrue),

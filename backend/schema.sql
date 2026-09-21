@@ -351,6 +351,23 @@ create index if not exists idx_user_api_keys_user
 
 alter table public.user_api_keys enable row level security;
 
+create table if not exists public.user_microsoft_tokens (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  encrypted_access_token text not null,
+  access_token_iv text not null,
+  access_token_tag text not null,
+  encrypted_refresh_token text not null,
+  refresh_token_iv text not null,
+  refresh_token_tag text not null,
+  access_token_expires_at timestamptz not null,
+  granted_scopes text not null,
+  mailbox_upn text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_microsoft_tokens enable row level security;
+
 -- Ordered, user-selected models for API routing gateways. Router slugs are
 -- deliberately provider-neutral (for example `openrouter` or `vercel`).
 create table if not exists public.user_router_models (
@@ -735,6 +752,7 @@ create table if not exists public.documents (
   email_from text,
   email_to text,
   email_received_at timestamptz,
+  email_internet_message_id text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint documents_library_kind_check
@@ -756,6 +774,10 @@ create index if not exists idx_documents_project_folder
 create index if not exists idx_documents_project_email_received
   on public.documents(project_id, email_received_at desc)
   where email_received_at is not null;
+
+create index if not exists idx_documents_email_internet_message_id
+  on public.documents(email_internet_message_id)
+  where email_internet_message_id is not null;
 
 create index if not exists idx_documents_library_kind_folder
   on public.documents(user_id, library_kind, library_folder_id)
@@ -6655,6 +6677,8 @@ revoke all on public.tabular_review_row_sources from anon, authenticated;
 revoke all on public.tabular_review_chats from anon, authenticated;
 revoke all on public.tabular_review_chat_messages from anon, authenticated;
 revoke all on public.user_api_keys from anon, authenticated;
+revoke all on public.user_microsoft_tokens from anon, authenticated;
+grant select, insert, update, delete on public.user_microsoft_tokens to service_role;
 revoke all on public.auth_handoff_tickets from anon, authenticated;
 revoke all on public.user_router_models from anon, authenticated;
 revoke all on public.user_mcp_connectors from anon, authenticated;

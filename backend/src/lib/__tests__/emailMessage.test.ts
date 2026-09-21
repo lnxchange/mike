@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   emailToHtml,
   emailToText,
+  extractInternetMessageId,
   fileableAttachments,
   inlineCidImages,
+  normalizeInternetMessageId,
+  normalizeMailboxSubject,
   parseEmail,
   sanitizeEmailHtml,
 } from "../emailMessage";
@@ -14,6 +17,7 @@ const EML = [
   "To: Client Person <client@example.com>",
   "Cc: Colleague <colleague@example.com>",
   "Subject: Northeon JV - draft shareholders agreement",
+  "Message-ID: <northeon-jv@attune.legal>",
   "Date: Mon, 21 Jul 2026 09:30:00 +1000",
   "MIME-Version: 1.0",
   'Content-Type: multipart/mixed; boundary="b1"',
@@ -59,6 +63,7 @@ describe("parseEmail (eml)", () => {
     expect(email.to[0]?.address).toBe("client@example.com");
     expect(email.cc[0]?.address).toBe("colleague@example.com");
     expect(email.date?.toISOString()).toBe("2026-07-20T23:30:00.000Z");
+    expect(email.messageId).toBe("<northeon-jv@attune.legal>");
     expect(email.text).toContain("Attached is the draft for your review.");
     expect(email.attachments.map((a) => a.filename)).toEqual([
       "Shareholders Agreement.pdf",
@@ -67,6 +72,16 @@ describe("parseEmail (eml)", () => {
     ]);
     expect(email.attachments[1]?.inline).toBe(true);
     expect(email.attachments[1]?.cid).toBe("logo@cid");
+  });
+
+  it("normalises Message-ID and mailbox subjects", () => {
+    expect(normalizeInternetMessageId("abc@example.com")).toBe(
+      "<abc@example.com>",
+    );
+    expect(extractInternetMessageId(Buffer.from(EML), "eml")).toBe(
+      "<northeon-jv@attune.legal>",
+    );
+    expect(normalizeMailboxSubject("Re: Fw: Schedule")).toBe("Schedule");
   });
 
   it("rejects unknown email types", async () => {

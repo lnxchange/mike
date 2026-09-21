@@ -2100,6 +2100,57 @@ export function useAssistantChat({
               continue;
             }
 
+            if (data.type === "outlook_draft_start") {
+              pushEvent({
+                type: "outlook_draft_created",
+                web_link: "",
+                subject: "",
+                to: [],
+                attachment_names: [],
+                threaded: false,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "outlook_draft_created") {
+              const next = {
+                type: "outlook_draft_created" as const,
+                web_link: typeof data.web_link === "string" ? data.web_link : "",
+                subject: typeof data.subject === "string" ? data.subject : "",
+                to: Array.isArray(data.to)
+                  ? data.to.filter((item): item is string => typeof item === "string")
+                  : [],
+                attachment_names: Array.isArray(data.attachment_names)
+                  ? data.attachment_names.filter(
+                      (item): item is string => typeof item === "string",
+                    )
+                  : [],
+                threaded: data.threaded === true,
+                thread_status:
+                  data.thread_status === "matched" ||
+                  data.thread_status === "ambiguous" ||
+                  data.thread_status === "not_found" ||
+                  data.thread_status === "new"
+                    ? data.thread_status
+                    : undefined,
+                isStreaming: false,
+              };
+              const replaced = updateMatchingEvent(
+                (e) => e.type === "outlook_draft_created" && !!e.isStreaming,
+                () => next,
+              );
+              if (!replaced) pushEvent(next);
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "outlook_auth_required") {
+              pushEvent({ type: "outlook_auth_required" });
+              pushThinkingPlaceholder();
+              continue;
+            }
+
             if (data.type === "doc_created_start") {
               pushEvent({
                 type: "doc_created",
