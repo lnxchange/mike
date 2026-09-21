@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { refreshMicrosoftTokens } = vi.hoisted(() => ({
-  refreshMicrosoftTokens: vi.fn(),
-}));
-
-vi.mock("../integrations.graph", () => ({
-  GraphAuthError: class GraphAuthError extends Error {
+const { refreshMicrosoftTokens, GraphAuthError } = vi.hoisted(() => {
+  class GraphAuthError extends Error {
     invalidGrant: boolean;
     constructor(message: string, invalidGrant = false) {
       super(message);
       this.invalidGrant = invalidGrant;
     }
-  },
+  }
+  return {
+    refreshMicrosoftTokens: vi.fn(),
+    GraphAuthError,
+  };
+});
+
+vi.mock("../integrations.graph", () => ({
+  GraphAuthError,
   getMailboxUpn: vi.fn(async () => "lawyer@example.test"),
   refreshMicrosoftTokens,
 }));
@@ -102,7 +106,6 @@ describe("microsoft token vault", () => {
       granted_scopes: "Mail.ReadWrite",
       mailbox_upn: "lawyer@example.test",
     });
-    const { GraphAuthError } = await import("../integrations.graph");
     refreshMicrosoftTokens.mockRejectedValue(
       new GraphAuthError("expired", true),
     );
