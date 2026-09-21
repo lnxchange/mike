@@ -239,7 +239,11 @@ Supabase Auth callback (`https://<project>.supabase.co/auth/v1/callback`).
 Enable the Azure provider in the Supabase Auth dashboard with that client
 id and secret, grant admin consent in the tenant that will use mail, and
 turn on automatic identity linking on matching email so an existing
-password or Google user is not given a second Mike account.
+password or Google user is not given a second Mike account. Add every
+production web origin's `/auth/callback` to the Auth redirect allow list
+(the Vercel alias and the `*.vercel.app` project host). If GoTrue falls
+back to the Site URL with `?code=`, the app now forwards that code to
+`/auth/callback` instead of dropping it on the home redirect.
 
 Backend environment:
 
@@ -253,8 +257,9 @@ MICROSOFT_OAUTH_CLIENT_SECRET=
 client id and secret must match the Supabase Azure provider so Mike can
 refresh Graph tokens after the Supabase session no longer carries
 `provider_refresh_token`. Encrypted tokens live in `user_microsoft_tokens`
-and are service-role only. Do not apply the Microsoft migration to
-production until that enablement is confirmed.
+and are service-role only. Migration `20260921_06` is applied on Libris
+Colleague (`gttnqqwqoirwbvalqfce`). The login button still needs the Azure
+provider enabled in that project's Supabase Auth dashboard.
 
 See [Microsoft login and Outlook draft staging](integrations/microsoft-outlook-drafts.md).
 

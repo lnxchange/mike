@@ -1,5 +1,45 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Microsoft login bounced to /login after a successful Azure link
+
+Yule signed in with Microsoft to the existing `yule@attune.legal` account
+(not a new user). GoTrue linked Azure at 07:19:21Z
+(`auth.identities` provider `azure` on user `0e66f3d3-…`) and logged
+`action: login`. Railway never saw `POST /auth/exchange`. He landed on
+`/login` with session 401. Referer on authorize/callback was
+`https://libris-colleague-lnxchanges-projects.vercel.app`. Root
+`page.tsx` was `redirect("/assistant")`, which drops `?code=` when
+GoTrue falls back to the Site URL. Fix: forward `code` / provider errors
+from `/`, `/login`, and the app shell to `/auth/callback`. Vault still
+empty until a successful exchange. Try again from
+https://libris-colleague.vercel.app/login. Add both Vercel hosts'
+`/auth/callback` to the Supabase redirect allow list.
+
+## 2026-09-21 — Microsoft login and Outlook drafts shipped to production
+
+Yule asked to push the Outlook slice live for production testing. Shipped
+`2bddbecb` + frontend type-fix `724b46b1` on
+`cursor/setup-supabase-vercel-oss-cad9`. Applied `20260921_06` /
+`microsoft_outlook_drafts` on `gttnqqwqoirwbvalqfce`
+(`user_microsoft_tokens` + `documents.email_internet_message_id`). Railway
+`mike` from-source `4f03fdb1` SUCCESS (SHA `2bddbec`), `/health` 200,
+`/auth/config` `{ microsoftEnabled: true }`. Vercel
+`dpl_3u9HrDFVQMW3YVt7HzUGjLtFKtaW` READY + aliased to
+https://libris-colleague.vercel.app. Login shows Continue with Microsoft.
+
+Registered Entra app **Libris Colleague**
+`54eb9bf6-c655-43d7-a550-ec7f58ba3775` (not the filer). Delegated
+`User.Read` + `Mail.ReadWrite` + OIDC scopes. No `Mail.Send`. Admin
+consent granted in Attune. Redirect
+`https://gttnqqwqoirwbvalqfce.supabase.co/auth/v1/callback`. Railway has
+`MICROSOFT_OAUTH_ENABLED=true` and matching client id/secret.
+
+Azure provider is now enabled. Authorize reaches Entra with the Libris
+Colleague client id and Mail.ReadWrite (no Mail.Send). The first live
+login linked the identity and then bounced, see the note above. Did not
+change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`. Did not deploy the dirty
+filer tree. Did not apply migration 08.
+
 ## 2026-09-21 — Microsoft login and Outlook draft spec parked for a cloud agent
 
 Approved design is in `docs/integrations/microsoft-outlook-drafts.md`. Microsoft
