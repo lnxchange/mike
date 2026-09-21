@@ -1,5 +1,19 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-21 — Empty Attune Legal Files folder and 1970 dates
+
+Yule was on Library → Files (`/library`). Attune Legal and personal source folders looked empty with Created/Updated as 1 January 1970.
+
+Cause: those rows are synthetic `source:` grouping folders (`virtualSourceFolder` sends `created_at`/`updated_at` null). `formatDate(null)` became Unix epoch. The Files shelf for Attune is genuinely empty (0 library-only `library_kind=file` rows). The eight Masters are on the **Templates** shelf under Attune Legal: Templates (letterhead + presentation), Precedents/Commercial (4), Precedents/IP & Technology (1), Precedents/ESOP & Equity (1). Did not duplicate them onto Files (templates stay templates; sharing storage_path would be unsafe on delete).
+
+Fix (uncommitted, not deployed): `formatDate` hides null/invalid/epoch; virtual folder rows omit dates; empty virtual Files folder says templates are on the Templates tab. Tests: frontend formatDate + DocTable virtual rows; backend library source-folder null timestamps.
+
+Browser: production `/library` redirected to login in the Cursor browser. Local :3010 was down. Verified by SQL + component render tests, not a logged-in click-through.
+
+S155 email backfill still 0/`email_*` (900 rows have `external_item_id`). Did not re-run Graph. Filer `colleague_sync` listItem mapping remains not deployed (tree dirty). Did not apply migration 08, did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`.
+
+Yule: open **Templates**, expand **Attune Legal**. Deploy the date fix before Files stops showing 1970.
+
 ## 2026-09-21 — Org Library shipped and Attune Masters seeded
 
 HEAD `09331d0b` (feature `011f59d4`, UI typefix `d7089a6d`, backend tsc `09331d0b`). Library is a union of personal plus every org shelf. Migration `20260921_03_org_library.sql` applied to `gttnqqwqoirwbvalqfce`. Railway `mike` `7931d333` SUCCESS, SHA `09331d0b`, https://mike-production-68f2.up.railway.app `/health` 200. Vercel preview `dpl_FnCQkgYbUTHDUHGFcye5UmF9nzaF` READY (SHA `09331d0b`) and aliased to https://libris-colleague.vercel.app. `/login` follows to 200 (SSO gate on `/` is 302). Did not apply migration 08, did not change `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER`, did not deploy the dirty filer.

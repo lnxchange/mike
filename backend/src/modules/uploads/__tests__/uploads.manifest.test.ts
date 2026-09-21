@@ -188,7 +188,54 @@ describe("parseUploadSessionRequest", () => {
         USER_ID,
         SESSION_ID,
       );
-      expect(result.files[0].client_meta?.external.item_id).toBe("01ITEM");
+      expect(result.files[0].client_meta?.external?.item_id).toBe("01ITEM");
+    });
+
+    it("carries optional email list fields next to the external block", () => {
+      const result = parseUploadSessionRequest(
+        {
+          ...documentRequest(1),
+          files: [
+            {
+              ...documentRequest(1).files[0],
+              email: {
+                subject: " s155 notice ",
+                from: "accc@example.gov.au",
+                to: "yule@attune.legal",
+                received_at: "2026-03-01T03:00:00.000Z",
+              },
+            },
+          ],
+        },
+        USER_ID,
+        SESSION_ID,
+      );
+      expect(result.files[0].client_meta).toEqual({
+        email: {
+          subject: "s155 notice",
+          from: "accc@example.gov.au",
+          to: "yule@attune.legal",
+          received_at: "2026-03-01T03:00:00.000Z",
+        },
+      });
+    });
+
+    it("rejects a non-ISO received_at", () => {
+      expect(() =>
+        parseUploadSessionRequest(
+          {
+            ...documentRequest(1),
+            files: [
+              {
+                ...documentRequest(1).files[0],
+                email: { received_at: "yesterday" },
+              },
+            ],
+          },
+          USER_ID,
+          SESSION_ID,
+        ),
+      ).toThrow(UploadSessionValidationError);
     });
 
     it("rejects unknown providers, missing keys, oversized values and extra keys", () => {

@@ -27,6 +27,11 @@ describe("buildSystemPrompt", () => {
             );
             expect(prompt).toContain("DOCX GENERATION:");
             expect(prompt).toContain("DOCUMENT EDITING:");
+            expect(prompt).toContain(
+                "When Australian execution-block instructions are present",
+            );
+            expect(prompt).not.toContain("Attune");
+            expect(prompt).not.toContain("AL H");
         }
     });
 
@@ -68,6 +73,11 @@ describe("buildSystemPrompt", () => {
                 "Workflow assets used as templates are immutable",
             );
             expect(prompt).toContain("Library Templates are immutable");
+            expect(prompt).toContain("call search_library");
+            expect(prompt).toContain(
+                "Do not call generate_docx when a matching Library Template exists",
+            );
+            expect(prompt).toContain("use only those style names");
             expect(prompt).toContain(
                 "call replicate_document with a descriptive new_filename",
             );

@@ -155,7 +155,16 @@ export interface DocTableSelectionActions {
     onDelete: () => Promise<void>;
 }
 
-export type DocumentSortKey = "name" | "size" | "version" | "created" | "updated";
+export type DocumentSortKey =
+    | "name"
+    | "size"
+    | "version"
+    | "created"
+    | "updated"
+    | "arrived"
+    | "from"
+    | "to"
+    | "subject";
 
 export type DocumentSort = {
     key: DocumentSortKey;
@@ -179,7 +188,104 @@ const SORT_KEY_LABELS: Record<DocumentSortKey, string> = {
     version: "Version",
     created: "Created",
     updated: "Updated",
+    arrived: "Arrived",
+    from: "From",
+    to: "To",
+    subject: "Subject",
 };
+
+const EMAIL_SORT_KEYS = new Set<DocumentSortKey>([
+    "arrived",
+    "from",
+    "to",
+    "subject",
+]);
+
+export function documentHasEmailMeta(doc: Document): boolean {
+    return Boolean(
+        doc.email_subject?.trim() ||
+            doc.email_from?.trim() ||
+            doc.email_to?.trim() ||
+            doc.email_received_at,
+    );
+}
+
+function EmailEmptyCell() {
+    return <span className="text-gray-300">—</span>;
+}
+
+function EmailMetaHeaderCells({ show }: { show: boolean }) {
+    if (!show) return null;
+    return (
+        <>
+            <TableHeaderCell className="flex w-32 items-center gap-1">
+                <span>Arrived</span>
+            </TableHeaderCell>
+            <TableHeaderCell className="flex w-40 items-center gap-1">
+                <span>From</span>
+            </TableHeaderCell>
+            <TableHeaderCell className="flex w-40 items-center gap-1">
+                <span>To</span>
+            </TableHeaderCell>
+            <TableHeaderCell className="flex w-48 items-center gap-1">
+                <span>Subject</span>
+            </TableHeaderCell>
+        </>
+    );
+}
+
+function EmailMetaSkeletonCells({ show }: { show: boolean }) {
+    if (!show) return null;
+    return (
+        <>
+            <div className="w-32 shrink-0">
+                <div className="h-3 w-16 rounded bg-gray-100 animate-pulse" />
+            </div>
+            <div className="w-40 shrink-0">
+                <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
+            </div>
+            <div className="w-40 shrink-0">
+                <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
+            </div>
+            <div className="w-48 shrink-0">
+                <div className="h-3 w-24 rounded bg-gray-100 animate-pulse" />
+            </div>
+        </>
+    );
+}
+
+function EmailMetaCells({
+    doc,
+    show,
+}: {
+    doc?: Pick<
+        Document,
+        "email_subject" | "email_from" | "email_to" | "email_received_at"
+    >;
+    show: boolean;
+}) {
+    if (!show) return null;
+    return (
+        <>
+            <div className="w-32 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_received_at ? (
+                    formatDate(doc.email_received_at)
+                ) : (
+                    <EmailEmptyCell />
+                )}
+            </div>
+            <div className="w-40 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_from?.trim() || <EmailEmptyCell />}
+            </div>
+            <div className="w-40 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_to?.trim() || <EmailEmptyCell />}
+            </div>
+            <div className="w-48 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_subject?.trim() || <EmailEmptyCell />}
+            </div>
+        </>
+    );
+}
 
 interface DocTableOperations {
     uploadDocument: (
@@ -221,6 +327,7 @@ interface DocTableProps {
     search: string;
     operations: DocTableOperations;
     emptyStateTitle: string;
+    emptyFolderMessage?: string;
     renderAddDocumentsModal?: (
         open: boolean,
         onClose: () => void,
@@ -294,11 +401,30 @@ function dateTimeValue(value: string | null | undefined): number {
     return Number.isFinite(time) ? time : 0;
 }
 
+function isVirtualFolder(
+    folder: DocTableFolder | null | undefined,
+): boolean {
+    return !!folder && "virtual" in folder && folder.virtual === true;
+}
+
+function folderCreatedAt(folder: DocTableFolder): string | null {
+    return isVirtualFolder(folder) ? null : folder.created_at;
+}
+
+function folderUpdatedAt(folder: DocTableFolder): string | null {
+    if (isVirtualFolder(folder)) return null;
+    return folder.updated_at ?? folder.created_at;
+}
+
 function documentVersionNumber(doc: Document): number | null {
     return doc.active_version_number ?? doc.latest_version_number ?? null;
 }
 
-function ProjectTableLoadingHeader() {
+function ProjectTableLoadingHeader({
+    showEmailColumns = false,
+}: {
+    showEmailColumns?: boolean;
+}) {
     return (
         <TableHeaderRow className="pr-3">
             <TableStickyCell
@@ -317,6 +443,7 @@ function ProjectTableLoadingHeader() {
             <TableHeaderCell className="flex w-20 items-center gap-1">
                 <span>Version</span>
             </TableHeaderCell>
+            <EmailMetaHeaderCells show={showEmailColumns} />
             <TableHeaderCell className="flex w-32 items-center gap-1">
                 <span>Created</span>
             </TableHeaderCell>
@@ -328,7 +455,11 @@ function ProjectTableLoadingHeader() {
     );
 }
 
-function ProjectTableLoading() {
+function ProjectTableLoading({
+    showEmailColumns = false,
+}: {
+    showEmailColumns?: boolean;
+}) {
     return (
         <div className="flex-1 flex flex-col min-h-0">
             {[1, 2, 3, 4, 5].map((i) => (
@@ -352,6 +483,7 @@ function ProjectTableLoading() {
                     <div className="w-20 shrink-0">
                         <div className="h-3 w-5 rounded bg-gray-100 animate-pulse" />
                     </div>
+                    <EmailMetaSkeletonCells show={showEmailColumns} />
                     <div className="w-32 shrink-0">
                         <div className="h-3 w-16 rounded bg-gray-100 animate-pulse" />
                     </div>
@@ -388,6 +520,7 @@ export function DocTable({
     search,
     operations,
     emptyStateTitle,
+    emptyFolderMessage,
     renderAddDocumentsModal,
     onAddDocumentsActionChange,
     onUploadFilesActionChange,
@@ -436,6 +569,8 @@ export function DocTable({
     const [typeFilter, setTypeFilter] = useState<string | null>(null);
     const [sort, setSort] = useState<DocumentSort | null>(null);
     const serverQueryActive = serverDocuments !== null;
+    const docs = serverDocuments ?? documents;
+    const showEmailColumns = docs.some(documentHasEmailMeta);
     const documentUploadInputRef = useRef<HTMLInputElement>(null);
     const directoryUploadInputRef = useRef<HTMLInputElement>(null);
     const tableRootRef = useRef<HTMLDivElement>(null);
@@ -2206,6 +2341,7 @@ export function DocTable({
                 </div>
                 <div className="w-24 shrink-0 text-xs text-gray-300">{statusLabel}</div>
                 <div className="w-20 shrink-0 text-xs text-gray-300">—</div>
+                <EmailMetaCells show={showEmailColumns} />
                 <div className="w-32 shrink-0 text-xs text-gray-300">—</div>
                 <div className="w-32 shrink-0 text-xs text-gray-300">—</div>
                 <div className="w-8 shrink-0" />
@@ -2264,7 +2400,11 @@ export function DocTable({
         return [...directRows, ...folderRows];
     }
 
-    const effectiveSort = sort ?? defaultSort;
+    const effectiveSort =
+        sort ??
+        (showEmailColumns
+            ? { key: "arrived" as const, direction: "desc" as const }
+            : defaultSort);
 
     const foldersByParentId = useMemo(() => {
         const byParentId = new Map<string | null, DocTableFolder[]>();
@@ -2556,8 +2696,8 @@ export function DocTable({
                 ...childFolders.map((folder) => ({
                     key: `folder:${folder.id}`,
                     name: folder.name,
-                    createdAt: folder.created_at,
-                    updatedAt: folder.updated_at ?? folder.created_at,
+                    createdAt: folderCreatedAt(folder),
+                    updatedAt: folderUpdatedAt(folder),
                     fallbackGroup: 1,
                 })),
             ]
@@ -2754,6 +2894,7 @@ export function DocTable({
                                                     <span className="text-gray-300 pl-1">—</span>
                                                 )}
                                             </div>
+                                            <EmailMetaCells doc={doc} show={showEmailColumns} />
                                             <div className="w-32 shrink-0 text-xs text-gray-500 truncate">
                                                 {doc.created_at ? (
                                                     formatDate(doc.created_at)
@@ -3076,17 +3217,12 @@ export function DocTable({
                                 <div className="ml-auto w-20 shrink-0 text-xs text-gray-300">—</div>
                                 <div className="w-24 shrink-0 text-xs text-gray-300">—</div>
                                 <div className="w-20 shrink-0 text-xs text-gray-300">—</div>
+                                <EmailMetaCells show={showEmailColumns} />
                                 <div className="w-32 shrink-0 truncate text-xs text-gray-500">
-                                    {folder.created_at
-                                        ? formatDate(folder.created_at)
-                                        : "—"}
+                                    {formatDate(folderCreatedAt(folder)) || "—"}
                                 </div>
                                 <div className="w-32 shrink-0 truncate text-xs text-gray-500">
-                                    {folder.updated_at
-                                        ? formatDate(folder.updated_at)
-                                        : folder.created_at
-                                          ? formatDate(folder.created_at)
-                                          : "—"}
+                                    {formatDate(folderUpdatedAt(folder)) || "—"}
                                 </div>
                                 <div className="w-8 shrink-0 flex justify-end" onClick={(e) => e.stopPropagation()}>
                                     {"virtual" in folder && folder.virtual ? null : (
@@ -3116,7 +3252,6 @@ export function DocTable({
 
     // ── Loading skeleton ──────────────────────────────────────────────────────
 
-    const docs = serverDocuments ?? documents;
     const downloadDoc = useCallback(async (docId: string) => {
         const { url, filename } = await getDocumentUrl(docId);
         const a = document.createElement("a");
@@ -3555,7 +3690,9 @@ export function DocTable({
     }
 
     const filteredDocs = useMemo(() => {
-        if (serverQueryActive) return docs;
+        if (serverQueryActive && !EMAIL_SORT_KEYS.has(effectiveSort?.key ?? "name")) {
+            return docs;
+        }
 
         const rows = docs
             .filter((doc) => !q || doc.filename.toLowerCase().includes(q))
@@ -3580,6 +3717,25 @@ export function DocTable({
 
             if (effectiveSort.key === "updated") {
                 return (dateTimeValue(a.updated_at) - dateTimeValue(b.updated_at)) * multiplier;
+            }
+
+            if (effectiveSort.key === "arrived") {
+                const byArrived =
+                    dateTimeValue(a.email_received_at) - dateTimeValue(b.email_received_at);
+                if (byArrived !== 0) return byArrived * multiplier;
+                return (dateTimeValue(a.created_at) - dateTimeValue(b.created_at)) * multiplier;
+            }
+
+            if (effectiveSort.key === "from") {
+                return (a.email_from ?? "").localeCompare(b.email_from ?? "") * multiplier;
+            }
+
+            if (effectiveSort.key === "to") {
+                return (a.email_to ?? "").localeCompare(b.email_to ?? "") * multiplier;
+            }
+
+            if (effectiveSort.key === "subject") {
+                return (a.email_subject ?? "").localeCompare(b.email_subject ?? "") * multiplier;
             }
 
             return a.filename.localeCompare(b.filename) * multiplier;
@@ -4083,7 +4239,7 @@ export function DocTable({
                 }
                 header={
                     loading || (serverQueryActive && serverQueryLoading) ? (
-                        <ProjectTableLoadingHeader />
+                        <ProjectTableLoadingHeader showEmailColumns={showEmailColumns} />
                     ) : (
                         <TableHeaderRow className="pr-3">
                             <TableStickyCell header widthClassName={DOC_NAME_COL_W}>
@@ -4120,6 +4276,7 @@ export function DocTable({
                                 <span>Version</span>
                                 {versionFilterButton}
                             </TableHeaderCell>
+                            <EmailMetaHeaderCells show={showEmailColumns} />
                             <TableHeaderCell className="flex w-32 items-center gap-1">
                                 <span>Created</span>
                                 {createdFilterButton}
@@ -4134,7 +4291,7 @@ export function DocTable({
                 }
             >
                 {loading || (serverQueryActive && serverQueryLoading) ? (
-                    <ProjectTableLoading />
+                    <ProjectTableLoading showEmailColumns={showEmailColumns} />
                 ) : (
                     <div className="flex-1 flex flex-col min-h-0">
                         <div
@@ -4170,7 +4327,10 @@ export function DocTable({
                             {viewedFolderIsEmpty ? (
                                 <div className="flex flex-1 items-center justify-center py-24 text-center">
                                     <p className="text-sm text-gray-400">
-                                        Empty folder
+                                        {isVirtualFolder(viewedFolder) &&
+                                        emptyFolderMessage
+                                            ? emptyFolderMessage
+                                            : "Empty folder"}
                                     </p>
                                 </div>
                             ) : docs.length === 0 &&
@@ -4416,6 +4576,7 @@ export function DocTable({
                                                                     <span className="text-gray-300 pl-1">—</span>
                                                                 )}
                                                             </div>
+                                                            <EmailMetaCells doc={doc} show={showEmailColumns} />
                                                             <div className="w-32 shrink-0 text-xs text-gray-500 truncate">
                                                                 {doc.created_at ? (
                                                                     formatDate(doc.created_at)

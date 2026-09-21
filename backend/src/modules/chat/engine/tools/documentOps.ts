@@ -12,6 +12,10 @@ import { enqueueDbJob, enqueueStorageCleanup } from "../../../../lib/dbq/enqueue
 import type { Db } from "../../../../lib/supabase";
 import { profileAttributionName } from "../../../../lib/userLookup";
 import {
+  extractDocxParagraphStyles,
+  formatDocxParagraphStylesSection,
+} from "../../../../lib/docxStyles";
+import {
   acceptAllTrackedChanges,
   applyTrackedEdits,
   extractDocxBodyText,
@@ -42,6 +46,14 @@ import {
 import { extractEmailText } from "../../../../lib/emailMessage";
 import { extractPresentationText } from "../../../../lib/officeText";
 import { spreadsheetToLLMText } from "../../../../lib/spreadsheet";
+import {
+  fillExecutionBlock,
+  selectExecutionBlock,
+  type ExecutionBlockId,
+  type ExecutionLine,
+  type ExecutionPartyKind,
+  type ExecutionPlaceholderValues,
+} from "../../../../lib/auExecutionBlocks";
 
 
 export function citationReminder(
@@ -207,9 +219,13 @@ export async function generateDocx(
     ];
     const normalizeTable = (
       table: unknown,
-    ): { headers: string[]; rows: string[][] } | null => {
+    ): { headers: string[]; rows: string[][]; borders: boolean } | null => {
       if (!table || typeof table !== "object") return null;
-      const raw = table as { headers?: unknown; rows?: unknown };
+      const raw = table as {
+        headers?: unknown;
+        rows?: unknown;
+        borders?: unknown;
+      };
       const headers = Array.isArray(raw.headers)
         ? raw.headers
             .map((header) => (typeof header === "string" ? header.trim() : ""))
@@ -224,7 +240,67 @@ export async function generateDocx(
           headers.map((_, i) => (typeof row[i] === "string" ? row[i] : "")),
         );
 
-      return { headers, rows };
+      return { headers, rows, borders: raw.borders !== false };
+    };
+    const noBorder = {
+      top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    };
+    const tableNoBorder = {
+      ...noBorder,
+      insideHorizontal: noBorder.top,
+      insideVertical: noBorder.top,
+    };
+    const paragraphFromExecutionLines = (lines: ExecutionLine[]) =>
+      lines.map(
+        (line) =>
+          new Paragraph({
+            spacing: { after: 40 },
+            children: line.runs.map(
+              (run) =>
+                new TextRun({
+                  text: run.text,
+                  font: FONT,
+                  size: SIZE,
+                  bold: run.bold === true,
+                  italics: run.italic === true,
+                }),
+            ),
+          }),
+      );
+    const normalizeExecutionBlocks = (value: unknown) => {
+      if (!Array.isArray(value)) return [];
+      const blocks: ReturnType<typeof fillExecutionBlock>[] = [];
+      for (const raw of value) {
+        if (!raw || typeof raw !== "object") continue;
+        const request = raw as {
+          party?: unknown;
+          id?: unknown;
+          values?: unknown;
+        };
+        try {
+          const selected =
+            typeof request.party === "string"
+              ? selectExecutionBlock(request.party as ExecutionPartyKind)
+              : typeof request.id === "string"
+                ? selectExecutionBlock({ id: request.id as ExecutionBlockId })
+                : null;
+          if (!selected) continue;
+          blocks.push(
+            fillExecutionBlock(
+              selected,
+              request.values && typeof request.values === "object"
+                ? (request.values as ExecutionPlaceholderValues)
+                : undefined,
+            ),
+          );
+        } catch {
+          // Ignore a malformed party/id so one bad block cannot fail the document.
+        }
+      }
+      return blocks;
     };
     const stripManualNumbering = (
       value: string,
@@ -275,7 +351,13 @@ export async function generateDocx(
     const isUnnumberedHeading = (heading: string, sectionIndex: number) => {
       const normalized = normalizeHeadingText(heading);
       if (!normalized) return true;
-      if (normalized === "signatures" || normalized === "signature") {
+      if (
+        normalized === "signatures" ||
+        normalized === "signature" ||
+        normalized === "execution" ||
+        normalized === "execution block" ||
+        normalized === "execution blocks"
+      ) {
         return true;
       }
       if (isTitleLikeFirstHeading(heading, sectionIndex)) {
@@ -310,7 +392,8 @@ export async function generateDocx(
         content?: string;
         level?: number;
         pageBreak?: boolean;
-        table?: { headers: string[]; rows: string[][] };
+        table?: { headers: string[]; rows: string[][]; borders?: boolean };
+        executionBlocks?: unknown;
       }[]
     ).entries()) {
       if (section.pageBreak) {
@@ -360,9 +443,38 @@ export async function generateDocx(
           );
         }
       }
+      const executionBlocks = normalizeExecutionBlocks(section.executionBlocks);
+      for (const block of executionBlocks) {
+        for (const row of block.rows) {
+          children.push(
+            new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              borders: tableNoBorder,
+              rows: [
+                new TableRow({
+                  children: [
+                    new TableCell({
+                      borders: noBorder,
+                      width: { size: 55, type: WidthType.PERCENTAGE },
+                      children: paragraphFromExecutionLines(row.left),
+                    }),
+                    new TableCell({
+                      borders: noBorder,
+                      width: { size: 45, type: WidthType.PERCENTAGE },
+                      children: paragraphFromExecutionLines(row.right),
+                    }),
+                  ],
+                }),
+              ],
+            }),
+          );
+        }
+        children.push(new Paragraph({ text: "" }));
+      }
       const normalizedTable = normalizeTable(section.table);
       if (normalizedTable) {
-        const { headers, rows } = normalizedTable;
+        const { headers, rows, borders } = normalizedTable;
+        const tableBorder = borders ? cellBorder : noBorder;
         const tableRows: InstanceType<typeof TableRow>[] = [];
         // Header row
         tableRows.push(
@@ -371,8 +483,8 @@ export async function generateDocx(
             children: headers.map(
               (h) =>
                 new TableCell({
-                  borders: cellBorder,
-                  shading: { fill: "F2F2F2" },
+                  borders: tableBorder,
+                  shading: borders ? { fill: "F2F2F2" } : undefined,
                   children: [
                     new Paragraph({
                       children: [
@@ -399,8 +511,8 @@ export async function generateDocx(
             new TableRow({
               children: normalized.map(
                 (cell) =>
-                  new TableCell({
-                    borders: cellBorder,
+                new TableCell({
+                    borders: tableBorder,
                     children: [
                       new Paragraph({
                         children: [
@@ -420,6 +532,7 @@ export async function generateDocx(
         children.push(
           new Table({
             width: { size: 100, type: WidthType.PERCENTAGE },
+            borders: borders ? undefined : tableNoBorder,
             rows: tableRows,
           }),
         );
@@ -1760,6 +1873,15 @@ export async function readDocumentContent(
         devLog(
           `[read_document] docx mammoth fallback length=${text.length} for filename="${docInfo.filename}"`,
         );
+      }
+      if (emitEvents) {
+        try {
+          text += formatDocxParagraphStylesSection(
+            await extractDocxParagraphStyles(bytes),
+          );
+        } catch (err) {
+          devLog(`[read_document] paragraph-style inventory failed`, err);
+        }
       }
     } else if (isSpreadsheetDocumentType(fileType)) {
       // SheetJS reads .xlsx/.xlsm/.xls directly (no PDF detour), emitting a

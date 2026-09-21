@@ -13,6 +13,7 @@
 // DB preparation live here. `prepareChatStream` returns the prepared data the
 // route needs to run the stream; it does not stream.
 import { type Db } from "../../lib/supabase";
+import { withAuExecutionBlocksPrompt } from "../../lib/auExecutionBlocks";
 import { buildDocContext, buildMessages, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, generateSpotlightNonce, type AskInputsResponseRequest, type ChatMessage } from "./engine/index";
 import { getUserModelSettings, resolveUserChatSelection } from "../user/user.service";
 import { checkProjectAccess, projectHasSharedAudience, resolveContentOrgId } from "../../lib/access";
@@ -375,7 +376,10 @@ export async function prepareChatStream(
         const apiMessages = buildMessages(
             enrichedMessages,
             docAvailability,
-            personalisationPrompt || undefined,
+            withAuExecutionBlocksPrompt(
+                personalisationPrompt || undefined,
+                personalisation?.jurisdiction,
+            ),
             undefined,
             {
                 us: legalResearchUs,

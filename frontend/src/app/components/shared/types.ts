@@ -131,6 +131,11 @@ export interface Document {
   external_item_id?: string | null;
   external_ctag?: string | null;
   external_web_url?: string | null;
+  /** SharePoint / parsed correspondence. created_at remains ingest time. */
+  email_subject?: string | null;
+  email_from?: string | null;
+  email_to?: string | null;
+  email_received_at?: string | null;
 }
 
 export type PanelDocumentType = SourceDocumentType;

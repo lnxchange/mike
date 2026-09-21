@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Document } from "@/app/components/shared/types";
 import {
     DocTable,
+    documentHasEmailMeta,
     documentNeedsMetadataRefresh,
     type DocTableFolder,
     type DocTableSelectionActions,
@@ -58,22 +59,28 @@ function operations(
 function Harness({
     initialDocuments,
     tableOperations,
+    folders: initialFolders,
+    folderViewId = "folder-1",
 }: {
     initialDocuments: Document[];
     tableOperations: DocTableOperations;
+    folders?: DocTableFolder[];
+    folderViewId?: string | null;
 }) {
     const [documents, setDocuments] = useState(initialDocuments);
-    const [folders, setFolders] = useState<DocTableFolder[]>([
-        {
-            id: "folder-1",
-            project_id: "project-1",
-            user_id: "user-1",
-            name: "Folder",
-            parent_folder_id: null,
-            created_at: ORIGINAL_DATE,
-            updated_at: ORIGINAL_DATE,
-        },
-    ]);
+    const [folders, setFolders] = useState<DocTableFolder[]>(
+        initialFolders ?? [
+            {
+                id: "folder-1",
+                project_id: "project-1",
+                user_id: "user-1",
+                name: "Folder",
+                parent_folder_id: null,
+                created_at: ORIGINAL_DATE,
+                updated_at: ORIGINAL_DATE,
+            },
+        ],
+    );
     const [selectionActions, setSelectionActions] =
         useState<DocTableSelectionActions | null>(null);
 
@@ -100,7 +107,7 @@ function Harness({
                 operations={tableOperations}
                 emptyStateTitle="Documents"
                 canDo={allowAll}
-                folderViewId="folder-1"
+                folderViewId={folderViewId}
                 onSelectionActionsChange={setSelectionActions}
             />
         </>
@@ -207,5 +214,71 @@ describe("documentNeedsMetadataRefresh", () => {
                 filename: "Untitled document",
             }),
         ).toBe(false);
+    });
+});
+
+describe("DocTable virtual source folders", () => {
+    it("omits created and updated dates on grouping rows", () => {
+        render(
+            <Harness
+                initialDocuments={[]}
+                tableOperations={operations(vi.fn())}
+                folderViewId={null}
+                folders={[
+                    {
+                        id: "source:personal",
+                        user_id: "user-1",
+                        library_kind: "file",
+                        name: "Personal",
+                        parent_folder_id: null,
+                        created_at: null,
+                        updated_at: null,
+                        virtual: true,
+                    },
+                    {
+                        id: "source:org-1",
+                        user_id: "user-1",
+                        org_id: "org-1",
+                        library_kind: "file",
+                        name: "Organisation",
+                        parent_folder_id: null,
+                        created_at: "1970-01-01T00:00:00.000Z",
+                        updated_at: "1970-01-01T00:00:00.000Z",
+                        virtual: true,
+                    },
+                ]}
+            />,
+        );
+
+        expect(screen.getByText("Personal")).toBeInTheDocument();
+        expect(screen.getByText("Organisation")).toBeInTheDocument();
+        expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
+        expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    });
+});
+
+describe("DocTable email metadata columns", () => {
+    it("shows arrived, from, to and subject when a row has correspondence fields", () => {
+        const emailDoc = {
+            ...document("doc-mail", "Notice.eml"),
+            email_subject: "s155 notice",
+            email_from: "accc@example.gov.au",
+            email_to: "yule@attune.legal",
+            email_received_at: "2026-03-01T03:00:00.000Z",
+        };
+        expect(documentHasEmailMeta(emailDoc)).toBe(true);
+        render(
+            <Harness
+                initialDocuments={[emailDoc]}
+                tableOperations={operations(vi.fn())}
+            />,
+        );
+        expect(screen.getByText("Arrived")).toBeInTheDocument();
+        expect(screen.getByText("From")).toBeInTheDocument();
+        expect(screen.getByText("To")).toBeInTheDocument();
+        expect(screen.getByText("Subject")).toBeInTheDocument();
+        expect(screen.getByText("s155 notice")).toBeInTheDocument();
+        expect(screen.getByText("accc@example.gov.au")).toBeInTheDocument();
+        expect(screen.getByText("yule@attune.legal")).toBeInTheDocument();
     });
 });

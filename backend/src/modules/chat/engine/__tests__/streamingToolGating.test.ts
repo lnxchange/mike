@@ -18,6 +18,7 @@ const { streamChatWithTools, runToolCalls } = vi.hoisted(() => ({
     docsFound: [],
     docsCreated: [],
     docsReplicated: [],
+    docsFinalized: [],
     workflowsApplied: [],
     docsEdited: [],
     askInputsEvents: [],
@@ -36,6 +37,7 @@ vi.mock("../../../../lib/llm", async () => ({
   ...(await vi.importActual<Record<string, unknown>>("../../../../lib/llm/models")),
   DEFAULT_STREAM_MAX_ITERATIONS: 16,
   streamChatWithTools: (params: StreamChatCall) => streamChatWithTools(params),
+  completeText: vi.fn(),
 }));
 
 vi.mock("../../../../lib/mcpConnectors", () => ({
@@ -47,8 +49,18 @@ vi.mock("../tools/toolDispatcher", () => ({
     runToolCalls(calls),
 }));
 
+vi.mock("../../../../lib/memory/prompt", () => ({
+  buildMemoryTurn: async (args: { systemPrompt: string }) => ({
+    message: null,
+    systemPrompt: args.systemPrompt,
+  }),
+}));
+
 import { runLLMStream } from "../streaming";
-import { PROJECT_EXTRA_TOOLS } from "../tools/toolSchemas";
+import {
+  DOCUMENT_MUTATING_TOOL_NAMES,
+  PROJECT_EXTRA_TOOLS,
+} from "../tools/toolSchemas";
 
 type RunToolsFn = (
   calls: { id: string; name: string; input: Record<string, unknown> }[],
@@ -124,6 +136,7 @@ describe("runLLMStream document-mutation gating", () => {
       docsFound: [],
       docsCreated: [],
       docsReplicated: [],
+      docsFinalized: [],
       workflowsApplied: [],
       docsEdited: [],
       askInputsEvents: [askInputsEvent],
@@ -182,9 +195,11 @@ describe("runLLMStream document-mutation gating", () => {
       "list_documents",
       "fetch_documents",
       "list_workflows",
+      "search_library",
     ]) {
       expect(names).toContain(reader);
     }
+    expect(DOCUMENT_MUTATING_TOOL_NAMES.has("search_library")).toBe(false);
   });
 
   it("refuses a writing call the model asks for anyway, and never dispatches it", async () => {

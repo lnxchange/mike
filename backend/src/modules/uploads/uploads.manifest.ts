@@ -45,6 +45,32 @@ const externalReferenceSchema = z
 
 export type UploadExternalReference = z.infer<typeof externalReferenceSchema>;
 
+function isIsoDateTime(value: string): boolean {
+  const time = Date.parse(value);
+  return Number.isFinite(time);
+}
+
+const emailMetaSchema = z
+  .object({
+    subject: z.string().trim().max(2000).optional(),
+    from: z.string().trim().max(2000).optional(),
+    to: z.string().trim().max(4000).optional(),
+    received_at: z
+      .string()
+      .trim()
+      .max(64)
+      .refine(isIsoDateTime, "received_at must be an ISO date")
+      .optional(),
+  })
+  .strict();
+
+export type UploadEmailMeta = z.infer<typeof emailMetaSchema>;
+
+export type UploadClientMeta = {
+  external?: UploadExternalReference;
+  email?: UploadEmailMeta;
+};
+
 const clientFileSchema = z
   .object({
     client_id: z.string().trim().min(1).max(128),
@@ -60,6 +86,7 @@ const clientFileSchema = z
     size_bytes: z.number().int().positive().max(MAX_UPLOAD_SIZE_BYTES),
     folder_id: z.string().uuid().nullable().optional(),
     external: externalReferenceSchema.optional(),
+    email: emailMetaSchema.optional(),
   })
   .strict();
 
@@ -160,7 +187,7 @@ export type UploadSessionFile = {
    * Persisted as `upload_session_files.client_meta`. Null rather than
    * absent so the RPC's jsonb_to_recordset column list always finds the key.
    */
-  client_meta: { external: UploadExternalReference } | null;
+  client_meta: UploadClientMeta | null;
 };
 
 export type ParsedUploadSessionRequest = {
@@ -260,7 +287,13 @@ export function parseUploadSessionRequest(
       expected_size_bytes: file.size_bytes,
       staging_storage_path: `${basePath}/staging`,
       sealed_storage_path: `${basePath}/sealed`,
-      client_meta: file.external ? { external: file.external } : null,
+      client_meta:
+        file.external || file.email
+          ? {
+              ...(file.external ? { external: file.external } : {}),
+              ...(file.email ? { email: file.email } : {}),
+            }
+          : null,
     };
   });
 

@@ -354,6 +354,52 @@ describe("upload processing", () => {
     );
   });
 
+  it("writes email list fields from the upload manifest", async () => {
+    const email = {
+      subject: "s155 notice",
+      from: "accc@example.gov.au",
+      to: "yule@attune.legal",
+      received_at: "2026-03-01T03:00:00.000Z",
+    };
+    const db = scriptedDb([
+      { data: { org_id: "88888888-8888-4888-8888-888888888888" }, error: null },
+      { error: null },
+      { error: null },
+      {
+        data: {
+          id: baseFile.resource_id,
+          user_id: baseSession.user_id,
+          folder_id: null,
+          library_folder_id: null,
+          email_subject: email.subject,
+        },
+        error: null,
+      },
+    ]);
+
+    await processUploadFile(
+      db as never,
+      {
+        ...baseSession,
+        destination: {
+          scope: "project",
+          project_id: "77777777-7777-4777-8777-777777777777",
+        },
+      },
+      { ...baseFile, client_meta: { email } },
+    );
+
+    const upsert = db.calls.find(
+      (call) => call.table === "documents" && call.operation === "upsert",
+    );
+    expect(upsert?.payload).toMatchObject({
+      email_subject: "s155 notice",
+      email_from: "accc@example.gov.au",
+      email_to: "yule@attune.legal",
+      email_received_at: "2026-03-01T03:00:00.000Z",
+    });
+  });
+
   it("leaves the external columns alone for an ordinary upload", async () => {
     const db = scriptedDb([
       { error: null },

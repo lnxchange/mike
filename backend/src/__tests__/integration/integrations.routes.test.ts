@@ -52,12 +52,62 @@ function configureFiler() {
   process.env.MATTER_SYNC_ORG_ID = ORG_ID;
 }
 
+function mockMatterDb(options?: {
+  project?: {
+    cm_number?: string | null;
+    zoho_deal_id?: string | null;
+    sharepoint_folder_url?: string | null;
+  };
+  documentUrls?: string[];
+  onUpdate?: (payload: Record<string, unknown>) => void;
+}) {
+  return {
+    from: (table: string) => {
+      if (table === "projects") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: options?.project ?? {
+                  cm_number: null,
+                  zoho_deal_id: null,
+                  sharepoint_folder_url: null,
+                },
+                error: null,
+              }),
+            }),
+          }),
+          update: (payload: Record<string, unknown>) => {
+            options?.onUpdate?.(payload);
+            return { eq: async () => ({ data: null, error: null }) };
+          },
+        };
+      }
+      if (table === "documents") {
+        return {
+          select: () => ({
+            eq: () => ({
+              limit: async () => ({
+                data: (options?.documentUrls ?? []).map((url) => ({
+                  external_web_url: url,
+                })),
+                error: null,
+              }),
+            }),
+          }),
+        };
+      }
+      throw new Error(`unexpected table ${table}`);
+    },
+  };
+}
+
 describe("integrations routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", mocks.fetch);
     configureFiler();
-    mocks.createServerSupabase.mockReturnValue({});
+    mocks.createServerSupabase.mockReturnValue(mockMatterDb());
     mocks.getOrgRole.mockResolvedValue("member");
     mocks.checkProjectAccess.mockResolvedValue({ ok: true });
   });
@@ -356,19 +406,7 @@ describe("integrations routes", () => {
 
   it("writes Zoho and SharePoint links onto the project after a pull", async () => {
     const updates: Record<string, unknown>[] = [];
-    mocks.createServerSupabase.mockReturnValue({
-      from: (table: string) => {
-        if (table !== "projects") {
-          throw new Error(`unexpected table ${table}`);
-        }
-        return {
-          update: (payload: Record<string, unknown>) => {
-            updates.push(payload);
-            return { eq: async () => ({ data: null, error: null }) };
-          },
-        };
-      },
-    });
+    mocks.createServerSupabase.mockReturnValue(mockMatterDb({ onUpdate: (payload) => updates.push(payload) }));
     mocks.fetch.mockResolvedValue(
       filerResponse(200, {
         projectId: PROJECT_ID,
@@ -404,22 +442,9 @@ describe("integrations routes", () => {
 
   it("fills missing project links from a status read", async () => {
     const updates: Record<string, unknown>[] = [];
-    mocks.createServerSupabase.mockReturnValue({
-      from: () => ({
-        select: () => ({
-          eq: () => ({
-            maybeSingle: async () => ({
-              data: { zoho_deal_id: null, sharepoint_folder_url: null },
-              error: null,
-            }),
-          }),
-        }),
-        update: (payload: Record<string, unknown>) => {
-          updates.push(payload);
-          return { eq: async () => ({ data: null, error: null }) };
-        },
-      }),
-    });
+    mocks.createServerSupabase.mockReturnValue(
+      mockMatterDb({ onUpdate: (payload) => updates.push(payload) }),
+    );
     mocks.fetch.mockResolvedValue(
       filerResponse(200, {
         found: true,
@@ -448,6 +473,66 @@ describe("integrations routes", () => {
         zoho_deal_id: "deal-1",
         sharepoint_folder_url:
           "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+      }),
+    ]);
+  });
+
+  it("fills links from a Zoho search and mirrored file URLs when the filer omits them", async () => {
+    const updates: Record<string, unknown>[] = [];
+    mocks.createServerSupabase.mockReturnValue(
+      mockMatterDb({
+        project: { cm_number: "242814", zoho_deal_id: null, sharepoint_folder_url: null },
+        documentUrls: [
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/_layouts/15/Doc.aspx?sourcedoc=abc",
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared%20Documents/Clients/Blue%20NRG/23-0011%20-%20ACCC/note.eml",
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared%20Documents/Clients/Blue%20NRG/23-0011%20-%20ACCC/Emails%20-%20ACCC/other.eml",
+        ],
+        onUpdate: (payload) => updates.push(payload),
+      }),
+    );
+    mocks.fetch.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String((init as RequestInit).body)) as {
+        action?: string;
+      };
+      if (body.action === "search") {
+        return filerResponse(200, {
+          matters: [
+            {
+              id: "3849704000030080744",
+              matterNumber: "242814",
+              name: "ACCC - s155 Notice and Enforcement",
+              hasFolder: true,
+            },
+          ],
+        });
+      }
+      return filerResponse(200, {
+        found: true,
+        status: "Syncing",
+        matterNumber: "242814",
+        matterName: "ACCC - s155 Notice and Enforcement",
+        documentCount: 34,
+        remaining: 86,
+        lastSyncAt: null,
+        lastChangeAt: null,
+        lastError: null,
+      });
+    });
+
+    const response = await request(app).get(
+      `/integrations/matters/status/${PROJECT_ID}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.matterId).toBe("3849704000030080744");
+    expect(response.body.sharepointFolderUrl).toBe(
+      "https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared%20Documents/Clients/Blue%20NRG/23-0011%20-%20ACCC",
+    );
+    expect(updates).toEqual([
+      expect.objectContaining({
+        zoho_deal_id: "3849704000030080744",
+        sharepoint_folder_url:
+          "https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared%20Documents/Clients/Blue%20NRG/23-0011%20-%20ACCC",
       }),
     ]);
   });

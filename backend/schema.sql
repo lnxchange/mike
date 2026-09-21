@@ -729,6 +729,12 @@ create table if not exists public.documents (
   external_item_id text,
   external_ctag text,
   external_web_url text,
+  -- Correspondence fields mirrored from SharePoint list columns or parsed
+  -- from an .eml/.msg. created_at remains ingest time.
+  email_subject text,
+  email_from text,
+  email_to text,
+  email_received_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint documents_library_kind_check
@@ -746,6 +752,10 @@ create unique index if not exists documents_project_external_item_unique
 
 create index if not exists idx_documents_project_folder
   on public.documents(project_id, folder_id);
+
+create index if not exists idx_documents_project_email_received
+  on public.documents(project_id, email_received_at desc)
+  where email_received_at is not null;
 
 create index if not exists idx_documents_library_kind_folder
   on public.documents(user_id, library_kind, library_folder_id)

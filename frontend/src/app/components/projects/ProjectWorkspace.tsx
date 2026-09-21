@@ -287,28 +287,29 @@ export function ProjectWorkspaceProvider({
         });
 
     useEffect(() => {
-        if (!matterSyncStatus?.found) return;
+        if (!project || !matterSyncStatus?.found) return;
         const dealId = matterSyncStatus.matterId?.trim() || null;
         const folderUrl =
             sharepointFolderUrl(matterSyncStatus.sharepointFolderUrl);
         if (!dealId && !folderUrl) return;
-        setProject((prev) => {
-            if (!prev) return prev;
-            const nextDeal = prev.zoho_deal_id || dealId;
-            const nextUrl = prev.sharepoint_folder_url || folderUrl;
-            if (
-                nextDeal === prev.zoho_deal_id &&
-                nextUrl === prev.sharepoint_folder_url
-            ) {
-                return prev;
-            }
-            return {
-                ...prev,
-                zoho_deal_id: nextDeal,
-                sharepoint_folder_url: nextUrl,
-            };
-        });
-    }, [matterSyncStatus]);
+        const nextDeal = project.zoho_deal_id || dealId;
+        const nextUrl = project.sharepoint_folder_url || folderUrl;
+        if (
+            nextDeal === project.zoho_deal_id &&
+            nextUrl === project.sharepoint_folder_url
+        ) {
+            return;
+        }
+        setProject((prev) =>
+            prev
+                ? {
+                      ...prev,
+                      zoho_deal_id: nextDeal,
+                      sharepoint_folder_url: nextUrl,
+                  }
+                : prev,
+        );
+    }, [matterSyncStatus, project]);
     const [syncNowPending, setSyncNowPending] = useState(false);
     const [syncNowError, setSyncNowError] = useState<string | null>(null);
 

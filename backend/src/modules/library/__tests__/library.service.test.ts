@@ -6,6 +6,7 @@ import {
   getLibrary,
   parseLibrarySourceKey,
   resolveLibraryWriteTarget,
+  searchLibraryForChat,
   sourceFolderId,
 } from "../library.service";
 
@@ -98,12 +99,16 @@ describe("library union shelves", () => {
             name: "Personal",
             virtual: true,
             access_role: "owner",
+            created_at: null,
+            updated_at: null,
           }),
           expect.objectContaining({
             id: `source:${ORG_ID}`,
             name: "Attune Legal",
             virtual: true,
             access_role: "viewer",
+            created_at: null,
+            updated_at: null,
           }),
         ],
         sources: [
@@ -173,6 +178,68 @@ describe("library union shelves", () => {
       library_kind: "file",
       name: "Precedents",
       parent_folder_id: null,
+    });
+    fake.done();
+  });
+});
+
+describe("searchLibraryForChat", () => {
+  it("rejects a blank query", async () => {
+    const fake = scriptedDb([]);
+    const result = await searchLibraryForChat(fake.db, "u1", { query: "  " });
+    expect(result).toEqual({
+      ok: false,
+      failure: "status",
+      status: 400,
+      detail: "query is required",
+    });
+    fake.done();
+  });
+
+  it("returns labelled hits from the caller's shelves", async () => {
+    const fake = scriptedDb([
+      { table: "org_members", data: [] },
+      {
+        rpc: "search_library_documents",
+        data: [
+          {
+            id: "tmpl-1",
+            filename: "Attune Legal Letterhead and Contract Template.docx",
+            file_type: "docx",
+            storage_path: "library/letterhead.docx",
+            library_kind: "template",
+            library_folder_id: "folder-templates",
+            current_version_id: "ver-1",
+            active_version_number: 1,
+            org_id: null,
+          },
+        ],
+      },
+      {
+        table: "library_folders",
+        data: [{ id: "folder-templates", name: "Templates" }],
+      },
+    ]);
+    const result = await searchLibraryForChat(fake.db, "u1", {
+      query: "letterhead",
+    });
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        hits: [
+          {
+            id: "tmpl-1",
+            filename: "Attune Legal Letterhead and Contract Template.docx",
+            file_type: "docx",
+            storage_path: "library/letterhead.docx",
+            library_kind: "template",
+            source_label: "Personal",
+            folder_path: "Personal / Templates",
+            current_version_id: "ver-1",
+            active_version_number: 1,
+          },
+        ],
+      },
     });
     fake.done();
   });

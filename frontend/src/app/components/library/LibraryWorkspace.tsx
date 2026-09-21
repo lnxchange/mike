@@ -1014,6 +1014,11 @@ export function LibraryCollectionPage({
                     search={search}
                     operations={operations}
                     emptyStateTitle={title}
+                    emptyFolderMessage={
+                        kind === "files"
+                            ? "No files in this library yet. Templates are on the Templates tab."
+                            : "No templates in this library yet."
+                    }
                     onAddDocumentsActionChange={handleAddDocumentsActionChange}
                     onUploadFolderActionChange={
                         handleUploadFolderActionChange

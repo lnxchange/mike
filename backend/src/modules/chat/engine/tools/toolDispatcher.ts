@@ -134,6 +134,7 @@ import {
   upsertAuCase,
 } from "./auCaseLawTurnState";
 import type { Db } from "../../../../lib/supabase";
+import { searchLibraryForChat } from "../../../library/library.service";
 
 function sourceMaterialNotice(
   sourceKind: "document" | "library_template" | "workflow_asset" | undefined,
@@ -689,6 +690,73 @@ export async function runToolCalls(
         tool_call_id: tc.id,
         content: JSON.stringify(list),
       });
+    } else if (tc.function.name === "search_library") {
+      const query =
+        typeof args.query === "string" ? args.query.trim() : "";
+      const kind = args.kind === "file" ? "file" : "template";
+      const result = await searchLibraryForChat(db, userId, { query, kind });
+      if (!result.ok) {
+        const error =
+          result.failure === "status"
+            ? result.detail
+            : "Library search failed.";
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: false, error }),
+        });
+      } else {
+        const hits: {
+          doc_id: string;
+          filename: string;
+          source_label: string;
+          folder_path: string;
+          library_kind: string;
+        }[] = [];
+        let nextIndex = 0;
+        const existingByDocumentId = new Map<string, string>();
+        for (const [label, info] of Object.entries(docIndex ?? {})) {
+          existingByDocumentId.set(info.document_id, label);
+        }
+        for (const hit of result.data.hits) {
+          let label = existingByDocumentId.get(hit.id);
+          if (!label) {
+            while (docStore.has(`lib-${nextIndex}`)) nextIndex += 1;
+            label = `lib-${nextIndex}`;
+            nextIndex += 1;
+            docStore.set(label, {
+              storage_path: hit.storage_path,
+              file_type: hit.file_type,
+              filename: hit.filename,
+              source_kind:
+                hit.library_kind === "template"
+                  ? "library_template"
+                  : "document",
+            });
+            if (docIndex) {
+              docIndex[label] = {
+                document_id: hit.id,
+                filename: hit.filename,
+                version_id: hit.current_version_id,
+                version_number: hit.active_version_number,
+              };
+            }
+            existingByDocumentId.set(hit.id, label);
+          }
+          hits.push({
+            doc_id: label,
+            filename: hit.filename,
+            source_label: hit.source_label,
+            folder_path: hit.folder_path,
+            library_kind: hit.library_kind,
+          });
+        }
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: true, hits }),
+        });
+      }
     } else if (tc.function.name === "fetch_documents") {
       const rawDocIds = (args.doc_ids as string[]) ?? [];
       const docIds = rawDocIds.map(

@@ -32,7 +32,7 @@ import {
   isArchiveDocumentType,
   isEmailDocumentType,
 } from "../../lib/documentTypes";
-import { parseEmail } from "../../lib/emailMessage";
+import { parseEmail, type ParsedEmail } from "../../lib/emailMessage";
 import { uploadJobWallClockMs } from "../../lib/runtimeConfig";
 import {
   copyFile,
@@ -51,6 +51,7 @@ import {
 } from "./uploads.expand";
 import {
   UPLOAD_VERIFICATION_LEASE_SECONDS,
+  type UploadEmailMeta,
   type UploadExternalReference,
 } from "./uploads.manifest";
 import {
@@ -92,8 +93,11 @@ type UploadFileRow = {
    * deleted by the user" — the attempt counter cannot make that distinction.
    */
   document_created_at: string | null;
-  /** The manifest's optional `external` block, as persisted by the RPC. */
-  client_meta?: { external?: UploadExternalReference | null } | null;
+  /** The manifest's optional `external` / `email` block, as persisted by the RPC. */
+  client_meta?: {
+    external?: UploadExternalReference | null;
+    email?: UploadEmailMeta | null;
+  } | null;
 };
 
 /**
@@ -123,6 +127,71 @@ function externalDocumentColumns(external: UploadExternalReference | null) {
     external_item_id: external.item_id,
     external_ctag: external.ctag,
     external_web_url: external.web_url ?? null,
+  };
+}
+
+function formatEmailParties(
+  parties: { name: string; address: string }[],
+): string | undefined {
+  const text = parties
+    .map((party) => party.address || party.name)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join("; ");
+  return text || undefined;
+}
+
+function emailMetaOf(file: UploadFileRow): UploadEmailMeta | null {
+  const email = file.client_meta?.email;
+  if (!email || typeof email !== "object") return null;
+  const subject = email.subject?.trim() || undefined;
+  const from = email.from?.trim() || undefined;
+  const to = email.to?.trim() || undefined;
+  const receivedAt = email.received_at?.trim() || undefined;
+  if (!subject && !from && !to && !receivedAt) return null;
+  return {
+    ...(subject ? { subject } : {}),
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...(receivedAt ? { received_at: receivedAt } : {}),
+  };
+}
+
+function emailMetaFromParsed(email: ParsedEmail): UploadEmailMeta {
+  return {
+    ...(email.subject.trim() ? { subject: email.subject.trim() } : {}),
+    ...(formatEmailParties(email.from)
+      ? { from: formatEmailParties(email.from) }
+      : {}),
+    ...(formatEmailParties(email.to) ? { to: formatEmailParties(email.to) } : {}),
+    ...(email.date ? { received_at: email.date.toISOString() } : {}),
+  };
+}
+
+function mergeEmailMeta(
+  preferred: UploadEmailMeta | null,
+  fallback: UploadEmailMeta | null,
+): UploadEmailMeta | null {
+  if (!preferred && !fallback) return null;
+  const merged = {
+    subject: preferred?.subject || fallback?.subject,
+    from: preferred?.from || fallback?.from,
+    to: preferred?.to || fallback?.to,
+    received_at: preferred?.received_at || fallback?.received_at,
+  };
+  if (!merged.subject && !merged.from && !merged.to && !merged.received_at) {
+    return null;
+  }
+  return merged;
+}
+
+function emailDocumentColumns(email: UploadEmailMeta | null) {
+  if (!email) return {};
+  return {
+    ...(email.subject ? { email_subject: email.subject } : {}),
+    ...(email.from ? { email_from: email.from } : {}),
+    ...(email.to ? { email_to: email.to } : {}),
+    ...(email.received_at ? { email_received_at: email.received_at } : {}),
   };
 }
 
@@ -494,6 +563,7 @@ async function processCreatedDocument(
       library_folder_id: libraryFolderId,
       workflow_id: workflowId,
       ...externalDocumentColumns(external),
+      ...emailDocumentColumns(emailMetaOf(file)),
     },
     { onConflict: "id" },
   );
@@ -529,6 +599,7 @@ async function processCreatedDocument(
   await copyFile(file.sealed_storage_path, sourcePath);
   let pdfPath: string | null;
   let pageCount: number | null = null;
+  let parsedEmailMeta: UploadEmailMeta | null = null;
   if (isEmailDocumentType(file.file_type)) {
     // The message keeps its original bytes as the document; the PDF the
     // viewer shows is rendered from the parsed message, and each attachment
@@ -538,6 +609,7 @@ async function processCreatedDocument(
       await readFile(artifact.filePath),
       file.file_type,
     );
+    parsedEmailMeta = emailMetaFromParsed(email);
     const attachments = await expandEmailAttachments(expansion, email, {
       documentId,
       folderId: expansion.target.folderId,
@@ -588,6 +660,9 @@ async function processCreatedDocument(
     .update({
       status: "ready",
       updated_at: new Date().toISOString(),
+      ...emailDocumentColumns(
+        mergeEmailMeta(emailMetaOf(file), parsedEmailMeta),
+      ),
     })
     .eq("id", documentId)
     .eq("user_id", session.user_id)
@@ -683,6 +758,7 @@ async function processNewDocumentVersion(
       .from("documents")
       .update({
         ...externalDocumentColumns(external),
+        ...emailDocumentColumns(emailMetaOf(file)),
         updated_at: new Date().toISOString(),
       })
       .eq("id", documentId);

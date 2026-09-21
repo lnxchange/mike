@@ -403,6 +403,103 @@ export async function searchLibraryDocuments(
   });
 }
 
+export const LIBRARY_CHAT_SEARCH_LIMIT = 8;
+
+export type LibraryChatHit = {
+  id: string;
+  filename: string;
+  file_type: string;
+  storage_path: string;
+  library_kind: LibraryKind;
+  source_label: string;
+  folder_path: string;
+  current_version_id: string | null;
+  active_version_number: number | null;
+};
+
+function asLibraryKind(value: unknown): LibraryKind {
+  return value === "template" ? "template" : "file";
+}
+
+export async function searchLibraryForChat(
+  db: Db,
+  userId: string,
+  args: { query: string; kind?: LibraryKind },
+): Promise<ServiceResult<{ hits: LibraryChatHit[] }>> {
+  const query = args.query.trim();
+  if (!query) return err(400, "query is required");
+  const kind = args.kind ?? "template";
+  const actor = await resolveLibraryActor(db, userId);
+  const result = await searchLibraryDocuments(
+    db,
+    actor,
+    kind,
+    query,
+    null,
+    { key: "name", direction: "asc" },
+    { limit: LIBRARY_CHAT_SEARCH_LIMIT, offset: 0 },
+  );
+  if (!result.ok) return result;
+
+  const documents = result.data.documents as Record<string, unknown>[];
+  const folderIds = [
+    ...new Set(
+      documents
+        .map((doc) => doc.library_folder_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  ];
+  const folderNameById = new Map<string, string>();
+  if (folderIds.length > 0) {
+    const { data: folders, error } = await db
+      .from("library_folders")
+      .select("id, name")
+      .in("id", folderIds);
+    if (error) return internalErr(error);
+    for (const folder of (folders ?? []) as { id?: string; name?: string }[]) {
+      if (folder.id && folder.name?.trim()) {
+        folderNameById.set(folder.id, folder.name.trim());
+      }
+    }
+  }
+
+  const hits: LibraryChatHit[] = [];
+  for (const doc of documents) {
+    const storagePath =
+      typeof doc.storage_path === "string" ? doc.storage_path : "";
+    if (!storagePath || typeof doc.id !== "string") continue;
+    const sourceLabel =
+      typeof doc.source_label === "string" && doc.source_label.trim()
+        ? doc.source_label.trim()
+        : "Library";
+    const folderName =
+      typeof doc.library_folder_id === "string"
+        ? folderNameById.get(doc.library_folder_id)
+        : undefined;
+    hits.push({
+      id: doc.id,
+      filename:
+        typeof doc.filename === "string" && doc.filename.trim()
+          ? doc.filename.trim()
+          : "Untitled document",
+      file_type: typeof doc.file_type === "string" ? doc.file_type : "",
+      storage_path: storagePath,
+      library_kind: asLibraryKind(doc.library_kind),
+      source_label: sourceLabel,
+      folder_path: folderName ? `${sourceLabel} / ${folderName}` : sourceLabel,
+      current_version_id:
+        typeof doc.current_version_id === "string"
+          ? doc.current_version_id
+          : null,
+      active_version_number:
+        typeof doc.active_version_number === "number"
+          ? doc.active_version_number
+          : null,
+    });
+  }
+  return ok({ hits });
+}
+
 export async function getLibraryLevels(
   db: Db,
   actor: LibraryActor,

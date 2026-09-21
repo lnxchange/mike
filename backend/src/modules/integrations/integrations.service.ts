@@ -13,7 +13,10 @@
 
 import { checkProjectAccess, getOrgRole } from "../../lib/access";
 import { enqueueProjectMatterBrief } from "../memory/memory.service";
-import { normalizeHttpUrl } from "../../lib/httpUrl";
+import {
+  folderUrlFromSharepointDocumentUrl,
+  normalizeHttpUrl,
+} from "../../lib/httpUrl";
 import { logError } from "../../lib/log";
 import { filerConfiguration } from "../../lib/runtimeConfig";
 import {
@@ -177,6 +180,121 @@ function normalizeDealId(value: unknown): string | null {
   const id = stringOrNull(value)?.trim() ?? null;
   if (!id || id.length > ZOHO_DEAL_ID_MAX_LENGTH) return null;
   return id;
+}
+
+function filerDealId(body: Record<string, unknown>): string | null {
+  return normalizeDealId(body.matterId) ?? normalizeDealId(body.dealId);
+}
+
+/**
+ * Production filer builds before the link fields still answer status/pull
+ * without a Deal id. Search by matter number is already live, so one extra
+ * lookup fills Zoho for those rows.
+ */
+async function dealIdFromMatterNumber(
+  matterNumber: string,
+  fetchImpl: typeof fetch,
+): Promise<string | null> {
+  const call = await callFiler(
+    "search",
+    { q: matterNumber },
+    SEARCH_TIMEOUT_MS,
+    fetchImpl,
+  );
+  if (!call.ok || call.status !== 200) return null;
+  const rows = Array.isArray(call.body.matters) ? call.body.matters : [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const hit = row as Record<string, unknown>;
+    if (stringOrNull(hit.matterNumber) !== matterNumber) continue;
+    return normalizeDealId(hit.id);
+  }
+  return null;
+}
+
+async function sharepointFolderUrlFromDocuments(
+  db: Db,
+  projectId: string,
+): Promise<string | null> {
+  const { data, error } = await db
+    .from("documents")
+    .select("external_web_url")
+    .eq("project_id", projectId)
+    .limit(40);
+  if (error || !data) return null;
+  const counts = new Map<string, number>();
+  for (const row of data) {
+    const folder = folderUrlFromSharepointDocumentUrl(
+      (row as { external_web_url?: unknown }).external_web_url,
+    );
+    if (!folder) continue;
+    counts.set(folder, (counts.get(folder) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [url, count] of counts) {
+    if (count > bestCount) {
+      best = url;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+type ProjectLinkRow = {
+  cm_number?: unknown;
+  zoho_deal_id?: unknown;
+  sharepoint_folder_url?: unknown;
+};
+
+/**
+ * Prefer the filer's identifiers, then whatever is already on the project,
+ * then a Zoho search and a walk up from mirrored file URLs. Matters created
+ * before these columns existed stay blank until one of those fills them.
+ */
+async function resolveMatterLinks(
+  db: Db,
+  projectId: string,
+  fromFiler: { zohoDealId: string | null; sharepointFolderUrl: string | null },
+  fetchImpl: typeof fetch,
+  extras?: { matterNumber?: string | null },
+): Promise<{ zohoDealId: string | null; sharepointFolderUrl: string | null }> {
+  let project: ProjectLinkRow | null = null;
+  try {
+    const { data } = await db
+      .from("projects")
+      .select("cm_number, zoho_deal_id, sharepoint_folder_url")
+      .eq("id", projectId)
+      .maybeSingle();
+    project = (data as ProjectLinkRow | null) ?? null;
+  } catch (error) {
+    logError("integrations/hydrate", error, { projectId });
+  }
+
+  let zohoDealId =
+    fromFiler.zohoDealId || normalizeDealId(project?.zoho_deal_id);
+  let sharepointFolderUrl =
+    fromFiler.sharepointFolderUrl ||
+    normalizeHttpUrl(project?.sharepoint_folder_url);
+
+  if (!zohoDealId) {
+    const matterNumber =
+      extras?.matterNumber?.trim() || stringOrNull(project?.cm_number);
+    if (matterNumber) {
+      zohoDealId = await dealIdFromMatterNumber(matterNumber, fetchImpl);
+    }
+  }
+  if (!sharepointFolderUrl) {
+    try {
+      sharepointFolderUrl = await sharepointFolderUrlFromDocuments(
+        db,
+        projectId,
+      );
+    } catch (error) {
+      logError("integrations/hydrate", error, { projectId });
+    }
+  }
+  return { zohoDealId, sharepointFolderUrl };
 }
 
 /**
@@ -345,14 +463,17 @@ export async function pullZohoMatter(
   // Files may still be landing. The per-document ready hook also schedules
   // this; the longer delay covers the first-pass burst after a pull.
   await enqueueProjectMatterBrief(db, projectId, { delayMs: 180_000 });
-  const zohoDealId = normalizeDealId(call.body.matterId);
-  const sharepointFolderUrl = normalizeHttpUrl(call.body.sharepointFolderUrl);
-  await persistMatterLinks(
+  const links = await resolveMatterLinks(
     db,
     projectId,
-    { zohoDealId, sharepointFolderUrl },
-    "replace",
+    {
+      zohoDealId: filerDealId(call.body),
+      sharepointFolderUrl: normalizeHttpUrl(call.body.sharepointFolderUrl),
+    },
+    fetchImpl,
+    { matterNumber: stringOrNull(call.body.matterNumber) },
   );
+  await persistMatterLinks(db, projectId, links, "replace");
   return ok({
     projectId,
     created: call.body.created === true,
@@ -363,8 +484,8 @@ export async function pullZohoMatter(
     uploaded: numberOrZero(call.body.uploaded),
     remaining: numberOrZero(call.body.remaining),
     status: statusOf(call.body.status),
-    matterId: zohoDealId,
-    sharepointFolderUrl,
+    matterId: links.zohoDealId,
+    sharepointFolderUrl: links.sharepointFolderUrl,
   });
 }
 
@@ -401,14 +522,17 @@ export async function getMatterSyncStatus(
     return failure("unavailable", FILER_UNREACHABLE_MESSAGE);
   }
   if (call.body.found !== true) return ok({ found: false });
-  const matterId = normalizeDealId(call.body.matterId);
-  const sharepointFolderUrl = normalizeHttpUrl(call.body.sharepointFolderUrl);
-  await persistMatterLinks(
+  const links = await resolveMatterLinks(
     db,
     args.projectId,
-    { zohoDealId: matterId, sharepointFolderUrl },
-    "fill",
+    {
+      zohoDealId: filerDealId(call.body),
+      sharepointFolderUrl: normalizeHttpUrl(call.body.sharepointFolderUrl),
+    },
+    fetchImpl,
+    { matterNumber: stringOrNull(call.body.matterNumber) },
   );
+  await persistMatterLinks(db, args.projectId, links, "fill");
   return ok({
     found: true,
     status: statusOf(call.body.status),
@@ -419,8 +543,8 @@ export async function getMatterSyncStatus(
     lastSyncAt: stringOrNull(call.body.lastSyncAt),
     lastChangeAt: stringOrNull(call.body.lastChangeAt),
     lastError: stringOrNull(call.body.lastError),
-    matterId,
-    sharepointFolderUrl,
+    matterId: links.zohoDealId,
+    sharepointFolderUrl: links.sharepointFolderUrl,
   });
 }
 

@@ -53,8 +53,14 @@ export function formatBytes(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function formatDate(iso: string) {
-    return new Date(iso).toLocaleDateString(undefined, {
+export function formatDate(iso: string | null | undefined) {
+    if (iso == null || iso === "") return "";
+    const date = new Date(iso);
+    const time = date.getTime();
+    // Virtual source folders and other missing timestamps must not render as
+    // Unix epoch (1 January 1970).
+    if (!Number.isFinite(time) || time === 0) return "";
+    return date.toLocaleDateString(undefined, {
         day: "numeric",
         month: "short",
         year: "numeric",
