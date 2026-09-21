@@ -5,6 +5,7 @@ import { Label } from "../../shared/ui/label";
 import { WordAddinLogo } from "../components/shell/WordAddinLogo";
 import { PillButtonUI as PillButton } from "@mike/pill-button-ui";
 import { GoogleIconUI } from "@mike/google-icon-ui";
+import { MicrosoftIconUI } from "@mike/microsoft-icon-ui";
 import { AuthDividerUI as AuthDivider } from "@mike/auth-divider-ui";
 import {
   authGlassCardUIClassName,
@@ -30,10 +31,11 @@ function openWebAuthPage(
 }
 
 export function LoginPage(): React.ReactElement {
-  const { login, loginWithGoogle, loading, error } = useAuth();
+  const { login, loginWithGoogle, loginWithMicrosoft, loading, error } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [microsoftLoading, setMicrosoftLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -45,6 +47,12 @@ export function LoginPage(): React.ReactElement {
     setGoogleLoading(true);
     await loginWithGoogle();
     setGoogleLoading(false);
+  };
+
+  const handleMicrosoftLogin = async (): Promise<void> => {
+    setMicrosoftLoading(true);
+    await loginWithMicrosoft();
+    setMicrosoftLoading(false);
   };
 
   return (
@@ -143,12 +151,24 @@ export function LoginPage(): React.ReactElement {
                 tone="white"
                 size="normal"
                 className="w-full"
-                disabled={loading || googleLoading}
+                disabled={loading || googleLoading || microsoftLoading}
                 loading={googleLoading}
                 onClick={() => void handleGoogleLogin()}
               >
                 <GoogleIconUI className="h-4 w-4" />
                 {googleLoading ? "Continuing…" : "Continue with Google"}
+              </PillButton>
+              <PillButton
+                type="button"
+                tone="white"
+                size="normal"
+                className="w-full"
+                disabled={loading || googleLoading || microsoftLoading}
+                loading={microsoftLoading}
+                onClick={() => void handleMicrosoftLogin()}
+              >
+                <MicrosoftIconUI className="h-4 w-4" />
+                {microsoftLoading ? "Continuing…" : "Continue with Microsoft"}
               </PillButton>
             </form>
           </div>

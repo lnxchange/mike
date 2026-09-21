@@ -15,6 +15,11 @@ import {
   type CourtlistenerToolEvent,
 } from "./tools/courtlistenerTools";
 import {
+  OUTLOOK_DRAFT_SYSTEM_PROMPT,
+  OUTLOOK_DRAFT_TOOLS,
+} from "./tools/outlookDraftTools";
+import { microsoftOAuthEnabled } from "../../../lib/microsoftOAuth";
+import {
   type DocStore,
   type DocIndex,
   type TabularCellStore,
@@ -245,11 +250,17 @@ export async function runLLMStream(params: {
   const write = (chunk: string) =>
     unsafeWrite(sanitizeAssistantSseChunk(chunk));
   const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
+  const outlookTools = microsoftOAuthEnabled() ? OUTLOOK_DRAFT_TOOLS : [];
   const mcpTools = await buildUserMcpTools(userId, db);
   const conversationTools = includeAskInputs
     ? TOOLS
     : TOOLS.filter((tool) => tool.function.name !== "ask_inputs");
-  const baseTools = [...conversationTools, ...researchTools, ...WORKFLOW_TOOLS];
+  const baseTools = [
+    ...conversationTools,
+    ...researchTools,
+    ...outlookTools,
+    ...WORKFLOW_TOOLS,
+  ];
   const advertisedTools = [
     ...baseTools,
     ...mcpTools,
@@ -277,7 +288,9 @@ export async function runLLMStream(params: {
     projectId: memoryProjectId,
     sharedAudience: memorySharedAudience,
   });
-  const systemPrompt = memory.systemPrompt;
+  const systemPrompt = microsoftOAuthEnabled()
+    ? `${memory.systemPrompt}\n\n${OUTLOOK_DRAFT_SYSTEM_PROMPT}`
+    : memory.systemPrompt;
   const chatMessages: LlmMessage[] = rawMsgs
     .filter((m) => m.role !== "system")
     .map(
@@ -545,6 +558,7 @@ export async function runLLMStream(params: {
           courtlistenerEvents,
           caseCitationEvents,
           mcpEvents,
+          outlookEvents,
         } = await runToolCalls(
           toolCalls,
           docStore,
@@ -626,6 +640,9 @@ export async function runLLMStream(params: {
           events.push(event);
         }
         for (const event of mcpEvents) {
+          events.push(event);
+        }
+        for (const event of outlookEvents) {
           events.push(event);
         }
         for (const event of caseCitationEvents) {

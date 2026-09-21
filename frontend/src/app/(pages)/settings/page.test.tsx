@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
         email: "alex@example.com",
         pendingEmail: null,
         createdWithGoogle: true,
+        microsoftConnected: false,
     },
 }));
 

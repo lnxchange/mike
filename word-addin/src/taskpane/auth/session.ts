@@ -175,12 +175,23 @@ function createOAuthRequestId(): string {
   );
 }
 
+export async function signInWithMicrosoft(): Promise<void> {
+  return signInWithOAuthProvider("azure");
+}
+
 export async function signInWithGoogle(): Promise<void> {
+  return signInWithOAuthProvider("google");
+}
+
+async function signInWithOAuthProvider(
+  provider: "google" | "azure",
+): Promise<void> {
   const generation = ++_sessionGeneration;
   const requestId = createOAuthRequestId();
   const expectedOrigin = window.location.origin;
   const dialogUrl = new URL("/oauth-dialog.html", expectedOrigin);
   dialogUrl.searchParams.set("requestId", requestId);
+  if (provider === "azure") dialogUrl.searchParams.set("provider", "azure");
   _loading = true;
   _error = null;
   broadcast();

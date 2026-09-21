@@ -730,6 +730,66 @@ export function useAssistantChat({
               continue;
             }
 
+            if (data.type === "outlook_draft_start") {
+              pushEvent({
+                type: "outlook_draft_created",
+                web_link: "",
+                subject: "",
+                to: [],
+                attachment_names: [],
+                threaded: false,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "outlook_draft_created") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "outlook_draft_created" && !!e.isStreaming,
+                () => ({
+                  type: "outlook_draft_created",
+                  web_link:
+                    typeof data.web_link === "string" ? data.web_link : "",
+                  subject:
+                    typeof data.subject === "string" ? data.subject : "",
+                  to: Array.isArray(data.to)
+                    ? data.to.filter(
+                        (item): item is string => typeof item === "string",
+                      )
+                    : [],
+                  attachment_names: Array.isArray(data.attachment_names)
+                    ? data.attachment_names.filter(
+                        (item): item is string => typeof item === "string",
+                      )
+                    : [],
+                  threaded: data.threaded === true,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "outlook_auth_required") {
+              const replaced = updateMatchingEvent(
+                (e) =>
+                  e.type === "outlook_draft_created" && !!e.isStreaming,
+                () => ({
+                  type: "outlook_auth_required",
+                  isStreaming: false,
+                }),
+              );
+              if (!replaced) {
+                pushEvent({
+                  type: "outlook_auth_required",
+                  isStreaming: false,
+                });
+              }
+              pushThinkingPlaceholder();
+              continue;
+            }
+
             if (data.type === "courtlistener_search_case_law_start") {
               pushEvent({
                 type: "courtlistener_search_case_law",

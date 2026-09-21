@@ -20,6 +20,7 @@ import {
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
 import { PasswordSettingsSection } from "@/app/components/settings/PasswordSettingsSection";
+import { MicrosoftConnectionSection } from "@/app/components/settings/MicrosoftConnectionSection";
 import { SettingsCard } from "@/app/components/settings/SettingsCard";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";
@@ -545,6 +546,7 @@ export default function SecurityPage() {
         </SettingsCard>
       </section>
       <PasswordSettingsSection />
+      <MicrosoftConnectionSection />
       <Modal
         open={setupModalOpen}
         onClose={() => void closeSetupModal()}

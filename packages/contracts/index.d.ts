@@ -243,6 +243,19 @@ export type McpToolEvent = {
   error?: string;
 };
 
+export type OutlookDraftCreatedEvent = {
+  type: "outlook_draft_created";
+  web_link: string;
+  subject: string;
+  to: string[];
+  attachment_names: string[];
+  threaded: boolean;
+};
+
+export type OutlookAuthRequiredEvent = {
+  type: "outlook_auth_required";
+};
+
 export type AssistantEvent =
   | { type: "reasoning"; text: string }
   | AskInputsEvent
@@ -306,6 +319,8 @@ export type AssistantEvent =
   | CaseCitationEvent
   | CourtlistenerToolEvent
   | McpToolEvent
+  | OutlookDraftCreatedEvent
+  | OutlookAuthRequiredEvent
   | {
       type: "case_opinions";
       cluster_id: number;

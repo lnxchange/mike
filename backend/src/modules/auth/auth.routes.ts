@@ -8,17 +8,25 @@
 
 import { Router, type Request, type Response } from "express";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { User } from "@supabase/supabase-js";
 import {
+  authCookiesAreSecure,
   clearRequestAuthCookies,
   createRequestSupabase,
   publicAuthUser,
 } from "../../lib/authSession";
+import { microsoftOAuthEnabled } from "../../lib/microsoftOAuth";
 import { ssoConfiguration, ssoDomainSchema } from "../../lib/ssoConfig";
 import { sendInternalError } from "../../lib/httpError";
 import { requestOriginIsWordAddin } from "../../lib/origins";
+import { createServerSupabase } from "../../lib/supabase";
 import { requireAuth } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { requireTrustedOrigin } from "../../middleware/trustedOrigin";
+import {
+  isMicrosoftConnected,
+  persistProviderSessionTokens,
+} from "../integrations/integrations.service";
 import {
   applyHandoffSession,
   buildCallbackUrl,
@@ -35,6 +43,7 @@ import {
   friendlyNameSchema,
   handoffSchema,
   issueWordHandoff,
+  linkMicrosoftIdentity,
   listMfaFactors,
   mfaAssuranceLevel,
   passwordSchema,
@@ -43,6 +52,7 @@ import {
   signOut,
   signUpWithPassword,
   startGoogleOAuth,
+  startMicrosoftOAuth,
   ssoRequestSchema,
   startSsoSignIn,
   unenrollMfaFactor,
@@ -116,6 +126,41 @@ function invalidBody(res: Response) {
   });
 }
 
+const OAUTH_PROVIDER_COOKIE = "mike-oauth-provider";
+
+function setOAuthProviderCookie(
+  req: Request,
+  res: Response,
+  provider: "azure" | "",
+) {
+  const wordAddin = requestOriginIsWordAddin(req.get("origin"));
+  res.append(
+    "Set-Cookie",
+    `${OAUTH_PROVIDER_COOKIE}=${provider}; Path=/; HttpOnly; SameSite=${wordAddin ? "None" : "Lax"}${wordAddin || authCookiesAreSecure() ? "; Secure" : ""}; Max-Age=${provider ? 600 : 0}`,
+  );
+}
+
+function readOAuthProviderCookie(req: Request): string | null {
+  const raw = req.headers.cookie ?? "";
+  const match = raw
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${OAUTH_PROVIDER_COOKIE}=`));
+  return match ? match.slice(OAUTH_PROVIDER_COOKIE.length + 1) : null;
+}
+
+async function serializeAuthUser(user: User) {
+  try {
+    const microsoftConnected = await isMicrosoftConnected(
+      createServerSupabase(),
+      user,
+    );
+    return publicAuthUser(user, { microsoftConnected });
+  } catch {
+    return publicAuthUser(user);
+  }
+}
+
 function cookieClient(req: Request, res: Response): SupabaseClient | null {
   const client = res.locals.authClient as SupabaseClient | undefined;
   if (!client || res.locals.authSource !== "cookie") {
@@ -136,7 +181,7 @@ authRouter.post("/login", asyncRoute(async (req, res) => {
     const client = createRequestSupabase(req, res);
     const { data, error } = await signInWithPassword(client, parsed.data);
     if (error || !data.user || !data.session) return authError(res, error);
-    res.json({ user: publicAuthUser(data.user) });
+    res.json({ user: await serializeAuthUser(data.user) });
   } catch (error) {
     authError(res, error);
   }
@@ -155,7 +200,7 @@ authRouter.post("/signup", asyncRoute(async (req, res) => {
     );
     if (error || !data.user) return authError(res, error);
     res.status(201).json({
-      user: publicAuthUser(data.user),
+      user: await serializeAuthUser(data.user),
       requiresEmailConfirmation: !data.session,
     });
   } catch (error) {
@@ -217,8 +262,53 @@ async function startSso(req: Request, res: Response) {
   }
 }
 
+authRouter.get("/config", asyncRoute(async (_req, res) => {
+  res.json({
+    microsoftEnabled: microsoftOAuthEnabled(),
+  });
+}));
+
 authRouter.post("/oauth", asyncRoute(async (req, res) => {
   if (req.body?.provider === "sso") return startSso(req, res);
+  if (req.body?.provider === "azure") {
+    if (!microsoftOAuthEnabled()) {
+      return res.status(403).json({
+        code: "microsoft_oauth_disabled",
+        detail: "Microsoft sign-in is not enabled.",
+      });
+    }
+    try {
+      const client = createRequestSupabase(req, res);
+      const redirectTo = callbackUrl(
+        req,
+        req.body?.next,
+        "/onboarding/profile",
+        req.body?.callbackPath === "/oauth-dialog.html"
+          ? "/oauth-dialog.html"
+          : "/auth/callback",
+      );
+      if (req.body?.intent === "link") {
+        const { data: current } = await client.auth.getUser();
+        if (!current.user) {
+          res.status(401).json({
+            code: "cookie_session_required",
+            detail: "A cookie-authenticated session is required.",
+          });
+          return;
+        }
+      }
+      const { data, error } =
+        req.body?.intent === "link"
+          ? await linkMicrosoftIdentity(client, redirectTo)
+          : await startMicrosoftOAuth(client, redirectTo);
+      if (error || !data.url) return authError(res, error);
+      setOAuthProviderCookie(req, res, "azure");
+      res.json({ url: data.url });
+    } catch (error) {
+      authError(res, error);
+    }
+    return;
+  }
   if (req.body?.provider !== "google") return invalidBody(res);
   try {
     const client = createRequestSupabase(req, res);
@@ -234,6 +324,7 @@ authRouter.post("/oauth", asyncRoute(async (req, res) => {
       ),
     );
     if (error || !data.url) return authError(res, error);
+    setOAuthProviderCookie(req, res, "");
     res.json({ url: data.url });
   } catch (error) {
     authError(res, error);
@@ -250,6 +341,14 @@ authRouter.post("/exchange", asyncRoute(async (req, res) => {
       parsed.data.code,
     );
     if (error || !data.user || !data.session) return authError(res, error);
+    if (readOAuthProviderCookie(req) === "azure") {
+      await persistProviderSessionTokens(
+        createServerSupabase(),
+        data.user.id,
+        data.session,
+      );
+      setOAuthProviderCookie(req, res, "");
+    }
     if (parsed.data.handoffRequestId) {
       if (!requestOriginIsWordAddin(req.get("origin"))) {
         res.status(403).json({
@@ -267,7 +366,7 @@ authRouter.post("/exchange", asyncRoute(async (req, res) => {
       res.json({ handoffTicket });
       return;
     }
-    res.json({ user: publicAuthUser(data.user) });
+    res.json({ user: await serializeAuthUser(data.user) });
   } catch (error) {
     authError(res, error);
   }
@@ -316,7 +415,7 @@ authRouter.post("/handoff", asyncRoute(async (req, res) => {
         "Authentication handoff could not be completed.",
       );
     }
-    res.json({ user: publicAuthUser(data.user) });
+    res.json({ user: await serializeAuthUser(data.user) });
   } catch (error) {
     authError(res, error, "Authentication handoff could not be completed.");
   }
@@ -344,7 +443,7 @@ authRouter.get("/session", requireAuth, asyncRoute(async (_req, res) => {
   if (!client) return;
   const { user, error } = await currentUser(client);
   if (error || !user) return authError(res, error);
-  res.json({ user: publicAuthUser(user) });
+  res.json({ user: await serializeAuthUser(user) });
 }));
 
 authRouter.post("/logout", asyncRoute(async (req, res) => {
@@ -371,7 +470,7 @@ authRouter.patch("/email", requireAuth, asyncRoute(async (req, res) => {
     callbackUrl(req, req.body?.next, "/settings?emailChange=processed"),
   );
   if (error || !data.user) return authError(res, error);
-  res.json({ user: publicAuthUser(data.user) });
+  res.json({ user: await serializeAuthUser(data.user) });
 }));
 
 authRouter.patch("/password", requireAuth, asyncRoute(async (req, res) => {
@@ -385,7 +484,7 @@ authRouter.patch("/password", requireAuth, asyncRoute(async (req, res) => {
     await signOut(client, "global");
     clearRequestAuthCookies(req, res);
   }
-  res.json({ user: publicAuthUser(data.user) });
+  res.json({ user: await serializeAuthUser(data.user) });
 }));
 
 authRouter.get("/mfa/factors", requireAuth, asyncRoute(async (req, res) => {
@@ -435,7 +534,7 @@ authRouter.post("/mfa/verify", requireAuth, asyncRoute(async (req, res) => {
     code: parsed.data.code,
   });
   if (error) return authError(res, error);
-  res.json({ user: publicAuthUser(data.user) });
+  res.json({ user: await serializeAuthUser(data.user) });
 }));
 
 authRouter.post("/mfa/challenge-and-verify", requireAuth, asyncRoute(async (req, res) => {
@@ -448,7 +547,7 @@ authRouter.post("/mfa/challenge-and-verify", requireAuth, asyncRoute(async (req,
     code: parsed.data.code,
   });
   if (error) return authError(res, error);
-  res.json({ user: publicAuthUser(data.user) });
+  res.json({ user: await serializeAuthUser(data.user) });
 }));
 
 authRouter.delete("/mfa/factors/:factorId", requireAuth, asyncRoute(async (req, res) => {

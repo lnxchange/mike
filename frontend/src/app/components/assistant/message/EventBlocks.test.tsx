@@ -4,6 +4,8 @@ import {
     AskInputsBlock,
     CourtListenerBlock,
     DocDownloadBlock,
+    OutlookConnectBlock,
+    OutlookDraftBlock,
 } from "./EventBlocks";
 
 describe("DocDownloadBlock", () => {
@@ -128,5 +130,31 @@ describe("event line consistency", () => {
         expect(
             research.container.querySelector("svg.-rotate-90"),
         ).not.toBeNull();
+    });
+});
+
+describe("Outlook draft cards", () => {
+    it("links a created draft to Outlook", () => {
+        render(
+            <OutlookDraftBlock
+                subject="Schedule"
+                to={["alissa@example.com"]}
+                attachmentNames={["schedule.docx"]}
+                threaded
+                webLink="https://outlook.office.com/mail/draft"
+            />,
+        );
+        expect(screen.getByText("Outlook reply draft")).toBeInTheDocument();
+        expect(
+            screen.getByRole("link", { name: "Open in Outlook" }),
+        ).toHaveAttribute("href", "https://outlook.office.com/mail/draft");
+    });
+
+    it("points a missing grant at Security settings", () => {
+        render(<OutlookConnectBlock />);
+        expect(screen.getByText("Connect Microsoft")).toBeInTheDocument();
+        expect(
+            screen.getByRole("link", { name: "Open Security settings" }),
+        ).toHaveAttribute("href", "/settings/security");
     });
 });

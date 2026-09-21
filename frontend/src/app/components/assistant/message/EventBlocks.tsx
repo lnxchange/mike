@@ -737,3 +737,90 @@ export function DocEditBlock({
         />
     );
 }
+
+export function OutlookDraftBlock({
+    subject,
+    to,
+    attachmentNames,
+    threaded,
+    webLink,
+    isStreaming,
+    showConnector,
+}: {
+    subject: string;
+    to: string[];
+    attachmentNames: string[];
+    threaded: boolean;
+    webLink: string;
+    isStreaming?: boolean;
+    showConnector?: boolean;
+}) {
+    return (
+        <EventBlock
+            showConnector={showConnector}
+            isStreaming={isStreaming}
+            dotColor="green"
+        >
+            <div className="min-w-0 space-y-1">
+                <EventLabel>
+                    {isStreaming
+                        ? "Staging Outlook draft"
+                        : threaded
+                          ? "Outlook reply draft"
+                          : "Outlook draft"}
+                </EventLabel>
+                <div className="text-gray-700">{subject}</div>
+                {to.length > 0 ? (
+                    <div className="text-xs text-gray-500">
+                        To {to.join(", ")}
+                    </div>
+                ) : null}
+                {attachmentNames.length > 0 ? (
+                    <div className="text-xs text-gray-500">
+                        Attached {attachmentNames.join(", ")}
+                    </div>
+                ) : null}
+                {!isStreaming && webLink ? (
+                    <a
+                        href={webLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex text-sm font-medium text-blue-700 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                        Open in Outlook
+                    </a>
+                ) : null}
+            </div>
+        </EventBlock>
+    );
+}
+
+export function OutlookConnectBlock({
+    showConnector,
+    isStreaming,
+}: {
+    showConnector?: boolean;
+    isStreaming?: boolean;
+}) {
+    return (
+        <EventBlock
+            showConnector={showConnector}
+            isStreaming={isStreaming}
+            dotColor="gray"
+        >
+            <div className="min-w-0 space-y-1">
+                <EventLabel>Connect Microsoft</EventLabel>
+                <div>
+                    Connect Microsoft in Settings to stage this draft in your
+                    Outlook.
+                </div>
+                <a
+                    href="/settings/security"
+                    className="inline-flex text-sm font-medium text-blue-700 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                >
+                    Open Security settings
+                </a>
+            </div>
+        </EventBlock>
+    );
+}

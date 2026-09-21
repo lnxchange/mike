@@ -129,7 +129,10 @@ async function runGoogleOAuth(): Promise<void> {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      provider: "google",
+      provider:
+        currentUrl.searchParams.get("provider") === "azure"
+          ? "azure"
+          : "google",
       callbackPath: "/oauth-dialog.html",
       next: "/assistant",
     }),
