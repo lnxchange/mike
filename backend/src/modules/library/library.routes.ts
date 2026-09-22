@@ -60,7 +60,11 @@ type LibraryDocumentSortKey =
   | "size"
   | "version"
   | "created"
-  | "updated";
+  | "updated"
+  | "arrived"
+  | "from"
+  | "to"
+  | "subject";
 
 const LIBRARY_DOCUMENT_SORT_KEYS: LibraryDocumentSortKey[] = [
   "name",
@@ -69,6 +73,10 @@ const LIBRARY_DOCUMENT_SORT_KEYS: LibraryDocumentSortKey[] = [
   "version",
   "created",
   "updated",
+  "arrived",
+  "from",
+  "to",
+  "subject",
 ];
 
 function parseLibraryDocumentSort(query: Record<string, unknown>): {

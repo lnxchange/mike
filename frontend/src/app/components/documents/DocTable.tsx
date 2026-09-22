@@ -194,13 +194,6 @@ const SORT_KEY_LABELS: Record<DocumentSortKey, string> = {
     subject: "Subject",
 };
 
-const EMAIL_SORT_KEYS = new Set<DocumentSortKey>([
-    "arrived",
-    "from",
-    "to",
-    "subject",
-]);
-
 export function documentHasEmailMeta(doc: Document): boolean {
     return Boolean(
         doc.email_subject?.trim() ||
@@ -214,21 +207,37 @@ function EmailEmptyCell() {
     return <span className="text-gray-300">—</span>;
 }
 
-function EmailMetaHeaderCells({ show }: { show: boolean }) {
+function EmailMetaHeaderCells({
+    show,
+    arrivedFilter,
+    fromFilter,
+    toFilter,
+    subjectFilter,
+}: {
+    show: boolean;
+    arrivedFilter?: ReactNode;
+    fromFilter?: ReactNode;
+    toFilter?: ReactNode;
+    subjectFilter?: ReactNode;
+}) {
     if (!show) return null;
     return (
         <>
             <TableHeaderCell className="flex w-32 items-center gap-1">
                 <span>Arrived</span>
+                {arrivedFilter}
             </TableHeaderCell>
             <TableHeaderCell className="flex w-40 items-center gap-1">
                 <span>From</span>
+                {fromFilter}
             </TableHeaderCell>
             <TableHeaderCell className="flex w-40 items-center gap-1">
                 <span>To</span>
+                {toFilter}
             </TableHeaderCell>
             <TableHeaderCell className="flex w-48 items-center gap-1">
                 <span>Subject</span>
+                {subjectFilter}
             </TableHeaderCell>
         </>
     );
@@ -2727,10 +2736,10 @@ export function DocTable({
                             ? a.name.localeCompare(b.name)
                             : difference * combinedDirection;
                     }
-                    return (
-                        a.fallbackGroup - b.fallbackGroup ||
-                        a.name.localeCompare(b.name)
-                    );
+                    // Size, version, and correspondence fields apply to
+                    // documents only. Keep the filteredDocs order and leave
+                    // folders after that group.
+                    return a.fallbackGroup - b.fallbackGroup;
                 })
                 .map((row, index) => [row.key, index + 1]),
         );
@@ -3694,7 +3703,7 @@ export function DocTable({
     }
 
     const filteredDocs = useMemo(() => {
-        if (serverQueryActive && !EMAIL_SORT_KEYS.has(effectiveSort?.key ?? "name")) {
+        if (serverQueryActive) {
             return docs;
         }
 
@@ -3764,6 +3773,10 @@ export function DocTable({
     const nameSortDirection = effectiveSort?.key === "name" ? effectiveSort.direction : null;
     const sizeSortDirection = effectiveSort?.key === "size" ? effectiveSort.direction : null;
     const versionSortDirection = effectiveSort?.key === "version" ? effectiveSort.direction : null;
+    const arrivedSortDirection = effectiveSort?.key === "arrived" ? effectiveSort.direction : null;
+    const fromSortDirection = effectiveSort?.key === "from" ? effectiveSort.direction : null;
+    const toSortDirection = effectiveSort?.key === "to" ? effectiveSort.direction : null;
+    const subjectSortDirection = effectiveSort?.key === "subject" ? effectiveSort.direction : null;
     const createdSortDirection = effectiveSort?.key === "created" ? effectiveSort.direction : null;
     const updatedSortDirection = effectiveSort?.key === "updated" ? effectiveSort.direction : null;
     const resetSortLabel = defaultSort
@@ -3828,6 +3841,46 @@ export function DocTable({
             widthClassName="w-40"
             options={SORT_OPTIONS}
             onChange={(direction) => handleSortChange("updated", direction)}
+        />
+    ) : null;
+    const arrivedFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by arrived date"
+            value={arrivedSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("arrived", direction)}
+        />
+    ) : null;
+    const fromFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by from"
+            value={fromSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("from", direction)}
+        />
+    ) : null;
+    const toFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by to"
+            value={toSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("to", direction)}
+        />
+    ) : null;
+    const subjectFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by subject"
+            value={subjectSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("subject", direction)}
         />
     ) : null;
 
@@ -4280,7 +4333,13 @@ export function DocTable({
                                 <span>Version</span>
                                 {versionFilterButton}
                             </TableHeaderCell>
-                            <EmailMetaHeaderCells show={showEmailColumns} />
+                            <EmailMetaHeaderCells
+                                show={showEmailColumns}
+                                arrivedFilter={arrivedFilterButton}
+                                fromFilter={fromFilterButton}
+                                toFilter={toFilterButton}
+                                subjectFilter={subjectFilterButton}
+                            />
                             <TableHeaderCell className="flex w-32 items-center gap-1">
                                 <span>Created</span>
                                 {createdFilterButton}

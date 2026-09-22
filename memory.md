@@ -1,5 +1,13 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-22 — Matters correspondence columns now sort
+
+Arrived, From, To and Subject on the document table have the same header
+sort controls as Name/Size/Version/Created/Updated. Folder view no longer
+re-orders those rows by filename after the email comparators run. Library
+search accepts the same keys (`20260922_01_library_email_sort.sql`).
+Shipping this change to production.
+
 ## 2026-09-21 — Exa fallback and org keys shipped to production
 
 Pushed `ef8699b8` on `cursor/setup-supabase-vercel-oss-cad9`. Applied

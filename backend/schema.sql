@@ -3168,6 +3168,14 @@ as $$
     case when p_sort_key = 'created' and p_sort_direction = 'desc' then d.created_at else null end desc,
     case when p_sort_key = 'updated' and p_sort_direction = 'asc' then d.updated_at else null end asc,
     case when p_sort_key = 'updated' and p_sort_direction = 'desc' then d.updated_at else null end desc,
+    case when p_sort_key = 'arrived' and p_sort_direction = 'asc' then coalesce(d.email_received_at, '-infinity'::timestamptz) else null end asc,
+    case when p_sort_key = 'arrived' and p_sort_direction = 'desc' then coalesce(d.email_received_at, '-infinity'::timestamptz) else null end desc,
+    case when p_sort_key = 'from' and p_sort_direction = 'asc' then lower(coalesce(d.email_from, '')) else null end asc,
+    case when p_sort_key = 'from' and p_sort_direction = 'desc' then lower(coalesce(d.email_from, '')) else null end desc,
+    case when p_sort_key = 'to' and p_sort_direction = 'asc' then lower(coalesce(d.email_to, '')) else null end asc,
+    case when p_sort_key = 'to' and p_sort_direction = 'desc' then lower(coalesce(d.email_to, '')) else null end desc,
+    case when p_sort_key = 'subject' and p_sort_direction = 'asc' then lower(coalesce(d.email_subject, '')) else null end asc,
+    case when p_sort_key = 'subject' and p_sort_direction = 'desc' then lower(coalesce(d.email_subject, '')) else null end desc,
     d.updated_at desc,
     d.id asc
   limit greatest(coalesce(p_limit, 50), 1)

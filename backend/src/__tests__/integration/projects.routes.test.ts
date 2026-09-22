@@ -581,6 +581,27 @@ describe("projects.routes", () => {
       });
     });
 
+    it("passes correspondence sort keys through to library search", async () => {
+      const captured = captureRpcArgs();
+      supabaseState.rpc = {
+        data: [{ id: "d1", filename: "Notice.eml" }],
+        error: null,
+      };
+
+      const res = await request(app)
+        .get(
+          "/library/files?view=search&limit=10&sort_key=from&sort_direction=asc",
+        )
+        .set(...AUTH);
+
+      expect(res.status).toBe(200);
+      expect(captured.name).toBe("search_library_documents");
+      expect(captured.args).toMatchObject({
+        p_sort_key: "from",
+        p_sort_direction: "asc",
+      });
+    });
+
     it("no longer exposes a separate Library search route", async () => {
       const res = await request(app)
         .get("/library/templates/search?search=Agreement")
