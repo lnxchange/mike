@@ -6,6 +6,7 @@ const DELIVERABLE_EVENT_TYPES = new Set([
   "doc_replicated",
   "doc_finalized",
   "ask_inputs",
+  "plan",
 ]);
 
 export const INCOMPLETE_TURN_MESSAGE =

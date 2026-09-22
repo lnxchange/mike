@@ -725,7 +725,9 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         persistChat &&
         !persistedEvents.some((event) =>
           typeof event === "object" && event !== null && "type" in event
-            ? event.type === "error" || event.type === "ask_inputs"
+            ? event.type === "error" ||
+              event.type === "ask_inputs" ||
+              event.type === "plan"
             : false,
         )
       ) {

@@ -19,6 +19,9 @@ describe("buildSystemPrompt", () => {
             expect(prompt).toContain(
                 "write the deliverable from the previous-turn working notes",
             );
+            expect(prompt).toContain("PLANNING:");
+            expect(prompt).toContain("call create_plan and stop");
+            expect(prompt).toContain("one slice at a time");
             expect(prompt).toContain(
                 "In user-facing responses, use natural language only",
             );

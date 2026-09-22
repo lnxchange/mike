@@ -1914,6 +1914,50 @@ export function useAssistantChat({
               continue;
             }
 
+            if (data.type === "plan") {
+                const eventId =
+                    typeof data.event_id === "string" ? data.event_id.trim() : "";
+                const title =
+                    typeof data.title === "string" && data.title.trim()
+                        ? data.title.trim()
+                        : "Plan";
+                const rawItems = Array.isArray(data.items)
+                    ? (data.items as unknown[])
+                    : [];
+                const items = rawItems.flatMap((item, index) => {
+                    if (!item || typeof item !== "object") return [];
+                    const row = item as Record<string, unknown>;
+                    const content =
+                        typeof row.content === "string" ? row.content.trim() : "";
+                    if (!content) return [];
+                    const status =
+                        row.status === "completed"
+                            ? ("completed" as const)
+                            : row.status === "in_progress"
+                              ? ("in_progress" as const)
+                              : ("pending" as const);
+                    return [
+                        {
+                            id:
+                                typeof row.id === "string" && row.id.trim()
+                                    ? row.id.trim()
+                                    : `step-${index + 1}`,
+                            content,
+                            status,
+                        },
+                    ];
+                });
+                if (eventId && items.length > 0) {
+                    pushEvent({
+                        type: "plan",
+                        event_id: eventId,
+                        title,
+                        items,
+                    });
+                }
+                continue;
+            }
+
             if (data.type === "ask_inputs") {
               const eventId =
                 typeof data.event_id === "string" ? data.event_id.trim() : "";

@@ -1996,6 +1996,12 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         { askInputsResponse: response },
                                     );
                                 }}
+                                onContinue={() => {
+                                    void handleSubmit({
+                                        role: "user",
+                                        content: "Continue with the next step.",
+                                    });
+                                }}
                                 onCancel={cancel}
                             >
                                 <ChatInput

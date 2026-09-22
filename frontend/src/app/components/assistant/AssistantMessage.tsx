@@ -32,6 +32,7 @@ import {
     OutlookConnectBlock,
     OutlookDraftBlock,
     OutlookDraftPreviewBlock,
+    PlanBlock,
     ReasoningBlock,
     WorkflowAppliedBlock,
     type CourtListenerBlockItem,
@@ -315,6 +316,11 @@ export function AssistantMessage({
               kind: "content";
               event: Extract<AssistantEvent, { type: "content" }>;
               index: number;
+          }
+        | {
+              kind: "plan";
+              event: Extract<AssistantEvent, { type: "plan" }>;
+              index: number;
           };
 
     const groups: EventGroup[] = [];
@@ -328,6 +334,12 @@ export function AssistantMessage({
                     current = null;
                 }
                 groups.push({ kind: "content", event: e, index: i });
+            } else if (e.type === "plan") {
+                if (current) {
+                    groups.push(current);
+                    current = null;
+                }
+                groups.push({ kind: "plan", event: e, index: i });
             } else {
                 if (!current)
                     current = { kind: "pre", events: [], indices: [] };
@@ -354,6 +366,7 @@ export function AssistantMessage({
         for (let i = groupIdx + 1; i < groups.length; i++) {
             const g = groups[i];
             if (g.kind === "content" && g.event.text.length > 0) return true;
+            if (g.kind === "plan") return true;
         }
         return false;
     };
@@ -1367,6 +1380,14 @@ export function AssistantMessage({
                                             }
                                         />
                                     </div>
+                                );
+                            }
+                            if (g.kind === "plan") {
+                                return (
+                                    <PlanBlock
+                                        key={`plan-${g.index}`}
+                                        event={g.event}
+                                    />
                                 );
                             }
                             const subsequentContent = hasContentAfter(gIdx);

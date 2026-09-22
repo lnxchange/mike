@@ -10,9 +10,9 @@
  * rewrite. See `allowDocumentMutation` in ../streaming.ts.
  *
  * Everything else in the base set — read_document, find_in_document,
- * list_documents, fetch_documents, ask_inputs, the workflow and research
- * tools — only reads, so a collaborator who may talk in the thread keeps the
- * whole conversational surface.
+ * list_documents, fetch_documents, ask_inputs, create_plan, update_plan, the
+ * workflow and research tools — only reads, so a collaborator who may talk
+ * in the thread keeps the whole conversational surface.
  */
 export const DOCUMENT_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "edit_document",
@@ -265,6 +265,87 @@ export const TOOLS = [
                 },
               },
               required: ["id", "kind"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_plan",
+      description:
+        "Record the remaining work as a short ordered plan, then stop this response. Use this for a selected workflow or any job with more than two distinct steps. Read only enough to name the steps. After this call, do not draft, copy, edit, or generate documents in the same response.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Short plan title shown to the user.",
+          },
+          items: {
+            type: "array",
+            minItems: 2,
+            maxItems: 12,
+            description: "Ordered remaining steps. Keep each item to one action.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description:
+                    "Stable short ID for this step, unique within the plan.",
+                },
+                content: {
+                  type: "string",
+                  description: "One concrete step in plain language.",
+                },
+              },
+              required: ["id", "content"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_plan",
+      description:
+        "Replace the active plan after finishing one slice of work. Send the full updated list. Mark finished items completed, the current item in_progress, and later items pending. Then stop this response.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Short plan title shown to the user.",
+          },
+          items: {
+            type: "array",
+            minItems: 1,
+            maxItems: 12,
+            description: "Full updated plan, not only the changed rows.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "Stable short ID from the existing plan.",
+                },
+                content: {
+                  type: "string",
+                  description: "One concrete step in plain language.",
+                },
+                status: {
+                  type: "string",
+                  enum: ["pending", "in_progress", "completed"],
+                },
+              },
+              required: ["id", "content", "status"],
             },
           },
         },

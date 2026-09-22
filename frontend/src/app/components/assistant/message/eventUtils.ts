@@ -14,6 +14,8 @@ export function eventErrorMessage(event: AssistantEvent): string | null {
 
 export function toolCallLabel(name: string): string {
     if (name === "ask_inputs") return "Asking for input...";
+    if (name === "create_plan") return "Creating a plan...";
+    if (name === "update_plan") return "Updating the plan...";
     if (name === "generate_docx") return "Creating document...";
     if (name === "generate_excel") return "Creating spreadsheet...";
     if (name === "generate_ppt") return "Creating presentation...";

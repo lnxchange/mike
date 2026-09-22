@@ -244,6 +244,7 @@ export type AssistantEvent =
     })
   | AskInputsEvent
   | AskInputsResponseEvent
+  | WireActivity<"plan">
   | { type: "thinking"; isStreaming?: boolean }
   | (Omit<
       WireActivity<"doc_read">,

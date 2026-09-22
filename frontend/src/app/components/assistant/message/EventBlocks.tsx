@@ -19,6 +19,7 @@ import {
     DocReadBlockUI,
 } from "@/shared/ui/DocumentEventBlocksUI";
 import { RESPONSE_GLASS_SURFACE, withoutMarkdownNode } from "./messageStyles";
+import { GLASS_CARD_SURFACE_CLASS } from "@/shared/ui/GlassCardUI";
 
 const THINKING_PHRASES = [
     "Thinking...",
@@ -809,6 +810,40 @@ export function AskInputsBlock({
                 </div>
             )}
         </EventBlock>
+    );
+}
+
+const PLAN_STATUS_LABEL: Record<
+    Extract<AssistantEvent, { type: "plan" }>["items"][number]["status"],
+    string
+> = {
+    pending: "Pending",
+    in_progress: "In progress",
+    completed: "Done",
+};
+
+export function PlanBlock({
+    event,
+}: {
+    event: Extract<AssistantEvent, { type: "plan" }>;
+}) {
+    return (
+        <div className={`${GLASS_CARD_SURFACE_CLASS} px-4 py-3`}>
+            <p className="font-serif text-sm text-gray-900">{event.title}</p>
+            <ol className="mt-2 space-y-1.5">
+                {event.items.map((item, index) => (
+                    <li
+                        key={item.id}
+                        className="font-serif text-sm text-gray-700"
+                    >
+                        <span className="text-gray-500">
+                            {index + 1}. {PLAN_STATUS_LABEL[item.status]}
+                        </span>
+                        <span className="ml-2">{item.content}</span>
+                    </li>
+                ))}
+            </ol>
+        </div>
     );
 }
 

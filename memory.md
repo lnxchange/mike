@@ -1,5 +1,13 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-09-22 — Agent now plans first instead of finishing a job in one turn
+
+The New job request run read emails, copied a memo, then said "How can I
+help?" after 21 steps. Workflows now require `create_plan` before any
+draft/copy/edit. That call stops the turn and shows a plan card plus
+Continue. The next message does only one or two pending items. Not
+deployed.
+
 ## 2026-09-22 — Matters correspondence columns now sort
 
 Arrived, From, To and Subject on the document table have the same header

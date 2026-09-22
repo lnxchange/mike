@@ -115,6 +115,21 @@ export type AskInputsEvent = {
   items: AskInputItem[];
 };
 
+export type PlanItemStatus = "pending" | "in_progress" | "completed";
+
+export type PlanItem = {
+  id: string;
+  content: string;
+  status: PlanItemStatus;
+};
+
+export type PlanEvent = {
+  type: "plan";
+  event_id: string;
+  title: string;
+  items: PlanItem[];
+};
+
 export type AskInputResponseItem =
   | {
       id: string;
@@ -400,6 +415,7 @@ export type McpToolEvent = {
 export type AssistantEvent =
   | { type: "reasoning"; text: string }
   | AskInputsEvent
+  | PlanEvent
   | {
       type: "ask_inputs_response";
       assistant_message_id: string;

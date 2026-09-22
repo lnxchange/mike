@@ -18,6 +18,11 @@ import { ACTIVE_WORD_DOCUMENT_LIVE_FILENAME } from "./wordPrompt";
 import { parseCitations, createCitation } from "./citations";
 import type { AssistantEvent } from "./streaming";
 import { catalogWorkflowId, ensureDefaultWorkflows } from "../../../lib/workflowCatalog";
+import {
+  formatActivePlanBlock,
+  latestPlanEvent,
+  planHasPendingItems,
+} from "./tools/planTools";
 
 // ---------------------------------------------------------------------------
 // Prompt-injection spotlighting helpers
@@ -153,11 +158,11 @@ export async function enrichWithPriorEvents(
     .eq("role", "assistant")
     .not("content", "is", null)
     .order("created_at", { ascending: false })
-    .limit(1);
+    .limit(8);
 
   const lastRow = rows?.[0] as { content?: unknown } | undefined;
-  const content = lastRow?.content;
-  if (!Array.isArray(content)) return messages;
+  const content = Array.isArray(lastRow?.content) ? lastRow.content : [];
+  if (!rows?.length) return messages;
 
   const slugByDocumentId = new Map<string, string>();
   for (const [slug, info] of Object.entries(docIndex)) {
@@ -220,6 +225,12 @@ export async function enrichWithPriorEvents(
       }
     } else if (ev?.type === "workflow_applied") {
       lines.push(`- applied workflow: ${untrustedRef(ev.title)}`);
+    } else if (ev?.type === "plan") {
+      const title =
+        typeof ev.title === "string" && ev.title.trim()
+          ? untrustedRef(ev.title)
+          : "Plan";
+      lines.push(`- recorded plan: ${title}`);
     } else if (ev?.type === "ask_inputs") {
       const count = Array.isArray(ev.items) ? ev.items.length : 0;
       lines.push(`- asked user for ${count} input${count === 1 ? "" : "s"}`);
@@ -270,7 +281,18 @@ export async function enrichWithPriorEvents(
     );
   }
   const workingNotes = priorTurnWorkingNotes(content as Record<string, unknown>[]);
-  if (lines.length === 0 && !workingNotes) return messages;
+  let latestPlan: ReturnType<typeof latestPlanEvent> = null;
+  for (const row of rows ?? []) {
+    const rowContent = (row as { content?: unknown }).content;
+    if (!Array.isArray(rowContent)) continue;
+    latestPlan = latestPlanEvent(rowContent);
+    if (latestPlan) break;
+  }
+  const activePlan =
+    latestPlan && planHasPendingItems(latestPlan)
+      ? formatActivePlanBlock(latestPlan)
+      : "";
+  if (lines.length === 0 && !workingNotes && !activePlan) return messages;
   const parts = [
     lines.length
       ? `[Tool activity in your previous turn]\n${lines.join("\n")}`
@@ -278,6 +300,7 @@ export async function enrichWithPriorEvents(
     workingNotes
       ? `[Working notes from your previous turn]\nThese are your own notes from the previous turn. Use them. Do not restart the document research unless a required document is missing from the notes.\n\n${workingNotes}`
       : "",
+    activePlan,
   ].filter(Boolean);
   const summary = `\n\n${parts.join("\n\n")}`;
 

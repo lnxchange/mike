@@ -56,6 +56,7 @@ import {
   type AuCaseLawToolEvent,
 } from "./auCaseLawTools";
 import { executeMcpToolCall, type McpToolEvent } from "../../../../lib/mcpConnectors";
+import { normalizePlanEvent } from "./planTools";
 import {
   type DocStore,
   type DocIndex,
@@ -455,6 +456,7 @@ export async function runToolCalls(
   docsEdited: DocEditedResult[];
   docsFinalized: DocFinalizedResult[];
   askInputsEvents: AskInputsEvent[];
+  planEvents: import("@mike/contracts").PlanEvent[];
   courtlistenerEvents: CourtlistenerToolEvent[];
   caseCitationEvents: CaseCitationEvent[];
   auLegislationEvents: AuLegislationToolEvent[];
@@ -490,6 +492,7 @@ export async function runToolCalls(
   const docsEdited: DocEditedResult[] = [];
   const docsFinalized: DocFinalizedResult[] = [];
   const askInputsEvents: AskInputsEvent[] = [];
+  const planEvents: import("@mike/contracts").PlanEvent[] = [];
   const courtlistenerEvents: CourtlistenerToolEvent[] = [];
   const caseCitationEvents: CaseCitationEvent[] = [];
   const auLegislationEvents: AuLegislationToolEvent[] = [];
@@ -661,6 +664,37 @@ export async function runToolCalls(
     if (tc.function.name === "ask_inputs") {
       const event = normalizeAskInputsEvent(args);
       if (event.items.length > 0) askInputsEvents.push(event);
+      continue;
+    }
+
+    if (tc.function.name === "create_plan") {
+      const event = normalizePlanEvent(args, "create");
+      if (event) planEvents.push(event);
+      continue;
+    }
+
+    if (tc.function.name === "update_plan") {
+      const event = normalizePlanEvent(args, "update");
+      if (event) {
+        planEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            ok: true,
+            title: event.title,
+            items: event.items,
+          }),
+        });
+      } else {
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            error: "update_plan requires items with id, content, and status.",
+          }),
+        });
+      }
       continue;
     }
 
@@ -3560,6 +3594,7 @@ export async function runToolCalls(
     docsEdited,
     docsFinalized,
     askInputsEvents,
+    planEvents,
     courtlistenerEvents,
     caseCitationEvents,
     auLegislationEvents,

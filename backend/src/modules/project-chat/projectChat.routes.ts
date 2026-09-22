@@ -328,7 +328,9 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 completedTurnPersisted &&
                 !persistedEvents.some(
                     (event) =>
-                        event.type === "ask_inputs" || event.type === "error",
+                        event.type === "ask_inputs" ||
+                        event.type === "plan" ||
+                        event.type === "error",
                 )
             ) {
                 const completedTurnId =

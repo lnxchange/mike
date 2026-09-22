@@ -6,6 +6,14 @@ import {
 } from "../../../lib/llm";
 import { DEFAULT_STREAM_MAX_ITERATIONS } from "../../../lib/llm/types";
 import { withIncompleteTurnEvent } from "./incompleteTurn";
+import {
+  CREATE_PLAN_REQUIRED_ERROR,
+  PLAN_FIRST_BLOCKED_TOOLS,
+  PLAN_PAUSE_CONTENT,
+  PLAN_SLICE_MAX_ITERATIONS,
+  lastUserHasWorkflow,
+  messagesHaveActivePlan,
+} from "./tools/planTools";
 import { resolveRequestedModel } from "../../../lib/routerModels";
 import { UserFacingError } from "../../../lib/userFacingError";
 import type { Db } from "../../../lib/supabase";
@@ -141,21 +149,52 @@ class AssistantStreamAskInputsPause extends Error {
   }
 }
 
-function isAskInputsPause(error: unknown): boolean {
-  if (error instanceof AssistantStreamAskInputsPause) return true;
+class AssistantStreamPlanPause extends Error {
+  constructor() {
+    super("Waiting to continue the plan.");
+    this.name = "AssistantStreamPlanPause";
+  }
+}
+
+function isNamedPause(
+  error: unknown,
+  name: string,
+  message: string,
+): boolean {
   if (!error || typeof error !== "object") return false;
   const record = error as {
     name?: unknown;
     message?: unknown;
     cause?: unknown;
   };
-  if (
-    record.name === "AssistantStreamAskInputsPause" ||
-    record.message === "Waiting for user input."
-  ) {
-    return true;
-  }
-  return record.cause !== error && isAskInputsPause(record.cause);
+  if (record.name === name || record.message === message) return true;
+  return record.cause !== error && isNamedPause(record.cause, name, message);
+}
+
+function isAskInputsPause(error: unknown): boolean {
+  return (
+    error instanceof AssistantStreamAskInputsPause ||
+    isNamedPause(
+      error,
+      "AssistantStreamAskInputsPause",
+      "Waiting for user input.",
+    )
+  );
+}
+
+function isPlanPause(error: unknown): boolean {
+  return (
+    error instanceof AssistantStreamPlanPause ||
+    isNamedPause(
+      error,
+      "AssistantStreamPlanPause",
+      "Waiting to continue the plan.",
+    )
+  );
+}
+
+function isControlledStreamPause(error: unknown): boolean {
+  return isAskInputsPause(error) || isPlanPause(error);
 }
 
 export function isAbortError(error: unknown): boolean {
@@ -328,6 +367,15 @@ export async function runLLMStream(params: {
   // Before every real turn: see MemoryTurn for why it goes there.
   if (memory.message) chatMessages.unshift(memory.message);
 
+  const hasActivePlan = messagesHaveActivePlan(chatMessages);
+  const requirePlanBeforeMutation =
+    lastUserHasWorkflow(chatMessages) && !hasActivePlan;
+  const requestedMaxIterations =
+    params.maxIterations ?? DEFAULT_STREAM_MAX_ITERATIONS;
+  const maxIterations = hasActivePlan
+    ? Math.min(requestedMaxIterations, PLAN_SLICE_MAX_ITERATIONS)
+    : requestedMaxIterations;
+
   const events: AssistantEvent[] = [];
   // One assistant turn produces at most one document_versions row per
   // edited doc. `runToolCalls` fires once per tool-call batch; the model
@@ -494,7 +542,7 @@ export async function runLLMStream(params: {
       systemPrompt,
       messages: chatMessages,
       tools: activeTools as OpenAIToolSchema[],
-      maxIterations: params.maxIterations ?? DEFAULT_STREAM_MAX_ITERATIONS,
+      maxIterations,
       apiKeys,
       reasoning: params.reasoning ?? "high",
       abortSignal: signal,
@@ -548,9 +596,25 @@ export async function runLLMStream(params: {
         // "Tool 'x' is not available." answer below, which every tool_use
         // without a result already gets, so the model is told plainly rather
         // than left waiting on a call that silently did nothing.
-        const permittedCalls = allowDocumentMutation
+        const mutationAllowedCalls = allowDocumentMutation
           ? calls
           : calls.filter((c) => !isDocumentMutatingTool(c.name));
+        const blockedPlanCalls = requirePlanBeforeMutation
+          ? mutationAllowedCalls.filter((c) =>
+              PLAN_FIRST_BLOCKED_TOOLS.has(c.name),
+            )
+          : [];
+        const permittedCalls = requirePlanBeforeMutation
+          ? mutationAllowedCalls.filter(
+              (c) => !PLAN_FIRST_BLOCKED_TOOLS.has(c.name),
+            )
+          : mutationAllowedCalls;
+        for (const call of blockedPlanCalls) {
+          clientResultByCallId.set(
+            call.id,
+            JSON.stringify({ error: CREATE_PLAN_REQUIRED_ERROR }),
+          );
+        }
         const serverCalls = clientTools
           ? permittedCalls.filter((c) => !clientTools.owns(c.name))
           : permittedCalls;
@@ -582,6 +646,7 @@ export async function runLLMStream(params: {
           docsEdited,
           docsFinalized,
           askInputsEvents,
+          planEvents,
           courtlistenerEvents,
           caseCitationEvents,
           auLegislationEvents,
@@ -683,6 +748,10 @@ export async function runLLMStream(params: {
           write(`data: ${JSON.stringify(askInputsEvent)}\n\n`);
           events.push(askInputsEvent);
         }
+        for (const planEvent of planEvents) {
+          write(`data: ${JSON.stringify(planEvent)}\n\n`);
+          events.push(planEvent);
+        }
         for (const event of courtlistenerEvents) {
           events.push(event);
         }
@@ -714,6 +783,9 @@ export async function runLLMStream(params: {
         if (askInputsEvents.length > 0) {
           throw new AssistantStreamAskInputsPause();
         }
+        if (planEvents.length > 0) {
+          throw new AssistantStreamPlanPause();
+        }
 
         // Index alignment would break if any tool branch skips its
         // push (unhandled tool name, disabled store, guard failure).
@@ -742,10 +814,24 @@ export async function runLLMStream(params: {
       },
     });
   } catch (err) {
-    if (isAskInputsPause(err)) {
-      // The ask_inputs event has already been emitted and persisted in `events`.
-      // Stop this assistant turn here so the model does not add redundant
-      // prose telling the user to answer the picker or attach documents.
+    if (isControlledStreamPause(err)) {
+      // ask_inputs and create_plan / update_plan are intentional pauses.
+      // The events are already in `events`. Stop so the model cannot keep
+      // working the rest of the job in this same turn.
+      if (
+        isPlanPause(err) &&
+        !events.some(
+          (event) => event.type === "content" && event.text.trim().length > 0,
+        )
+      ) {
+        const contentEvent = {
+          type: "content" as const,
+          text: PLAN_PAUSE_CONTENT,
+        };
+        events.push(contentEvent);
+        write(`data: ${JSON.stringify(contentEvent)}\n\n`);
+        fullText += PLAN_PAUSE_CONTENT;
+      }
     } else if (isAbortError(err)) {
       flushPartialTurn({ emit: false });
       throw new AssistantStreamAbortError(

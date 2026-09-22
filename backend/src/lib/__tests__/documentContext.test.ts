@@ -301,6 +301,46 @@ describe("null-content assistant reservations", () => {
         );
     });
 
+    it("enrichWithPriorEvents carries an unfinished plan into the next turn", async () => {
+        const { db } = makeFakeMessagesDb([
+            realAssistantRow([
+                {
+                    type: "plan",
+                    event_id: "plan-1",
+                    title: "New job request",
+                    items: [
+                        {
+                            id: "read",
+                            content: "Read the incoming emails",
+                            status: "in_progress",
+                        },
+                        {
+                            id: "review",
+                            content: "Review the attached terms",
+                            status: "pending",
+                        },
+                    ],
+                },
+            ]),
+        ]);
+
+        const enriched = await enrichWithPriorEvents(
+            [
+                { role: "assistant", content: "I will work through this one step at a time." },
+                { role: "user", content: "Continue." },
+            ],
+            "chat-1",
+            db,
+            {},
+        );
+
+        expect(enriched[0].content).toContain("[Active plan]");
+        expect(enriched[0].content).toContain("Review the attached terms");
+        expect(enriched[0].content).toContain(
+            "Execute only the next one or two pending items",
+        );
+    });
+
     it("does not force a full reread at the start of every turn", () => {
         const messages = buildMessages(
             [{ role: "user", content: "Continue." }],

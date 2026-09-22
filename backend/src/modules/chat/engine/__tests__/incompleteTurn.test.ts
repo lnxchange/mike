@@ -37,6 +37,23 @@ describe("isIncompleteDeliverableTurn", () => {
     ).toBe(false);
   });
 
+  it("accepts a turn that recorded a plan", () => {
+    expect(
+      isIncompleteDeliverableTurn([
+        read("brief.docx"),
+        {
+          type: "plan",
+          event_id: "plan-1",
+          title: "New job request",
+          items: [
+            { id: "read", content: "Read the emails", status: "in_progress" },
+            { id: "review", content: "Review the terms", status: "pending" },
+          ],
+        },
+      ]),
+    ).toBe(false);
+  });
+
   it("accepts a turn that created or edited a document", () => {
     expect(
       isIncompleteDeliverableTurn([
