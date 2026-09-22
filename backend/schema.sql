@@ -860,6 +860,12 @@ create table if not exists public.document_versions (
   content_sha256 text,
   deleted_at timestamptz,
   deleted_by uuid references auth.users(id) on delete set null,
+  -- SharePoint item created when a Colleague edit is saved into DR.
+  -- The document row keeps the source item. This id stops the next delta
+  -- from importing the DR copy a second time.
+  external_provider text,
+  external_item_id text,
+  external_ctag text,
   created_at timestamptz not null default now(),
   constraint document_versions_source_check
     check (source = any (array[
@@ -882,6 +888,10 @@ create index if not exists document_versions_active_document_id_idx
 
 create index if not exists document_versions_doc_vnum_idx
   on public.document_versions(document_id, version_number);
+
+create index if not exists document_versions_external_item_idx
+  on public.document_versions(document_id)
+  where external_item_id is not null;
 
 create table if not exists public.upload_sessions (
   id uuid primary key,

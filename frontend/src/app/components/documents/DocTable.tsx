@@ -101,6 +101,7 @@ import {
 import { DocumentSidePanel } from "@/app/components/shared/DocumentSidePanel";
 import { TableLoadMoreRow } from "@/app/components/shared/TableLoadMoreRow";
 import { LibrarySkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
+import type { MatterSyncFile, MatterSyncFileStage } from "@/app/lib/matterSync";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import {
@@ -338,6 +339,11 @@ interface DocTableProps {
     emptyStateTitle: string;
     emptyStateDescription?: string;
     hideEmptyStateAction?: boolean;
+    /**
+     * SharePoint files Railway has not finished. Rendered as rows with a
+     * staged bar, and they keep the upload empty state from showing.
+     */
+    syncFiles?: MatterSyncFile[];
     emptyFolderMessage?: string;
     renderAddDocumentsModal?: (
         open: boolean,
@@ -508,6 +514,57 @@ function ProjectTableLoading({
     );
 }
 
+function syncStageLabel(stage: MatterSyncFileStage): string {
+    if (stage === "queued") return "Queued";
+    if (stage === "uploaded") return "Uploaded";
+    if (stage === "processing") return "Processing";
+    return "Failed";
+}
+
+function syncStageFraction(stage: MatterSyncFileStage): number {
+    if (stage === "queued") return 0.15;
+    if (stage === "uploaded") return 0.4;
+    if (stage === "processing") return 0.7;
+    return 1;
+}
+
+function SyncFileProgress({ stage }: { stage: MatterSyncFileStage }) {
+    const percent = Math.round(syncStageFraction(stage) * 100);
+    return (
+        <span
+            className="ml-3 inline-flex w-16 shrink-0"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+            aria-label={syncStageLabel(stage)}
+        >
+            <span className="h-1 w-full overflow-hidden rounded-full bg-gray-200">
+                <span
+                    className={`block h-full rounded-full ${
+                        stage === "error" ? "bg-red-500" : "bg-gray-600"
+                    } ${stage === "processing" ? "animate-pulse" : ""}`}
+                    style={{ width: `${percent}%` }}
+                />
+            </span>
+        </span>
+    );
+}
+
+function syncFilesForFolder(
+    files: MatterSyncFile[],
+    folderId: string | null,
+    knownFolderIds: Set<string>,
+): MatterSyncFile[] {
+    return files.filter((file) => {
+        const placed =
+            file.folderId && knownFolderIds.has(file.folderId)
+                ? file.folderId
+                : null;
+        return placed === folderId;
+    });
+}
+
 function UploadingTrailingLabel() {
     return (
         <span role="status" aria-label="Uploading">
@@ -533,6 +590,7 @@ export function DocTable({
     emptyStateTitle,
     emptyStateDescription,
     hideEmptyStateAction = false,
+    syncFiles = [],
     emptyFolderMessage,
     renderAddDocumentsModal,
     onAddDocumentsActionChange,
@@ -2362,6 +2420,21 @@ export function DocTable({
         );
     }
 
+    function renderSyncFileRows(depth: number, parentFolderId: string | null) {
+        const knownFolderIds = new Set(folders.map((folder) => folder.id));
+        return syncFilesForFolder(syncFiles, parentFolderId, knownFolderIds).map(
+            (file) =>
+                renderDocumentActivityRow({
+                    key: `sync-file-${file.id}`,
+                    filename: file.filename,
+                    fileType: null,
+                    depth,
+                    statusLabel: syncStageLabel(file.stage),
+                    nameTrailingLabel: <SyncFileProgress stage={file.stage} />,
+                }),
+        );
+    }
+
     function renderUploadingDocumentRows(
         depth: number,
         parentFolderId: string | null,
@@ -2747,6 +2820,7 @@ export function DocTable({
 
         return (
             <div className="flex flex-col">
+                {renderSyncFileRows(depth, parentId)}
                 {renderUploadingDocumentRows(depth, parentId)}
                 {childDocs.map((doc) => {
                     const docName = doc.filename;
@@ -3760,6 +3834,10 @@ export function DocTable({
                 upload.parentFolderId === viewedFolderId &&
                 upload.entries.length > 0,
         );
+    const knownSyncFolderIds = new Set(folders.map((folder) => folder.id));
+    const hasVisibleSyncFiles =
+        syncFilesForFolder(syncFiles, viewedFolderId, knownSyncFolderIds)
+            .length > 0;
     const viewedFolderIsEmpty =
         !!viewedFolder &&
         !loadingChildFolderIds.has(viewedFolder.id) &&
@@ -3768,7 +3846,8 @@ export function DocTable({
             (folder) => folder.parent_folder_id === viewedFolder.id,
         ) &&
         creatingFolderIn !== viewedFolder.id &&
-        !hasVisibleCollectionUpload;
+        !hasVisibleCollectionUpload &&
+        !hasVisibleSyncFiles;
 
     const nameSortDirection = effectiveSort?.key === "name" ? effectiveSort.direction : null;
     const sizeSortDirection = effectiveSort?.key === "size" ? effectiveSort.direction : null;
@@ -4399,7 +4478,8 @@ export function DocTable({
                             ) : docs.length === 0 &&
                             (serverQueryActive || folders.length === 0) &&
                             creatingFolderIn === undefined &&
-                            !hasVisibleCollectionUpload ? (
+                            !hasVisibleCollectionUpload &&
+                            !hasVisibleSyncFiles ? (
                                 serverQueryActive ? (
                                     <div className="flex-1 flex flex-col items-center justify-center py-24 text-center">
                                         <p className="text-sm text-gray-400">No matches found</p>
@@ -4483,6 +4563,7 @@ export function DocTable({
                                     {/* Search: flat list; no search: folder tree */}
                                     {q ? (
                                         <>
+                                            {renderSyncFileRows(0, viewedFolderId)}
                                             {renderUploadingDocumentRows(
                                                 0,
                                                 viewedFolderId,

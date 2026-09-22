@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getMatterSyncStatus } from "@/app/lib/mikeApi";
 import {
-    isMatterSyncInProgress,
+    isMatterSyncUnsettled,
     type MatterSyncStatusResult,
 } from "@/app/lib/matterSync";
 
 export const MATTER_SYNC_POLL_MS = 15_000;
+/** While files are still landing or converting, the page should not wait on the idle interval. */
+export const MATTER_SYNC_ACTIVE_POLL_MS = 2_000;
+/** How often an open, idle matter asks SharePoint what changed. */
+export const MATTER_DELTA_CHECK_MS = 60_000;
 
 /**
  * The SharePoint sync row for a matter, fetched once and then polled while
@@ -57,10 +61,15 @@ export function useMatterSyncStatus(args: {
                 const visible = visibleCountRef.current;
                 const filerAhead =
                     typeof visible === "number" && next.documentCount > visible;
+                const countGrew =
+                    previous?.projectId === projectId &&
+                    next.documentCount > previous.count;
+                // Refresh while work is open even when the filer's count is
+                // unchanged: Railway can finish a file without that count moving.
                 if (
-                    (previous?.projectId === projectId &&
-                        next.documentCount > previous.count) ||
-                    filerAhead
+                    countGrew ||
+                    filerAhead ||
+                    isMatterSyncUnsettled(next, visible)
                 ) {
                     increasedRef.current?.();
                 }
@@ -82,15 +91,11 @@ export function useMatterSyncStatus(args: {
             const next = await refresh();
             if (cancelled) return;
             const visible = visibleCountRef.current;
-            const waitingForVisible =
-                typeof visible === "number" &&
-                !!next?.found &&
-                next.documentCount > visible;
-            if (
-                next?.found &&
-                (isMatterSyncInProgress(next.status) || waitingForVisible)
-            ) {
-                timer = window.setTimeout(() => void tick(), MATTER_SYNC_POLL_MS);
+            if (isMatterSyncUnsettled(next, visible)) {
+                timer = window.setTimeout(
+                    () => void tick(),
+                    MATTER_SYNC_ACTIVE_POLL_MS,
+                );
             }
         };
         void tick();
@@ -108,4 +113,27 @@ export function useMatterSyncStatus(args: {
         loaded: current !== null,
         refresh,
     };
+}
+
+/**
+ * While a matter page is open and already idle, ask for one incremental
+ * SharePoint check a minute. The timer stops as soon as the page goes away
+ * or the matter is no longer settled.
+ */
+export function useMatterDeltaCheck(args: {
+    enabled: boolean;
+    onCheck: () => void;
+}) {
+    const { enabled, onCheck } = args;
+    const onCheckRef = useRef(onCheck);
+    useEffect(() => {
+        onCheckRef.current = onCheck;
+    }, [onCheck]);
+    useEffect(() => {
+        if (!enabled) return;
+        const timer = window.setInterval(() => {
+            onCheckRef.current();
+        }, MATTER_DELTA_CHECK_MS);
+        return () => window.clearInterval(timer);
+    }, [enabled]);
 }

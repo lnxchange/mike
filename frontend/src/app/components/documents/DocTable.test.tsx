@@ -342,3 +342,41 @@ describe("DocTable email metadata columns", () => {
         expect(filenameOrder()).toEqual(["Alpha.eml", "Zeta.eml"]);
     });
 });
+
+describe("DocTable SharePoint sync rows", () => {
+    it("lists in-flight files and hides the upload empty state", () => {
+        function SyncingTable() {
+            const [documents, setDocuments] = useState<Document[]>([]);
+            const [folders, setFolders] = useState<DocTableFolder[]>([]);
+            return (
+                <DocTable
+                    scopeKey="project-1"
+                    documents={documents}
+                    setDocuments={setDocuments}
+                    folders={folders}
+                    setFolders={setFolders}
+                    loading={false}
+                    search=""
+                    operations={operations(vi.fn())}
+                    emptyStateTitle="Documents"
+                    hideEmptyStateAction
+                    canDo={allowAll}
+                    syncFiles={[
+                        {
+                            id: "file-1",
+                            filename: "Terms.pdf",
+                            folderId: null,
+                            stage: "processing",
+                        },
+                    ]}
+                />
+            );
+        }
+
+        render(<SyncingTable />);
+
+        expect(screen.getByText("Terms.pdf")).toBeInTheDocument();
+        expect(screen.getByRole("progressbar", { name: "Processing" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Upload" })).not.toBeInTheDocument();
+    });
+});

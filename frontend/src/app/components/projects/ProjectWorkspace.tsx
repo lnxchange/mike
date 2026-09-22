@@ -27,14 +27,21 @@ import {
     type ProjectGrant,
 } from "@/app/lib/mikeApi";
 import {
+    clearJustPulledMatter,
     describeMatterSync,
-    isMatterSyncInProgress,
-    isMatterSyncProcessing,
+    isMatterSyncUnsettled,
+    matterSyncOpenFiles,
+    matterSyncTotals,
+    readJustPulledMatter,
     sharepointFolderUrl,
+    type MatterSyncFile,
     zohoMatterUrl,
 } from "@/app/lib/matterSync";
 import { tabPillButtonUIClassName } from "@/shared/ui/TabPillButtonUI.styles";
-import { useMatterSyncStatus } from "@/app/hooks/useMatterSyncStatus";
+import {
+    useMatterDeltaCheck,
+    useMatterSyncStatus,
+} from "@/app/hooks/useMatterSyncStatus";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import type {
@@ -148,8 +155,12 @@ type ProjectWorkspaceValue = {
      * closed until the server has told us it may open.
      */
     canDo: (capability: Capability) => boolean;
-    /** Filer has counted SharePoint files that are not yet ready on the page. */
-    sharepointIngest: { expected: number; ready: number } | null;
+    /** SharePoint copy still landing or converting. Null once the matter is settled. */
+    sharepointIngest: {
+        expected: number;
+        ready: number;
+        files: MatterSyncFile[];
+    } | null;
 };
 
 const ProjectWorkspaceContext =
@@ -284,23 +295,36 @@ export function ProjectWorkspaceProvider({
         ZOHO_PULL_ENABLED && showShell && !!project && !!matterNumber;
     const visibleDocumentCount =
         project?.documents?.filter((d) => d.status === "ready").length ?? 0;
-    const { status: matterSyncStatus, refresh: refreshMatterSyncStatus } =
+    const { status: matterSyncStatus, loaded: matterSyncLoaded, refresh: refreshMatterSyncStatus } =
         useMatterSyncStatus({
             projectId,
             enabled: matterSyncEnabled,
             visibleDocumentCount,
             onDocumentCountIncreased: () => void refreshProjectCollection(),
         });
-    const sharepointIngest = useMemo(() => {
-        if (!isMatterSyncProcessing(matterSyncStatus, visibleDocumentCount)) {
-            return null;
+    const [justPulled, setJustPulled] = useState(false);
+    useEffect(() => {
+        setJustPulled(readJustPulledMatter(projectId));
+    }, [projectId]);
+    useEffect(() => {
+        if (!justPulled || !matterSyncLoaded) return;
+        if (!isMatterSyncUnsettled(matterSyncStatus, visibleDocumentCount)) {
+            clearJustPulledMatter(projectId);
+            setJustPulled(false);
         }
-        if (!matterSyncStatus?.found) return null;
+    }, [justPulled, matterSyncLoaded, matterSyncStatus, visibleDocumentCount, projectId]);
+    const matterSyncUnsettled =
+        justPulled ||
+        isMatterSyncUnsettled(matterSyncStatus, visibleDocumentCount);
+    const sharepointIngest = useMemo(() => {
+        if (!matterSyncStatus?.found || !matterSyncUnsettled) return null;
+        const totals = matterSyncTotals(matterSyncStatus, visibleDocumentCount);
         return {
-            expected: matterSyncStatus.documentCount,
-            ready: visibleDocumentCount,
+            expected: Math.max(totals.total, totals.ready),
+            ready: totals.ready,
+            files: matterSyncOpenFiles(matterSyncStatus),
         };
-    }, [matterSyncStatus, visibleDocumentCount]);
+    }, [matterSyncStatus, matterSyncUnsettled, visibleDocumentCount]);
 
     useEffect(() => {
         if (!project || !matterSyncStatus?.found) return;
@@ -354,6 +378,32 @@ export function ProjectWorkspaceProvider({
         refreshProjectCollection,
         syncNowPending,
     ]);
+
+    const matterSyncSettled =
+        matterSyncEnabled &&
+        !!matterNumber &&
+        matterSyncStatus?.found === true &&
+        !isMatterSyncUnsettled(matterSyncStatus, visibleDocumentCount) &&
+        !syncNowPending &&
+        !justPulled;
+    const checkOpenMatterDelta = useCallback(() => {
+        if (!matterNumber) return;
+        void pullZohoMatter({ matterNumber }, { mode: "incremental" })
+            .then(() =>
+                Promise.all([
+                    refreshMatterSyncStatus(),
+                    refreshProjectCollection(),
+                ]),
+            )
+            .catch(() => {
+                // The five-minute sweep still checks this folder. A missed
+                // minute must not surface as an error on an idle matter.
+            });
+    }, [matterNumber, refreshMatterSyncStatus, refreshProjectCollection]);
+    useMatterDeltaCheck({
+        enabled: matterSyncSettled,
+        onCheck: checkOpenMatterDelta,
+    });
 
     useEffect(() => {
         if (!showShell) {
@@ -669,18 +719,17 @@ export function ProjectWorkspaceProvider({
                     onUploadFolder={documentUploadActions.uploadFolder}
                     documentFolderBreadcrumbs={documentFolderBreadcrumbs}
                     matterSync={
-                        matterSyncEnabled && matterSyncStatus?.found
+                        matterSyncEnabled &&
+                        (matterSyncStatus?.found || justPulled)
                             ? {
-                                  statusLine: describeMatterSync(
-                                      matterSyncStatus,
-                                      { visibleDocumentCount },
-                                  ),
+                                  statusLine: matterSyncStatus?.found
+                                      ? describeMatterSync(matterSyncStatus, {
+                                            visibleDocumentCount,
+                                        })
+                                      : "Syncing from SharePoint",
                                   onSyncNow: () => void requestSyncNow(),
                                   syncing:
-                                      syncNowPending ||
-                                      isMatterSyncInProgress(
-                                          matterSyncStatus.status,
-                                      ),
+                                      syncNowPending || matterSyncUnsettled,
                               }
                             : null
                     }

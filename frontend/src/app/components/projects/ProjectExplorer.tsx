@@ -483,7 +483,7 @@ export const ProjectExplorer = forwardRef<ProjectExplorerHandle, Props>(function
                 creatingIn === undefined && (
                     <li className="px-4 py-2 text-xs text-gray-400">
                         {sharepointIngest
-                            ? `Processing documents from SharePoint, ${sharepointIngest.ready} of ${sharepointIngest.expected} ready`
+                            ? `Syncing from SharePoint, ${sharepointIngest.ready} of ${sharepointIngest.expected} ready`
                             : "No documents in this project."}
                     </li>
                 )}

@@ -11,6 +11,7 @@
 //
 // Design note: docs/integrations/sharepoint-zoho-matter-sync.md.
 
+import { recordSharePointVersion } from "../documents/documents.service";
 import { checkProjectAccess, getOrgRole } from "../../lib/access";
 import { enqueueProjectMatterBrief } from "../memory/memory.service";
 import {
@@ -19,6 +20,7 @@ import {
 } from "../../lib/httpUrl";
 import { logError } from "../../lib/log";
 import { filerConfiguration } from "../../lib/runtimeConfig";
+import { getSignedUrl } from "../../lib/storage";
 import {
   failure,
   internalFailure,
@@ -59,6 +61,15 @@ export type MatterPullResult = {
   sharepointFolderUrl: string | null;
 };
 
+export type MatterSyncFileStage = "queued" | "uploaded" | "processing" | "error";
+
+export type MatterSyncFile = {
+  id: string;
+  filename: string;
+  folderId: string | null;
+  stage: MatterSyncFileStage;
+};
+
 export type MatterSyncStatusResult =
   | { found: false }
   | {
@@ -73,6 +84,8 @@ export type MatterSyncStatusResult =
       lastError: string | null;
       matterId: string | null;
       sharepointFolderUrl: string | null;
+      /** Files handed to Railway that are not ready documents yet. */
+      files: MatterSyncFile[];
     };
 
 const UNAVAILABLE_MESSAGE =
@@ -90,6 +103,7 @@ const SEARCH_TIMEOUT_MS = 15_000;
 const STATUS_TIMEOUT_MS = 15_000;
 // The filer runs a bounded first pass inline before answering a pull.
 const PULL_TIMEOUT_MS = 60_000;
+const PUSH_TIMEOUT_MS = 60_000;
 
 const STATUS_VALUES: ReadonlySet<string> = new Set<MatterSyncStatus>([
   "AwaitingFolder",
@@ -111,7 +125,7 @@ type FilerCall =
  * log only.
  */
 async function callFiler(
-  action: "search" | "pull" | "status",
+  action: "search" | "pull" | "status" | "push",
   params: Record<string, unknown>,
   timeoutMs: number,
   fetchImpl: typeof fetch,
@@ -545,7 +559,256 @@ export async function getMatterSyncStatus(
     lastError: stringOrNull(call.body.lastError),
     matterId: links.zohoDealId,
     sharepointFolderUrl: links.sharepointFolderUrl,
+    files: await listInFlightSyncFiles(db, args.projectId),
   });
+}
+
+const OPEN_SESSION_STATUSES = [
+  "pending_upload",
+  "verifying",
+  "uploaded",
+  "processing",
+  "error",
+];
+
+function stageOfSessionFile(status: string): MatterSyncFileStage {
+  if (status === "uploaded") return "uploaded";
+  if (status === "processing") return "processing";
+  if (status === "error") return "error";
+  return "queued";
+}
+
+/**
+ * Names the SharePoint files Railway has not finished. A session file is
+ * dropped once its document row exists, so a file is listed once: the
+ * document while it is still pending or processing, otherwise the session
+ * file. A failed read leaves the list empty; status itself still answers.
+ */
+async function listInFlightSyncFiles(
+  db: Db,
+  projectId: string,
+): Promise<MatterSyncFile[]> {
+  try {
+    const { data: sessions, error: sessionError } = await db
+      .from("upload_sessions")
+      .select(
+        "id, destination, status, upload_session_files(id, filename, status, target_folder_id, resource_id)",
+      )
+      .filter("destination->>project_id", "eq", projectId)
+      .in("status", OPEN_SESSION_STATUSES);
+    if (sessionError) {
+      logError("integrations/ingest", sessionError, { projectId });
+      return listProcessingDocuments(db, projectId);
+    }
+
+    const openFiles: {
+      id: string;
+      filename: string;
+      status: string;
+      folderId: string | null;
+      resourceId: string | null;
+    }[] = [];
+    for (const session of sessions ?? []) {
+      const destination = (session as { destination?: unknown }).destination;
+      if (
+        destination &&
+        typeof destination === "object" &&
+        (destination as { scope?: unknown }).scope &&
+        (destination as { scope?: unknown }).scope !== "project"
+      ) {
+        continue;
+      }
+      const nested = (session as { upload_session_files?: unknown })
+        .upload_session_files;
+      const rows = Array.isArray(nested) ? nested : [];
+      for (const row of rows) {
+        if (!row || typeof row !== "object") continue;
+        const file = row as Record<string, unknown>;
+        const status = stringOrNull(file.status) ?? "";
+        if (!status || status === "completed") continue;
+        const id = stringOrNull(file.id);
+        const filename = stringOrNull(file.filename);
+        if (!id || !filename) continue;
+        openFiles.push({
+          id,
+          filename,
+          status,
+          folderId: stringOrNull(file.target_folder_id),
+          resourceId: stringOrNull(file.resource_id),
+        });
+      }
+    }
+
+    const resourceIds = openFiles.flatMap((file) =>
+      file.resourceId ? [file.resourceId] : [],
+    );
+    const existingIds = new Set<string>();
+    if (resourceIds.length > 0) {
+      const { data: existing, error: existingError } = await db
+        .from("documents")
+        .select("id")
+        .in("id", resourceIds);
+      if (existingError) {
+        logError("integrations/ingest", existingError, { projectId });
+      } else {
+        for (const row of existing ?? []) {
+          const id = stringOrNull((row as { id?: unknown }).id);
+          if (id) existingIds.add(id);
+        }
+      }
+    }
+
+    const processing = await listProcessingDocuments(db, projectId);
+    const seen = new Set(processing.map((file) => file.id));
+    const files = [...processing];
+    for (const file of openFiles) {
+      if (file.resourceId && existingIds.has(file.resourceId)) continue;
+      if (seen.has(file.id)) continue;
+      seen.add(file.id);
+      files.push({
+        id: file.id,
+        filename: file.filename,
+        folderId: file.folderId,
+        stage: stageOfSessionFile(file.status),
+      });
+    }
+    return files;
+  } catch (error) {
+    logError("integrations/ingest", error, { projectId });
+    return [];
+  }
+}
+
+async function listProcessingDocuments(
+  db: Db,
+  projectId: string,
+): Promise<MatterSyncFile[]> {
+  const { data, error } = await db
+    .from("documents")
+    .select("id, filename, status, folder_id")
+    .eq("project_id", projectId)
+    .in("status", ["pending", "processing"]);
+  if (error || !data) {
+    if (error) logError("integrations/ingest", error, { projectId });
+    return [];
+  }
+  const files: MatterSyncFile[] = [];
+  for (const row of data) {
+    const doc = row as Record<string, unknown>;
+    const id = stringOrNull(doc.id);
+    const filename = stringOrNull(doc.filename);
+    if (!id || !filename) continue;
+    files.push({
+      id,
+      filename,
+      folderId: stringOrNull(doc.folder_id),
+      stage: "processing",
+    });
+  }
+  return files;
+}
+
+/**
+ * After a lawyer saves a version on a synced matter, ask the filer to put
+ * that file in the SharePoint DR folder. A failure here leaves the Colleague
+ * version in place. The five-minute sweep does not write back, so this save
+ * is the only path.
+ */
+export async function saveSyncedMatterVersionToSharePoint(
+  db: Db,
+  args: {
+    documentId: string;
+    versionId: string;
+    storagePath: string;
+    filename: string;
+  },
+): Promise<void> {
+  const { documentId, versionId, storagePath, filename } = args;
+  try {
+    const config = filerConfiguration();
+    if (!config.configured) return;
+    const name = filename.trim();
+    if (!documentId || !versionId || !storagePath || !name) return;
+
+    const { data: document, error: documentError } = await db
+      .from("documents")
+      .select(
+        "id, project_id, external_provider, external_item_id, external_ctag",
+      )
+      .eq("id", documentId)
+      .maybeSingle();
+    if (documentError || !document?.project_id) return;
+
+    const { data: project, error: projectError } = await db
+      .from("projects")
+      .select("cm_number")
+      .eq("id", document.project_id)
+      .maybeSingle();
+    if (projectError) return;
+    const matterNumber =
+      typeof project?.cm_number === "string" ? project.cm_number.trim() : "";
+    if (!matterNumber) return;
+
+    const { data: pushed } = await db
+      .from("document_versions")
+      .select("external_item_id, external_ctag")
+      .eq("document_id", documentId)
+      .not("external_item_id", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const externalItemId =
+      stringOrNull(pushed?.external_item_id) ||
+      stringOrNull(document.external_item_id);
+    const externalCtag = pushed
+      ? stringOrNull(pushed.external_ctag)
+      : stringOrNull(document.external_ctag);
+
+    const sourceUrl = await getSignedUrl(storagePath, 600);
+    if (!sourceUrl) return;
+
+    const call = await callFiler(
+      "push",
+      {
+        projectId: document.project_id,
+        matterNumber,
+        filename: name,
+        sourceUrl,
+        externalItemId,
+        externalCtag,
+      },
+      PUSH_TIMEOUT_MS,
+      fetch,
+    );
+    if (!call.ok || call.status !== 200) {
+      logError(
+        "integrations/push",
+        filerStatusError(call.ok ? call.status : 0),
+        { documentId, versionId },
+      );
+      return;
+    }
+    const itemId = stringOrNull(call.body.itemId);
+    if (!itemId) return;
+    const ctag = stringOrNull(call.body.ctag);
+    await recordSharePointVersion(db, {
+      documentId,
+      versionId,
+      itemId,
+      ctag,
+    });
+    if (call.body.created === false && document.external_item_id === itemId && ctag) {
+      await db
+        .from("documents")
+        .update({
+          external_ctag: ctag,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", documentId);
+    }
+  } catch (error) {
+    logError("integrations/push", error, { documentId, versionId });
+  }
 }
 
 function filerStatusError(status: number): Error {

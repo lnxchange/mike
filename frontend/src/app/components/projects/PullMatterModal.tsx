@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { pullZohoMatter, searchZohoMatters } from "@/app/lib/mikeApi";
-import type { ZohoMatterSearchHit } from "@/app/lib/matterSync";
+import {
+    rememberJustPulledMatter,
+    type ZohoMatterSearchHit,
+} from "@/app/lib/matterSync";
 import { useDebouncedValue } from "@/app/hooks/useDebouncedValue";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { Modal } from "../modals/Modal";
@@ -108,6 +111,7 @@ export function PullMatterModal({ open, onClose }: Props) {
         setPullError("");
         try {
             const result = await pullZohoMatter({ matterId: selected.id });
+            rememberJustPulledMatter(result.projectId);
             router.push(`/projects/${result.projectId}`);
             reset();
             onClose();

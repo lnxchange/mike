@@ -25,6 +25,9 @@ vi.mock("../../../lib/docxTrackedChanges", () => ({
 }));
 vi.mock("../../../lib/access", () => access);
 vi.mock("../../../lib/permissions", () => ({ can: () => true }));
+vi.mock("../../integrations/integrations.service", () => ({
+  saveSyncedMatterVersionToSharePoint: vi.fn(async () => undefined),
+}));
 vi.mock("../../../lib/downloadTokens", () => ({
   buildDownloadUrl: () => "https://example.test/download",
 }));

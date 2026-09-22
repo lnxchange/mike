@@ -25,6 +25,9 @@ vi.mock("../../../lib/storage", () => ({
 vi.mock("../../../lib/queue/conversionQueue", () => ({
   enqueueConversion: mocks.enqueueConversion,
 }));
+vi.mock("../../integrations/integrations.service", () => ({
+  saveSyncedMatterVersionToSharePoint: vi.fn(async () => undefined),
+}));
 import {
   createVersionFromDocument,
   deleteVersion,

@@ -46,6 +46,37 @@ interface Props {
 
 const PROJECT_DIRECTORY_PAGE_SIZE = 40;
 
+function SharePointSyncBanner({
+    ready,
+    expected,
+}: {
+    ready: number;
+    expected: number;
+}) {
+    const total = Math.max(expected, ready, 1);
+    const percent = Math.min(100, Math.round((ready / total) * 100));
+    return (
+        <div className="mx-4 mb-3 md:mx-8" role="status">
+            <p className="text-sm text-gray-700">
+                Syncing from SharePoint, {ready} of {expected} ready
+            </p>
+            <div
+                className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-200"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={percent}
+                aria-label={`Syncing from SharePoint, ${ready} of ${expected} ready`}
+            >
+                <div
+                    className="h-full rounded-full bg-gray-700"
+                    style={{ width: `${percent}%` }}
+                />
+            </div>
+        </div>
+    );
+}
+
 export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
     const router = useRouter();
     const workspace = useProjectWorkspace();
@@ -381,6 +412,12 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 backAction={folderBackAction}
                 actions={toolbarActions}
             />
+            {sharepointIngest ? (
+                <SharePointSyncBanner
+                    ready={sharepointIngest.ready}
+                    expected={sharepointIngest.expected}
+                />
+            ) : null}
             <DocTable
                 scopeKey={projectId}
                 documents={documents}
@@ -395,10 +432,11 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 emptyStateTitle="Documents"
                 emptyStateDescription={
                     sharepointIngest
-                        ? `Processing documents from SharePoint, ${sharepointIngest.ready} of ${sharepointIngest.expected} ready`
+                        ? `Syncing from SharePoint, ${sharepointIngest.ready} of ${sharepointIngest.expected} ready`
                         : undefined
                 }
                 hideEmptyStateAction={sharepointIngest != null}
+                syncFiles={sharepointIngest?.files ?? []}
                 onAddDocumentsActionChange={
                     canDo("content.edit")
                         ? handleSavedFilesActionChange

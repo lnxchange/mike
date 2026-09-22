@@ -21,6 +21,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { resolveContentOrgId } from "../../lib/access";
+import { saveSyncedMatterVersionToSharePoint } from "../integrations/integrations.service";
 import {
   resolveLibraryActor,
   resolveLibraryWriteTarget,
@@ -694,6 +695,14 @@ async function processCreatedDocument(
     documentId,
   });
   await enqueueProjectMatterBrief(db, projectId);
+  if (!external) {
+    await saveSyncedMatterVersionToSharePoint(db, {
+      documentId,
+      versionId,
+      storagePath: sourcePath,
+      filename: file.filename,
+    });
+  }
 
   return {
     ...document,
@@ -775,6 +784,13 @@ async function processNewDocumentVersion(
       })
       .eq("id", documentId);
     if (referenceError) throw referenceError;
+  } else {
+    await saveSyncedMatterVersionToSharePoint(db, {
+      documentId,
+      versionId: version.id,
+      storagePath: sourcePath,
+      filename: requestedFilename,
+    });
   }
 
   const {
@@ -856,6 +872,13 @@ async function processReplacementDocumentVersion(
   );
   if (error || !updated)
     throw error ?? new Error("version_update_returned_no_data");
+
+  await saveSyncedMatterVersionToSharePoint(db, {
+    documentId,
+    versionId,
+    storagePath: sourcePath,
+    filename: file.filename,
+  });
 
   return updated;
 }

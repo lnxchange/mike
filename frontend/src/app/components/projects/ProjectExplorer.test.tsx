@@ -60,7 +60,7 @@ describe("ProjectExplorer empty state", () => {
 
         expect(
             screen.getByText(
-                "Processing documents from SharePoint, 0 of 3 ready",
+                "Syncing from SharePoint, 0 of 3 ready",
             ),
         ).toBeInTheDocument();
         expect(

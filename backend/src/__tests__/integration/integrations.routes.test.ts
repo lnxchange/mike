@@ -59,6 +59,14 @@ function mockMatterDb(options?: {
     sharepoint_folder_url?: string | null;
   };
   documentUrls?: string[];
+  processingDocuments?: Array<{
+    id: string;
+    filename: string;
+    status: string;
+    folder_id: string | null;
+  }>;
+  existingDocumentIds?: string[];
+  uploadSessions?: Array<Record<string, unknown>>;
   onUpdate?: (payload: Record<string, unknown>) => void;
 }) {
   return {
@@ -84,18 +92,59 @@ function mockMatterDb(options?: {
         };
       }
       if (table === "documents") {
-        return {
-          select: () => ({
-            eq: () => ({
-              limit: async () => ({
-                data: (options?.documentUrls ?? []).map((url) => ({
-                  external_web_url: url,
-                })),
-                error: null,
-              }),
-            }),
-          }),
+        let selected = "";
+        let byStatus = false;
+        let byId = false;
+        const finish = async () => {
+          if (byStatus || selected.includes("filename")) {
+            return { data: options?.processingDocuments ?? [], error: null };
+          }
+          if (byId || selected.trim() === "id") {
+            return {
+              data: (options?.existingDocumentIds ?? []).map((id) => ({ id })),
+              error: null,
+            };
+          }
+          return {
+            data: (options?.documentUrls ?? []).map((url) => ({
+              external_web_url: url,
+            })),
+            error: null,
+          };
         };
+        const builder: Record<string, unknown> = {};
+        builder.select = (columns?: string) => {
+          selected = columns ?? "";
+          return builder;
+        };
+        builder.eq = () => builder;
+        builder.in = (column: string) => {
+          if (column === "status") byStatus = true;
+          if (column === "id") byId = true;
+          return builder;
+        };
+        builder.limit = finish;
+        builder.then = (
+          resolve: (value: unknown) => unknown,
+          reject: (reason: unknown) => unknown,
+        ) => finish().then(resolve, reject);
+        return builder;
+      }
+      if (table === "upload_sessions") {
+        const finish = async () => ({
+          data: options?.uploadSessions ?? [],
+          error: null,
+        });
+        const builder: Record<string, unknown> = {};
+        builder.select = () => builder;
+        builder.eq = () => builder;
+        builder.filter = () => builder;
+        builder.in = () => builder;
+        builder.then = (
+          resolve: (value: unknown) => unknown,
+          reject: (reason: unknown) => unknown,
+        ) => finish().then(resolve, reject);
+        return builder;
       }
       throw new Error(`unexpected table ${table}`);
     },
@@ -384,6 +433,7 @@ describe("integrations routes", () => {
       lastError: null,
       matterId: null,
       sharepointFolderUrl: null,
+      files: [],
     });
     expect(mocks.checkProjectAccess).toHaveBeenCalledWith(
       PROJECT_ID,
@@ -534,6 +584,87 @@ describe("integrations routes", () => {
         sharepoint_folder_url:
           "https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared%20Documents/Clients/Blue%20NRG/23-0011%20-%20ACCC",
       }),
+    ]);
+  });
+
+  it("lists in-flight session files and processing documents once each", async () => {
+    const docId = "44444444-4444-4444-8444-444444444444";
+    const queuedId = "55555555-5555-4555-8555-555555555555";
+    mocks.createServerSupabase.mockReturnValue(
+      mockMatterDb({
+        processingDocuments: [
+          {
+            id: docId,
+            filename: "Agreement.docx",
+            status: "processing",
+            folder_id: null,
+          },
+        ],
+        existingDocumentIds: [docId],
+        uploadSessions: [
+          {
+            id: "session-1",
+            destination: { scope: "project", project_id: PROJECT_ID },
+            status: "processing",
+            upload_session_files: [
+              {
+                id: "file-already-a-document",
+                filename: "Agreement.docx",
+                status: "processing",
+                target_folder_id: null,
+                resource_id: docId,
+              },
+              {
+                id: queuedId,
+                filename: "Terms.pdf",
+                status: "pending_upload",
+                target_folder_id: "66666666-6666-4666-8666-666666666666",
+                resource_id: "77777777-7777-4777-8777-777777777777",
+              },
+              {
+                id: "file-done",
+                filename: "Done.pdf",
+                status: "completed",
+                target_folder_id: null,
+                resource_id: "88888888-8888-4888-8888-888888888888",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    mocks.fetch.mockResolvedValue(
+      filerResponse(200, {
+        found: true,
+        status: "Idle",
+        matterNumber: "263405",
+        matterName: "Arrow Energy",
+        documentCount: 0,
+        remaining: 2,
+        lastSyncAt: null,
+        lastChangeAt: null,
+        lastError: null,
+      }),
+    );
+
+    const response = await request(app).get(
+      `/integrations/matters/status/${PROJECT_ID}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.files).toEqual([
+      {
+        id: docId,
+        filename: "Agreement.docx",
+        folderId: null,
+        stage: "processing",
+      },
+      {
+        id: queuedId,
+        filename: "Terms.pdf",
+        folderId: "66666666-6666-4666-8666-666666666666",
+        stage: "queued",
+      },
     ]);
   });
 

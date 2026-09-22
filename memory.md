@@ -5,8 +5,9 @@
 The New job request run read emails, copied a memo, then said "How can I
 help?" after 21 steps. Workflows now require `create_plan` before any
 draft/copy/edit. That call stops the turn and shows a plan card plus
-Continue. The next message does only one or two pending items. Not
-deployed.
+Continue. The next message does only one or two pending items. Live:
+`fdd28228`, Railway `d234de4d` SUCCESS, Vercel `dpl_4SVHb6Z9W7BhbSCmJnmSSbBPg5Gm`
+READY on https://libris-colleague.vercel.app. No migrations.
 
 ## 2026-09-22 — Matters correspondence columns now sort
 
@@ -472,3 +473,11 @@ Shipped `1705216b` on `cursor/setup-supabase-vercel-oss-cad9`. Search now uses o
 ## 2026-09-21 — Outlook draft preview, styling, and signature
 
 Yule wanted the draft in chat first, native lists/bold/italic, and his Outlook signature. `create_outlook_draft` now defaults to an `outlook_draft_preview` card. `stage: true` is required to create the mailbox draft. Staging converts markdown/HTML to Outlook markup and copies the signature (plus inline cid images) from recent sent mail. Shipped `d76fcaa9` plus typecheck fix `dc6e587b`. Vercel production READY `dpl_Q47coDtyFqqksifGhK1gJQDzU5j1`. Railway redeployed from source after the typecheck fix.
+
+## 2026-09-23 — SharePoint sync stays visible until the files are ready
+
+A Zoho pull was opening an empty Documents page that already said "Up to date with SharePoint", because the filer can be Idle once upload sessions exist and Railway is still converting. Status now includes in-flight session files and processing documents. The page polls every 2 seconds and refreshes the document list until those are gone, and shows one staged progress row per file.
+
+`UPLOAD_PROCESSING_MAX_RUNNING_PER_USER=8` is set on Railway service `mike` (project `reasonable-laughter`). An open idle matter runs an incremental pull about once a minute. The five-minute `file_matter_emails` sweep is unchanged.
+
+Filer, not deployed: file notes in `Emails -` upload; stamped attachment copies stay skipped; `push` writes the saved version into `DR -` (new file if the source was Emails or the matter root, new version of the same item if it was already in DR, refused when the content tag moved). Pull from Zoho keeps an exact `Matter_Number` hit when word search rejects a bare number. Migration `backend/migrations/20260923_01_document_version_external_refs.sql` stores that new SharePoint item id on the version. Not applied. Do not deploy the filer until Yule asks.

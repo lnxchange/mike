@@ -168,6 +168,25 @@ describe("describeMatterSync", () => {
                 {
                     ...base,
                     status: "Idle",
+                    documentCount: 0,
+                    remaining: 0,
+                    files: [
+                        {
+                            id: "file-1",
+                            filename: "Terms.pdf",
+                            folderId: null,
+                            stage: "processing",
+                        },
+                    ],
+                },
+                { visibleDocumentCount: 0 },
+            ),
+        ).toBe("Syncing from SharePoint, 0 of 1 ready");
+        expect(
+            describeMatterSync(
+                {
+                    ...base,
+                    status: "Idle",
                     documentCount: 3,
                     remaining: 0,
                 },
