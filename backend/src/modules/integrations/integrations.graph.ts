@@ -260,13 +260,28 @@ export async function listRecentSentMessageBodies(
   });
   return (data.value ?? [])
     .map((message) => {
+      // uniqueBody is the conversation diff. A signature that is on every
+      // message is not unique, so it is missing there. The full body still has it.
       const html =
-        message.uniqueBody?.content?.trim() ||
         message.body?.content?.trim() ||
+        message.uniqueBody?.content?.trim() ||
         "";
       return message.id && html ? { id: message.id, html } : null;
     })
     .filter((message): message is { id: string; html: string } => !!message);
+}
+
+export async function getMessageHtml(
+  accessToken: string,
+  messageId: string,
+): Promise<string | null> {
+  const data = await graphJson<{ body?: { content?: string } }>(
+    accessToken,
+    `/me/messages/${encodeURIComponent(messageId)}?$select=body`,
+    { headers: { Prefer: 'outlook.body-content-type="html"' } },
+  );
+  const html = data.body?.content?.trim();
+  return html || null;
 }
 
 export async function listInlineFileAttachments(

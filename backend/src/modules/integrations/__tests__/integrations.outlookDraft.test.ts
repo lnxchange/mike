@@ -24,6 +24,7 @@ const { graph, GraphAuthError, GraphRequestError } = vi.hoisted(() => {
       createDraftMessage: vi.fn(),
       createReplyDraft: vi.fn(),
       findMessageByInternetMessageId: vi.fn(),
+      getMessageHtml: vi.fn(),
       listInlineFileAttachments: vi.fn(),
       listRecentSentMessageBodies: vi.fn(),
       patchDraftMessage: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("../integrations.graph", () => ({
   createDraftMessage: graph.createDraftMessage,
   createReplyDraft: graph.createReplyDraft,
   findMessageByInternetMessageId: graph.findMessageByInternetMessageId,
+  getMessageHtml: graph.getMessageHtml,
   listInlineFileAttachments: graph.listInlineFileAttachments,
   listRecentSentMessageBodies: graph.listRecentSentMessageBodies,
   patchDraftMessage: graph.patchDraftMessage,
@@ -76,6 +78,7 @@ describe("createOutlookDraft", () => {
     });
     graph.addFileAttachment.mockResolvedValue(undefined);
     graph.listRecentSentMessageBodies.mockResolvedValue([]);
+    graph.getMessageHtml.mockResolvedValue(null);
     graph.listInlineFileAttachments.mockResolvedValue([]);
   });
 
@@ -244,6 +247,33 @@ describe("createOutlookDraft", () => {
         ],
       }),
     );
+  });
+
+  it("keeps the signature Outlook already placed on a reply draft", async () => {
+    graph.findMessageByInternetMessageId.mockResolvedValue({
+      id: "msg-1",
+      conversationId: "conv-1",
+    });
+    graph.createReplyDraft.mockResolvedValue({ id: "reply-draft" });
+    graph.getMessageHtml.mockResolvedValue(
+      '<p>Kind regards,</p><div id="Signature"><b>Yule Guttenbeil</b><br>Principal</div><div id="divRplyFwdMsg">From: Alissa</div>',
+    );
+    graph.patchDraftMessage.mockResolvedValue({
+      id: "reply-draft",
+      webLink: "https://outlook.office.com/mail/reply-draft",
+    });
+    await createOutlookDraft({} as never, "user-1", {
+      ...input,
+      inReplyToInternetMessageId: "<chain-123@example.com>",
+    });
+    expect(graph.patchDraftMessage).toHaveBeenCalledWith(
+      "token",
+      "reply-draft",
+      expect.objectContaining({
+        htmlBody: expect.stringContaining("Yule Guttenbeil"),
+      }),
+    );
+    expect(graph.addFileAttachment).not.toHaveBeenCalled();
   });
 
   it("rejects oversized attachments", async () => {

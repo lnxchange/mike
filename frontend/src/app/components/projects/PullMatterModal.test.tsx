@@ -113,6 +113,44 @@ describe("PullMatterModal", () => {
         expect(onClose).toHaveBeenCalled();
     });
 
+    it("shows a moving progress state while the pull is still running", async () => {
+        const user = userEvent.setup();
+        let finish: (value: Awaited<ReturnType<typeof pullZohoMatter>>) => void =
+            () => {};
+        vi.mocked(pullZohoMatter).mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    finish = resolve;
+                }),
+        );
+        render(<PullMatterModal open onClose={vi.fn()} />);
+        await typeQuery(user, "intelli");
+        await user.click((await screen.findAllByRole("option"))[0]);
+        await user.click(
+            screen.getByRole("button", { name: "Pull and keep in sync" }),
+        );
+
+        const bar = await screen.findByRole("progressbar", {
+            name: "Creating the project and pulling the first documents",
+        });
+        expect(bar.querySelector(".animate-indeterminate")).not.toBeNull();
+        expect(
+            screen.getByText("Pulling documents from SharePoint"),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Pulling" })).toBeDisabled();
+
+        finish({
+            projectId: "p-42",
+            created: true,
+            matterNumber: "263334",
+            matterName: "Intellihub - VAPs",
+            uploaded: 12,
+            remaining: 40,
+            status: "Syncing",
+        });
+        await waitFor(() => expect(push).toHaveBeenCalledWith("/projects/p-42"));
+    });
+
     it("shows the server's 4xx message and stays open when the pull is refused", async () => {
         const user = userEvent.setup();
         const onClose = vi.fn();

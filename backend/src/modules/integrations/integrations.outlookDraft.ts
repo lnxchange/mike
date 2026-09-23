@@ -15,6 +15,7 @@ import {
   createDraftMessage,
   createReplyDraft,
   findMessageByInternetMessageId,
+  getMessageHtml,
   listInlineFileAttachments,
   listRecentSentMessageBodies,
   patchDraftMessage,
@@ -34,30 +35,52 @@ import {
   type OutlookThreadStatus,
 } from "./integrations.shared";
 
+function matchingInlineImages(
+  needed: string[],
+  attachments: OutlookAttachment[],
+): OutlookAttachment[] {
+  if (!needed.length) return [];
+  return attachments.filter((attachment) => {
+    const contentId = attachment.contentId;
+    if (!contentId) return false;
+    return needed.some(
+      (id) =>
+        id === contentId ||
+        id.startsWith(`${contentId}@`) ||
+        contentId.startsWith(`${id}@`),
+    );
+  });
+}
+
+async function signatureFromHtml(
+  accessToken: string,
+  messageId: string,
+  rawHtml: string,
+): Promise<{ html: string; images: OutlookAttachment[] } | null> {
+  const html = extractOutlookSignatureHtml(rawHtml);
+  if (!html) return null;
+  const needed = referencedContentIds(html);
+  const images = needed.length
+    ? matchingInlineImages(
+        needed,
+        await listInlineFileAttachments(accessToken, messageId),
+      )
+    : [];
+  return { html, images };
+}
+
 async function loadMailboxSignature(
   accessToken: string,
 ): Promise<{ html: string; images: OutlookAttachment[] } | null> {
   try {
     const sent = await listRecentSentMessageBodies(accessToken);
     for (const message of sent) {
-      const html = extractOutlookSignatureHtml(message.html);
-      if (!html) continue;
-      const needed = referencedContentIds(html);
-      const images = needed.length
-        ? (await listInlineFileAttachments(accessToken, message.id)).filter(
-            (attachment) => {
-              const contentId = attachment.contentId;
-              if (!contentId) return false;
-              return needed.some(
-                (id) =>
-                  id === contentId ||
-                  id.startsWith(`${contentId}@`) ||
-                  contentId.startsWith(`${id}@`),
-              );
-            },
-          )
-        : [];
-      return { html, images };
+      const signature = await signatureFromHtml(
+        accessToken,
+        message.id,
+        message.html,
+      );
+      if (signature) return signature;
     }
   } catch (error) {
     if (error instanceof GraphAuthError) throw error;
@@ -167,9 +190,13 @@ export async function createOutlookDraft(
   if (token.kind === "outlook_auth_required") return token;
 
   try {
-    const signature = await loadMailboxSignature(token.accessToken);
-    const htmlBody = composeStagedHtml(input.htmlBody, signature?.html ?? null);
-    const inlineAttachments = signature?.images ?? [];
+    let signature = await loadMailboxSignature(token.accessToken);
+    let htmlBody = composeStagedHtml(input.htmlBody, signature?.html ?? null);
+    let inlineAttachments = signature?.images ?? [];
+    // A reply draft Outlook just created already carries the mailbox signature.
+    // Replacing the body without copying it would drop the signature when sent
+    // mail did not yield one. Those images are already on the draft.
+    let signatureAlreadyOnDraft = false;
     const thread = await resolveThreadMessage(token.accessToken, input);
     let drafted: GraphMessage;
     let threaded = false;
@@ -177,6 +204,29 @@ export async function createOutlookDraft(
     if (thread && thread !== "ambiguous" && thread.id) {
       drafted = await createReplyDraft(token.accessToken, thread.id);
       if (!drafted.id) throw new Error("graph_request_failed");
+      if (!signature) {
+        try {
+          const existing = await getMessageHtml(token.accessToken, drafted.id);
+          if (existing) {
+            const fromReply = await signatureFromHtml(
+              token.accessToken,
+              drafted.id,
+              existing,
+            );
+            if (fromReply) {
+              signature = fromReply;
+              htmlBody = composeStagedHtml(input.htmlBody, fromReply.html);
+              inlineAttachments = [];
+              signatureAlreadyOnDraft = true;
+            }
+          }
+        } catch (error) {
+          if (error instanceof GraphAuthError) throw error;
+          logError("integrations/outlook-draft", error, {
+            stage: "reply-signature",
+          });
+        }
+      }
       drafted = await patchDraftMessage(token.accessToken, drafted.id, {
         to: input.to,
         cc: input.cc,
@@ -199,7 +249,7 @@ export async function createOutlookDraft(
     }
     if (!drafted.id) throw new Error("graph_request_failed");
 
-    if (threaded) {
+    if (threaded && !signatureAlreadyOnDraft) {
       for (const image of inlineAttachments) {
         await addFileAttachment(token.accessToken, drafted.id, image);
       }

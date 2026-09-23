@@ -480,4 +480,10 @@ A Zoho pull was opening an empty Documents page that already said "Up to date wi
 
 `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER=8` is set on Railway service `mike` (project `reasonable-laughter`). An open idle matter runs an incremental pull about once a minute. The five-minute `file_matter_emails` sweep is unchanged.
 
-Filer, not deployed: file notes in `Emails -` upload; stamped attachment copies stay skipped; `push` writes the saved version into `DR -` (new file if the source was Emails or the matter root, new version of the same item if it was already in DR, refused when the content tag moved). Pull from Zoho keeps an exact `Matter_Number` hit when word search rejects a bare number. Migration `backend/migrations/20260923_01_document_version_external_refs.sql` stores that new SharePoint item id on the version. Not applied. Do not deploy the filer until Yule asks.
+Live as of 23 September 2026. Colleague commit `9bc3276c` is on https://libris-colleague.vercel.app (Vercel `dpl_7pB4refNiFpqb6FGNvvZepmzdjPw`, READY) and Railway `mike` deployment `bc4732bb` (SUCCESS). Migration `20260923_01_document_version_external_refs.sql` is applied on Libris Colleague Supabase `gttnqqwqoirwbvalqfce`. The filer `attuneemailfiler-flex` was deployed from an isolated worktree at `1eb1bb0` plus the colleague sync files only (health 200, enqueue 400 not 404). File notes in `Emails -` upload; stamped attachment copies stay skipped; `push` writes the saved version into `DR -`. Pull from Zoho keeps an exact `Matter_Number` hit when word search rejects a bare number. Do not zip-deploy the rest of the dirty filer tree.
+
+## 2026-09-23 — Pull progress animation, and Outlook signature on drafts
+
+The Pull from Zoho wait state was static text. While the request is in flight the modal now shows a sliding progress bar and a spinner on "Creating the matter" and "Pulling documents from SharePoint".
+
+Outlook drafts were missing the signature because Graph `uniqueBody` drops a signature that is on every message, and a reply patch replaced the body Outlook had just signed. Signature lookup now reads the full sent body, ignores the quoted thread, and if that still fails copies the signature already on the reply draft. Filer signature injection was not changed.

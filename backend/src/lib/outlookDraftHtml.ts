@@ -5,7 +5,17 @@ const SIGN_OFF =
   /(?:kind\s+regards|best\s+regards|best\s+wishes|thanks|thank\s+you|cheers)\s*,?/gi;
 
 const QUOTED_THREAD =
-  /divRplyFwdMsg|OutlookMessageHeader|gmail_quote|From:\s*[^<]*Sent:/i;
+  /divRplyFwdMsg|OutlookMessageHeader|gmail_quote|<blockquote\b|From:\s*[^<\n]{0,160}?Sent:/i;
+
+/** Outlook's conversation diff (`uniqueBody`) drops a repeated signature, and the full body then continues into the quoted thread. Keep only the part the sender wrote. */
+function ownMessageHtml(html: string): string {
+  const start =
+    /<div\b[^>]*(?:\bid|\bclass)=["'][^"']*(?:divRplyFwdMsg|OutlookMessageHeader|gmail_quote)[^"']*["'][^>]*>|<blockquote\b|From:\s*[^<\n]{0,160}?Sent:/i.exec(
+      html,
+    );
+  if (!start || start.index === undefined || start.index === 0) return html;
+  return html.slice(0, start.index);
+}
 
 export function outlookInnerHtmlFromDraftBody(input: string): string {
   const trimmed = input.trim();
@@ -35,9 +45,10 @@ export function appendOutlookSignature(inner: string, signatureHtml: string): st
 }
 
 export function extractOutlookSignatureHtml(html: string): string | null {
-  const fromDiv = extractSignatureDiv(html);
+  const own = ownMessageHtml(html);
+  const fromDiv = extractSignatureDiv(own);
   if (fromDiv && isPlausibleSignature(fromDiv)) return fromDiv;
-  const afterSignOff = htmlAfterLastSignOff(html);
+  const afterSignOff = htmlAfterLastSignOff(own);
   if (afterSignOff && isPlausibleSignature(afterSignOff)) return afterSignOff;
   return null;
 }

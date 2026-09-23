@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search } from "lucide-react";
+import { Loader2, Search } from "lucide-react";
 import { pullZohoMatter, searchZohoMatters } from "@/app/lib/mikeApi";
 import {
     rememberJustPulledMatter,
@@ -126,11 +126,15 @@ export function PullMatterModal({ open, onClose }: Props) {
         }
     }
 
-    const footerStatus = pulling
-        ? `Creating the ${t.projectLower} and pulling the first documents...`
-        : searching
-          ? "Searching Zoho..."
-          : undefined;
+    const pullStatus = `Creating the ${t.projectLower} and pulling the first documents`;
+    const footerStatus = pulling ? (
+        <span className="flex items-center gap-2 text-sm text-gray-500" aria-hidden="true">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+            {pullStatus}
+        </span>
+    ) : searching ? (
+        "Searching Zoho..."
+    ) : undefined;
 
     return (
         <Modal
@@ -144,7 +148,13 @@ export function PullMatterModal({ open, onClose }: Props) {
                 disabled: pulling,
             }}
             primaryAction={{
-                label: pulling ? "Pulling..." : "Pull and keep in sync",
+                label: pulling ? "Pulling" : "Pull and keep in sync",
+                icon: pulling ? (
+                    <Loader2
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+                    />
+                ) : undefined,
                 type: "button",
                 onClick: () => void handlePull(),
                 disabled: !selected || !selected.hasFolder || pulling,
@@ -183,7 +193,12 @@ export function PullMatterModal({ open, onClose }: Props) {
                 </div>
 
                 <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
-                    {results === null ? null : results.length === 0 ? (
+                    {pulling ? (
+                        <PullInProgress
+                            status={pullStatus}
+                            projectLabel={t.project}
+                        />
+                    ) : results === null ? null : results.length === 0 ? (
                         <EmptyState
                             className="pt-6"
                             title={`No ${t.projectsLower} found`}
@@ -256,5 +271,44 @@ export function PullMatterModal({ open, onClose }: Props) {
                 {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
             </div>
         </Modal>
+    );
+}
+
+function PullInProgress({
+    status,
+    projectLabel,
+}: {
+    status: string;
+    projectLabel: string;
+}) {
+    const steps = [
+        `Creating the ${projectLabel.toLowerCase()}`,
+        "Pulling documents from SharePoint",
+    ];
+    return (
+        <div role="status" aria-live="polite" className="px-1 pt-2">
+            <p className="text-sm text-gray-800">{status}</p>
+            <div
+                className="mt-3 h-1.5 overflow-hidden rounded-full bg-gray-200"
+                role="progressbar"
+                aria-label={status}
+            >
+                <div className="h-full w-1/3 rounded-full bg-gray-700 animate-indeterminate" />
+            </div>
+            <ul className="mt-4 space-y-2">
+                {steps.map((step) => (
+                    <li
+                        key={step}
+                        className="flex items-center gap-2 text-sm text-gray-600"
+                    >
+                        <Loader2
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 shrink-0 animate-spin text-gray-500 motion-reduce:animate-none"
+                        />
+                        {step}
+                    </li>
+                ))}
+            </ul>
+        </div>
     );
 }

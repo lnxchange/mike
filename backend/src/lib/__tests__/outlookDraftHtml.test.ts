@@ -77,6 +77,31 @@ describe("extractOutlookSignatureHtml", () => {
       ),
     ).toBeNull();
   });
+
+  it("keeps the signature that sits above a quoted thread", () => {
+    const html = extractOutlookSignatureHtml(
+      [
+        "<p>Hi Alissa,</p><p>Kind regards,</p>",
+        '<div id="Signature"><b>Yule Guttenbeil</b><br>Principal</div>',
+        '<div id="divRplyFwdMsg">From: Alissa Sent: Monday</div>',
+      ].join(""),
+    );
+    expect(html).toContain("Yule Guttenbeil");
+    expect(html).not.toContain("divRplyFwdMsg");
+    expect(html).not.toContain("Hi Alissa");
+  });
+
+  it("keeps a signature table that has no Signature div", () => {
+    const html = extractOutlookSignatureHtml(
+      [
+        "<p>Kind regards,</p>",
+        "<table><tr><td>Yule Guttenbeil<br>Principal<br>yule@attune.legal</td></tr></table>",
+        "<blockquote>From: Alissa<br>Sent: Monday</blockquote>",
+      ].join(""),
+    );
+    expect(html).toContain("yule@attune.legal");
+    expect(html).not.toContain("blockquote");
+  });
 });
 
 describe("appendOutlookSignature", () => {
