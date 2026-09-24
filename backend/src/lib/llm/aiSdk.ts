@@ -573,7 +573,9 @@ export async function streamAiSdk(
       messages = messagesForOverrunRetry(
         messages,
         responseMessages,
-        toolInputCutOff ? truncatedToolNudge(truncatedTool) : REASONING_OVERRUN_NUDGE,
+        toolInputCutOff
+          ? truncatedToolNudge(truncatedTool ?? null)
+          : REASONING_OVERRUN_NUDGE,
       );
       reasoning = lowerReasoningLevel(reasoning);
       console.warn("[llm-stream] reasoning overrun, retrying with less thinking", {
