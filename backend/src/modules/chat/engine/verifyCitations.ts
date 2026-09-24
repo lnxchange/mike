@@ -264,13 +264,65 @@ export async function verifyCaseCitationAnnotation(
  * corrected quotes have the exact source excerpt swapped in so the UI never
  * shows drifted text.
  */
+export async function verifyLegislationCitationAnnotation(
+  annotation: unknown,
+  getLegislationText: (
+    titleId: string,
+    asAt?: string | null,
+  ) => Promise<string>,
+): Promise<unknown> {
+  const a = record(annotation);
+  if (!a || a.kind !== "legislation") return annotation;
+  const titleId = typeof a.title_id === "string" ? a.title_id : null;
+  if (!titleId) return annotation;
+  const asAt = typeof a.as_at === "string" ? a.as_at : null;
+  const entries = Array.isArray(a.quotes)
+    ? a.quotes
+        .map((value) => record(value))
+        .filter(
+          (value): value is Record<string, unknown> & { quote: string } =>
+            !!value && typeof value.quote === "string" && !!value.quote,
+        )
+    : [];
+  if (!entries.length) return annotation;
+
+  let source: string;
+  try {
+    source = await getLegislationText(titleId, asAt);
+  } catch {
+    source = "";
+  }
+
+  const verifiedQuotes = entries.map((entry) => {
+    const result = verifyQuoteAgainstSource(source, entry.quote);
+    const { needs_correction, ...verification } = result;
+    const quote =
+      needs_correction && verification.source_excerpt
+        ? verification.source_excerpt
+        : entry.quote;
+    return { ...entry, quote, verification };
+  });
+
+  const verifiedDocument = withVerifiedDocumentQuotes(
+    a.document,
+    verifiedQuotes,
+  );
+
+  return {
+    ...a,
+    quotes: verifiedQuotes,
+    verified: verifiedQuotes.every((quote) => quote.verification.verified),
+    ...(verifiedDocument ? { document: verifiedDocument } : {}),
+  };
+}
+
 export async function verifyDocumentCitationAnnotation(
   annotation: unknown,
   getSourceText: (docId: string) => Promise<string>,
 ): Promise<unknown> {
   if (!annotation || typeof annotation !== "object") return annotation;
   const a = annotation as Record<string, unknown>;
-  if (a.kind === "case") return annotation;
+  if (a.kind === "case" || a.kind === "legislation") return annotation;
   const docId = typeof a.doc_id === "string" ? a.doc_id : null;
   if (!docId) return annotation;
 
@@ -326,13 +378,24 @@ export async function verifyCitations(
   annotations: unknown[],
   getSourceText: (docId: string) => Promise<string>,
   getCaseOpinions: (clusterId: number) => Promise<CaseOpinionSource[]>,
+  getLegislationText?: (
+    titleId: string,
+    asAt?: string | null,
+  ) => Promise<string>,
 ): Promise<unknown[]> {
   return Promise.all(
     annotations.map((annotation) => {
       const value = record(annotation);
-      return value?.kind === "case"
-        ? verifyCaseCitationAnnotation(annotation, getCaseOpinions)
-        : verifyDocumentCitationAnnotation(annotation, getSourceText);
+      if (value?.kind === "case") {
+        return verifyCaseCitationAnnotation(annotation, getCaseOpinions);
+      }
+      if (value?.kind === "legislation") {
+        return verifyLegislationCitationAnnotation(
+          annotation,
+          getLegislationText ?? (async () => ""),
+        );
+      }
+      return verifyDocumentCitationAnnotation(annotation, getSourceText);
     }),
   );
 }

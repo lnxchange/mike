@@ -4,13 +4,59 @@ import {
   searchCourtlistenerCaseLaw,
   verifyCourtlistenerCitations,
 } from "../../../../lib/courtlistener";
+import {
+  FrlError,
+  getLegislationText,
+  listVersions,
+  searchTitles,
+} from "../../../../lib/frl";
+import {
+  AuEnergyError,
+  getEnergyText,
+  listEnergyVersions,
+  searchEnergyInstruments,
+} from "../../../../lib/auEnergy";
+import {
+  AuVicError,
+  getVicLegislationText,
+  listVicVersions,
+  searchVicLegislation,
+} from "../../../../lib/auVicLegislation";
+import {
+  AuCaseError,
+  getAuCase,
+  searchAuCases,
+} from "../../../../lib/auCaseLaw";
+import { officialSourceToolFailure } from "../../../../lib/officialSourceAccess";
+import {
+  createLegalSourceStore,
+  legalSourceAskId,
+} from "../../../../lib/legalSourceStore";
 import { normalizeCaseDocument } from "../../../../lib/sourceDocuments";
 import {
   COURTLISTENER_TOOL_NAMES,
   type CaseCitationEvent,
   type CourtlistenerToolEvent,
 } from "./courtlistenerTools";
+import {
+  AU_LEGISLATION_TOOL_NAMES,
+  type AuLegislationToolEvent,
+  type LegislationCitationEvent,
+} from "./auLegislationTools";
+import {
+  AU_ENERGY_TOOL_NAMES,
+  type AuEnergyToolEvent,
+} from "./auEnergyTools";
+import {
+  AU_VIC_LEGISLATION_TOOL_NAMES,
+  type AuVicLegislationToolEvent,
+} from "./auVicLegislationTools";
+import {
+  AU_CASE_LAW_TOOL_NAMES,
+  type AuCaseLawToolEvent,
+} from "./auCaseLawTools";
 import { executeMcpToolCall, type McpToolEvent } from "../../../../lib/mcpConnectors";
+import { normalizePlanEvent } from "./planTools";
 import {
   type DocStore,
   type DocIndex,
@@ -45,14 +91,27 @@ import {
   findInDocumentContent,
   findTextMatches,
   runEditDocument,
+  runFinalizeDocument,
   safeGeneratedFilename,
+  loadCurrentVersionBytes,
   type DocEditedResult,
+  type DocFinalizedResult,
   type TurnEditState,
   type TurnReadState,
   type DocCreatedResult,
   type DocReplicatedResult,
   type TextMatch,
 } from "./documentOps";
+import { normalizeInternetMessageId } from "../../../../lib/emailMessage";
+import { outlookInnerHtmlFromDraftBody } from "../../../../lib/outlookDraftHtml";
+import { microsoftOAuthEnabled } from "../../../../lib/microsoftOAuth";
+import { createOutlookDraft } from "../../../integrations/integrations.service";
+import { OUTLOOK_DRAFT_TOOL_NAME } from "./outlookDraftTools";
+import type {
+  OutlookAuthRequiredEvent,
+  OutlookDraftCreatedEvent,
+  OutlookDraftPreviewEvent,
+} from "@mike/contracts";
 import {
   spotlight,
   spotlightFilename,
@@ -70,7 +129,105 @@ import {
   upsertCourtlistenerCases,
   type CourtlistenerTurnState,
 } from "./courtlistenerTurnState";
+import {
+  getCachedLegislation,
+  legislationCitationEventFromRecord,
+  upsertAuLegislation,
+  versionSummary,
+  type AuLegislationTurnState,
+} from "./auLegislationTurnState";
+import {
+  energyCitationEventFromRecord,
+  energyVersionSummary,
+  upsertAuEnergy,
+} from "./auEnergyTurnState";
+import {
+  upsertAuVicLegislation,
+  vicCitationEventFromRecord,
+  vicVersionSummary,
+} from "./auVicLegislationTurnState";
+import {
+  caseCitationEventFromAuRecord,
+  upsertAuCase,
+} from "./auCaseLawTurnState";
 import type { Db } from "../../../../lib/supabase";
+import { searchLibraryForChat } from "../../../library/library.service";
+
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function loadOutlookAttachment(
+  rawId: string,
+  docStore: DocStore,
+  docIndex: DocIndex | undefined,
+  db: Db,
+): Promise<{ filename: string; contentType: string; bytes: Buffer } | null> {
+  const docId = resolveDocLabel(rawId, docStore, docIndex) ?? rawId;
+  const stored = docStore.get(docId);
+  const indexed = docIndex?.[docId];
+  if (!stored && !indexed?.document_id) return null;
+  const documentId = indexed?.document_id;
+  if (documentId) {
+    const loaded = await loadCurrentVersionBytes(documentId, db);
+    if (!loaded) return null;
+    const filename = stored?.filename ?? indexed?.filename ?? "attachment";
+    return {
+      filename,
+      contentType: contentTypeForDocumentType(
+        stored?.file_type ?? documentSuffixFromName(filename),
+      ),
+      bytes: loaded.bytes,
+    };
+  }
+  if (!stored?.storage_path) return null;
+  const raw = await downloadFile(stored.storage_path);
+  if (!raw) return null;
+  return {
+    filename: stored.filename,
+    contentType: contentTypeForDocumentType(stored.file_type),
+    bytes: Buffer.from(raw),
+  };
+}
+
+function outlookAttachmentName(
+  rawId: string,
+  docStore: DocStore,
+  docIndex: DocIndex | undefined,
+): string | null {
+  const docId = resolveDocLabel(rawId, docStore, docIndex) ?? rawId;
+  return docStore.get(docId)?.filename ?? docIndex?.[docId]?.filename ?? null;
+}
+
+function documentSuffixFromName(filename: string) {
+  return filename.includes(".")
+    ? filename.split(".").pop()!.toLowerCase()
+    : "";
+}
+
+async function loadFiledInternetMessageId(
+  rawId: string,
+  docStore: DocStore,
+  docIndex: DocIndex | undefined,
+  db: Db,
+): Promise<string | null> {
+  const docId = resolveDocLabel(rawId, docStore, docIndex) ?? rawId;
+  const documentId = docIndex?.[docId]?.document_id;
+  if (!documentId) return null;
+  const { data } = await db
+    .from("documents")
+    .select("email_internet_message_id")
+    .eq("id", documentId)
+    .maybeSingle();
+  return normalizeInternetMessageId(
+    (data as { email_internet_message_id?: string | null } | null)
+      ?.email_internet_message_id,
+  );
+}
 
 function sourceMaterialNotice(
   sourceKind: "document" | "library_template" | "workflow_asset" | undefined,
@@ -276,6 +433,7 @@ export async function runToolCalls(
   courtlistenerState?: CourtlistenerTurnState,
   apiKeys?: import("../../../../lib/llm").UserApiKeys,
   nonce?: string,
+  auLegislationState?: AuLegislationTurnState,
 ): Promise<{
   toolResults: unknown[];
   docsRead: {
@@ -296,10 +454,22 @@ export async function runToolCalls(
   docsReplicated: DocReplicatedResult[];
   workflowsApplied: { workflow_id: string; title: string }[];
   docsEdited: DocEditedResult[];
+  docsFinalized: DocFinalizedResult[];
   askInputsEvents: AskInputsEvent[];
+  planEvents: import("@mike/contracts").PlanEvent[];
   courtlistenerEvents: CourtlistenerToolEvent[];
   caseCitationEvents: CaseCitationEvent[];
+  auLegislationEvents: AuLegislationToolEvent[];
+  auEnergyEvents: AuEnergyToolEvent[];
+  auVicLegislationEvents: AuVicLegislationToolEvent[];
+  auCaseLawEvents: AuCaseLawToolEvent[];
+  legislationCitationEvents: LegislationCitationEvent[];
   mcpEvents: McpToolEvent[];
+  outlookEvents: (
+    | OutlookDraftPreviewEvent
+    | OutlookDraftCreatedEvent
+    | OutlookAuthRequiredEvent
+  )[];
 }> {
   const toolResults: unknown[] = [];
   const docsRead: {
@@ -320,12 +490,31 @@ export async function runToolCalls(
   const docsReplicated: DocReplicatedResult[] = [];
   const workflowsApplied: { workflow_id: string; title: string }[] = [];
   const docsEdited: DocEditedResult[] = [];
+  const docsFinalized: DocFinalizedResult[] = [];
   const askInputsEvents: AskInputsEvent[] = [];
+  const planEvents: import("@mike/contracts").PlanEvent[] = [];
   const courtlistenerEvents: CourtlistenerToolEvent[] = [];
   const caseCitationEvents: CaseCitationEvent[] = [];
+  const auLegislationEvents: AuLegislationToolEvent[] = [];
+  const auEnergyEvents: AuEnergyToolEvent[] = [];
+  const auVicLegislationEvents: AuVicLegislationToolEvent[] = [];
+  const auCaseLawEvents: AuCaseLawToolEvent[] = [];
+  const legislationCitationEvents: LegislationCitationEvent[] = [];
   const mcpEvents: McpToolEvent[] = [];
+  const outlookEvents: (
+    | OutlookDraftPreviewEvent
+    | OutlookDraftCreatedEvent
+    | OutlookAuthRequiredEvent
+  )[] = [];
+  const legalSourceStore = createLegalSourceStore(db, {
+    userId,
+    projectId: projectId ?? null,
+  });
   const courtState: CourtlistenerTurnState = courtlistenerState ?? {
     casesByClusterId: new Map(),
+  };
+  const auState: AuLegislationTurnState = auLegislationState ?? {
+    titlesByCacheKey: new Map(),
   };
   const groupedFindInCaseSearches = toolCalls
     .filter((tc) => tc.function.name === COURTLISTENER_TOOL_NAMES.findInCase)
@@ -350,6 +539,14 @@ export async function runToolCalls(
     { type: "courtlistener_find_in_case" }
   >[] = [];
 
+  const allocateNextDocLabel = (existingLabels: Set<string>): string => {
+    let i = 0;
+    while (existingLabels.has(`doc-${i}`)) i++;
+    const label = `doc-${i}`;
+    existingLabels.add(label);
+    return label;
+  };
+
   const registerGeneratedDocument = (
     tc: ToolCall,
     result: Record<string, unknown>,
@@ -367,10 +564,7 @@ export async function runToolCalls(
       const storagePath = (result as { storage_path?: string }).storage_path;
 
       if (documentId && storagePath && docIndex) {
-        const existingLabels = new Set(Object.keys(docIndex));
-        let i = 0;
-        while (existingLabels.has(`doc-${i}`)) i++;
-        newDocLabel = `doc-${i}`;
+        newDocLabel = allocateNextDocLabel(new Set(Object.keys(docIndex)));
         docIndex[newDocLabel] = {
           document_id: documentId,
           filename: dlFilename,
@@ -470,6 +664,37 @@ export async function runToolCalls(
     if (tc.function.name === "ask_inputs") {
       const event = normalizeAskInputsEvent(args);
       if (event.items.length > 0) askInputsEvents.push(event);
+      continue;
+    }
+
+    if (tc.function.name === "create_plan") {
+      const event = normalizePlanEvent(args, "create");
+      if (event) planEvents.push(event);
+      continue;
+    }
+
+    if (tc.function.name === "update_plan") {
+      const event = normalizePlanEvent(args, "update");
+      if (event) {
+        planEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            ok: true,
+            title: event.title,
+            items: event.items,
+          }),
+        });
+      } else {
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            error: "update_plan requires items with id, content, and status.",
+          }),
+        });
+      }
       continue;
     }
 
@@ -605,6 +830,73 @@ export async function runToolCalls(
         tool_call_id: tc.id,
         content: JSON.stringify(list),
       });
+    } else if (tc.function.name === "search_library") {
+      const query =
+        typeof args.query === "string" ? args.query.trim() : "";
+      const kind = args.kind === "file" ? "file" : "template";
+      const result = await searchLibraryForChat(db, userId, { query, kind });
+      if (!result.ok) {
+        const error =
+          result.failure === "status"
+            ? result.detail
+            : "Library search failed.";
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: false, error }),
+        });
+      } else {
+        const hits: {
+          doc_id: string;
+          filename: string;
+          source_label: string;
+          folder_path: string;
+          library_kind: string;
+        }[] = [];
+        let nextIndex = 0;
+        const existingByDocumentId = new Map<string, string>();
+        for (const [label, info] of Object.entries(docIndex ?? {})) {
+          existingByDocumentId.set(info.document_id, label);
+        }
+        for (const hit of result.data.hits) {
+          let label = existingByDocumentId.get(hit.id);
+          if (!label) {
+            while (docStore.has(`lib-${nextIndex}`)) nextIndex += 1;
+            label = `lib-${nextIndex}`;
+            nextIndex += 1;
+            docStore.set(label, {
+              storage_path: hit.storage_path,
+              file_type: hit.file_type,
+              filename: hit.filename,
+              source_kind:
+                hit.library_kind === "template"
+                  ? "library_template"
+                  : "document",
+            });
+            if (docIndex) {
+              docIndex[label] = {
+                document_id: hit.id,
+                filename: hit.filename,
+                version_id: hit.current_version_id,
+                version_number: hit.active_version_number,
+              };
+            }
+            existingByDocumentId.set(hit.id, label);
+          }
+          hits.push({
+            doc_id: label,
+            filename: hit.filename,
+            source_label: hit.source_label,
+            folder_path: hit.folder_path,
+            library_kind: hit.library_kind,
+          });
+        }
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: true, hits }),
+        });
+      }
     } else if (tc.function.name === "fetch_documents") {
       const rawDocIds = (args.doc_ids as string[]) ?? [];
       const docIds = rawDocIds.map(
@@ -1339,6 +1631,1045 @@ export async function runToolCalls(
           }),
         });
       }
+    } else if (tc.function.name === AU_LEGISLATION_TOOL_NAMES.search) {
+      const query = typeof args.query === "string" ? args.query : "";
+      write(
+        `data: ${JSON.stringify({ type: "au_search_legislation_start", query })}\n\n`,
+      );
+      try {
+        const result = await searchTitles(query, {
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        const event: AuLegislationToolEvent = {
+          type: "au_search_legislation",
+          query,
+          result_count: result.count,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            count: result.count,
+            titles: result.titles,
+            citationLinks: result.titles.map((title) => ({
+              title_id: title.id,
+              name: title.name,
+              url: title.url,
+            })),
+            attribution:
+              "Legislative material © Commonwealth of Australia, sourced from the Federal Register of Legislation, licensed CC BY 4.0.",
+          }),
+        });
+      } catch (err) {
+        const error =
+          err instanceof FrlError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Federal Register search failed.";
+        const event: AuLegislationToolEvent = {
+          type: "au_search_legislation",
+          query,
+          result_count: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      }
+    } else if (
+      tc.function.name === AU_LEGISLATION_TOOL_NAMES.get ||
+      tc.function.name === AU_LEGISLATION_TOOL_NAMES.getAsAt
+    ) {
+      const titleId = typeof args.titleId === "string" ? args.titleId : "";
+      const asAt =
+        tc.function.name === AU_LEGISLATION_TOOL_NAMES.getAsAt &&
+        typeof args.date === "string"
+          ? args.date
+          : undefined;
+      const section = typeof args.section === "string" ? args.section : undefined;
+      const eventType =
+        tc.function.name === AU_LEGISLATION_TOOL_NAMES.getAsAt
+          ? "au_get_legislation_as_at"
+          : "au_get_legislation";
+      write(
+        `data: ${JSON.stringify({
+          type: `${eventType}_start`,
+          title_id: titleId,
+          ...(asAt ? { date: asAt } : {}),
+          ...(section ? { section } : {}),
+        })}\n\n`,
+      );
+      try {
+        const fetched = await getLegislationText(titleId, {
+          asAt,
+          section,
+          page: typeof args.page === "number" ? args.page : undefined,
+        });
+        const record = upsertAuLegislation(auState, fetched);
+        legislationCitationEvents.push(
+          legislationCitationEventFromRecord(record),
+        );
+        const event: AuLegislationToolEvent =
+          eventType === "au_get_legislation_as_at"
+            ? {
+                type: "au_get_legislation_as_at",
+                title_id: titleId,
+                date: asAt ?? "",
+                name: record.name,
+                section: section ?? null,
+              }
+            : {
+                type: "au_get_legislation",
+                title_id: titleId,
+                name: record.name,
+                section: section ?? null,
+                as_at: record.asAt,
+              };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title_id: record.titleId,
+            name: record.name,
+            compilation_number: record.compilationNumber,
+            status: record.status,
+            start: record.start,
+            end: record.end,
+            as_at: record.asAt,
+            section: fetched.section,
+            page: fetched.page,
+            page_count: fetched.pageCount,
+            url: record.url,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+            text: fetched.text,
+            attribution: fetched.attribution,
+          }),
+        });
+      } catch (err) {
+        const failure = officialSourceToolFailure(
+          err,
+          err instanceof FrlError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Federal Register read failed.",
+          { legalSourceId: legalSourceAskId("legislation", titleId) },
+        );
+        const event: AuLegislationToolEvent =
+          eventType === "au_get_legislation_as_at"
+            ? {
+                type: "au_get_legislation_as_at",
+                title_id: titleId,
+                date: asAt ?? "",
+                section: section ?? null,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
+              }
+            : {
+                type: "au_get_legislation",
+                title_id: titleId,
+                section: section ?? null,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
+              };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: failure.content,
+        });
+      }
+    } else if (tc.function.name === AU_LEGISLATION_TOOL_NAMES.versions) {
+      const titleId = typeof args.titleId === "string" ? args.titleId : "";
+      write(
+        `data: ${JSON.stringify({ type: "au_legislation_versions_start", title_id: titleId })}\n\n`,
+      );
+      try {
+        const versions = await listVersions(titleId, {
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        const event: AuLegislationToolEvent = {
+          type: "au_legislation_versions",
+          title_id: titleId,
+          version_count: versions.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title_id: titleId,
+            versions: versions.map(versionSummary),
+            attribution:
+              "Legislative material © Commonwealth of Australia, sourced from the Federal Register of Legislation, licensed CC BY 4.0.",
+          }),
+        });
+      } catch (err) {
+        const error =
+          err instanceof FrlError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Federal Register versions lookup failed.";
+        const event: AuLegislationToolEvent = {
+          type: "au_legislation_versions",
+          title_id: titleId,
+          version_count: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      }
+    } else if (tc.function.name === AU_LEGISLATION_TOOL_NAMES.findIn) {
+      const titleId = typeof args.titleId === "string" ? args.titleId : "";
+      const query = typeof args.query === "string" ? args.query : "";
+      const asAt = typeof args.date === "string" ? args.date : null;
+      write(
+        `data: ${JSON.stringify({
+          type: "au_find_in_legislation_start",
+          title_id: titleId,
+          query,
+        })}\n\n`,
+      );
+      const record = getCachedLegislation(auState, titleId, asAt);
+      if (!record) {
+        const error =
+          "Title has not been fetched in this turn. Call au_get_legislation or au_get_legislation_as_at first.";
+        const event: AuLegislationToolEvent = {
+          type: "au_find_in_legislation",
+          title_id: titleId || null,
+          query,
+          total_matches: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      } else {
+        const maxResults =
+          typeof args.max_results === "number" ? args.max_results : 20;
+        const contextChars =
+          typeof args.context_chars === "number" ? args.context_chars : 160;
+        const { hits, totalMatches } = findTextMatches({
+          text: record.fullText,
+          query,
+          maxResults,
+          contextChars,
+        });
+        const event: AuLegislationToolEvent = {
+          type: "au_find_in_legislation",
+          title_id: record.titleId,
+          query,
+          total_matches: totalMatches,
+          name: record.name,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title_id: record.titleId,
+            name: record.name,
+            url: record.url,
+            query,
+            total_matches: totalMatches,
+            matches: hits,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+          }),
+        });
+      }
+    } else if (tc.function.name === AU_ENERGY_TOOL_NAMES.search) {
+      const query = typeof args.query === "string" ? args.query : "";
+      write(
+        `data: ${JSON.stringify({ type: "au_search_energy_start", query })}\n\n`,
+      );
+      try {
+        const titles = searchEnergyInstruments(
+          query,
+          typeof args.limit === "number" ? args.limit : undefined,
+        );
+        const event: AuEnergyToolEvent = {
+          type: "au_search_energy",
+          query,
+          result_count: titles.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            count: titles.length,
+            instruments: titles.map((title) => ({
+              id: title.id,
+              name: title.name,
+              publisher: title.publisher,
+              jurisdiction: title.jurisdiction,
+              url: title.landingUrl,
+            })),
+            citationLinks: titles.map((title) => ({
+              title_id: title.id,
+              name: title.name,
+              url: title.landingUrl,
+            })),
+          }),
+        });
+      } catch (err) {
+        const error =
+          err instanceof Error ? err.message : "Energy search failed.";
+        const event: AuEnergyToolEvent = {
+          type: "au_search_energy",
+          query,
+          result_count: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      }
+    } else if (
+      tc.function.name === AU_ENERGY_TOOL_NAMES.get ||
+      tc.function.name === AU_ENERGY_TOOL_NAMES.getAsAt
+    ) {
+      const instrumentId =
+        typeof args.instrumentId === "string" ? args.instrumentId : "";
+      const asAt =
+        tc.function.name === AU_ENERGY_TOOL_NAMES.getAsAt &&
+        typeof args.date === "string"
+          ? args.date
+          : undefined;
+      const clause =
+        typeof args.clause === "string" ? args.clause : undefined;
+      const eventType =
+        tc.function.name === AU_ENERGY_TOOL_NAMES.getAsAt
+          ? "au_get_energy_as_at"
+          : "au_get_energy";
+      write(
+        `data: ${JSON.stringify({
+          type: `${eventType}_start`,
+          title_id: instrumentId,
+          ...(asAt ? { date: asAt } : {}),
+          ...(clause ? { section: clause } : {}),
+        })}\n\n`,
+      );
+      try {
+        const fetched = await getEnergyText(instrumentId, {
+          asAt,
+          clause,
+          page: typeof args.page === "number" ? args.page : undefined,
+          store: legalSourceStore,
+        });
+        const record = upsertAuEnergy(auState, fetched);
+        legislationCitationEvents.push(energyCitationEventFromRecord(record));
+        const event: AuEnergyToolEvent =
+          eventType === "au_get_energy_as_at"
+            ? {
+                type: "au_get_energy_as_at",
+                title_id: instrumentId,
+                date: asAt ?? "",
+                name: record.name,
+                section: clause ?? null,
+              }
+            : {
+                type: "au_get_energy",
+                title_id: instrumentId,
+                name: record.name,
+                section: clause ?? null,
+                as_at: record.asAt,
+              };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            instrument_id: record.titleId,
+            name: record.name,
+            version: record.compilationNumber,
+            start: record.start,
+            end: record.end,
+            as_at: record.asAt,
+            clause: fetched.clause,
+            page: fetched.page,
+            page_count: fetched.pageCount,
+            url: record.url,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+            text: fetched.text,
+            attribution: fetched.attribution,
+            retrieved_via: fetched.retrievedVia ?? null,
+            currency_status: fetched.currencyStatus ?? null,
+          }),
+        });
+      } catch (err) {
+        const failure = officialSourceToolFailure(
+          err,
+          err instanceof AuEnergyError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Energy instrument read failed.",
+          { legalSourceId: legalSourceAskId("energy", instrumentId) },
+        );
+        const event: AuEnergyToolEvent =
+          eventType === "au_get_energy_as_at"
+            ? {
+                type: "au_get_energy_as_at",
+                title_id: instrumentId,
+                date: asAt ?? "",
+                section: clause ?? null,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
+              }
+            : {
+                type: "au_get_energy",
+                title_id: instrumentId,
+                section: clause ?? null,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
+              };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: failure.content,
+        });
+      }
+    } else if (tc.function.name === AU_ENERGY_TOOL_NAMES.versions) {
+      const instrumentId =
+        typeof args.instrumentId === "string" ? args.instrumentId : "";
+      write(
+        `data: ${JSON.stringify({ type: "au_energy_versions_start", title_id: instrumentId })}\n\n`,
+      );
+      try {
+        const versions = await listEnergyVersions(instrumentId);
+        const event: AuEnergyToolEvent = {
+          type: "au_energy_versions",
+          title_id: instrumentId,
+          version_count: versions.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            instrument_id: instrumentId,
+            versions: versions.map(energyVersionSummary),
+          }),
+        });
+      } catch (err) {
+        const error =
+          err instanceof AuEnergyError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Energy versions lookup failed.";
+        const event: AuEnergyToolEvent = {
+          type: "au_energy_versions",
+          title_id: instrumentId,
+          version_count: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      }
+    } else if (tc.function.name === AU_ENERGY_TOOL_NAMES.findIn) {
+      const instrumentId =
+        typeof args.instrumentId === "string" ? args.instrumentId : "";
+      const query = typeof args.query === "string" ? args.query : "";
+      const asAt = typeof args.date === "string" ? args.date : null;
+      write(
+        `data: ${JSON.stringify({
+          type: "au_find_in_energy_start",
+          title_id: instrumentId,
+          query,
+        })}\n\n`,
+      );
+      const record = getCachedLegislation(auState, instrumentId, asAt);
+      if (!record) {
+        const error =
+          "Instrument has not been fetched in this turn. Call au_get_energy or au_get_energy_as_at first.";
+        const event: AuEnergyToolEvent = {
+          type: "au_find_in_energy",
+          title_id: instrumentId || null,
+          query,
+          total_matches: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      } else {
+        const maxResults =
+          typeof args.max_results === "number" ? args.max_results : 20;
+        const contextChars =
+          typeof args.context_chars === "number" ? args.context_chars : 160;
+        const { hits, totalMatches } = findTextMatches({
+          text: record.fullText,
+          query,
+          maxResults,
+          contextChars,
+        });
+        const event: AuEnergyToolEvent = {
+          type: "au_find_in_energy",
+          title_id: record.titleId,
+          query,
+          total_matches: totalMatches,
+          name: record.name,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auEnergyEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            instrument_id: record.titleId,
+            name: record.name,
+            url: record.url,
+            query,
+            total_matches: totalMatches,
+            matches: hits,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+          }),
+        });
+      }
+    } else if (tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.search) {
+      const query = typeof args.query === "string" ? args.query : "";
+      write(
+        `data: ${JSON.stringify({ type: "au_search_vic_legislation_start", query })}\n\n`,
+      );
+      try {
+        const titles = await searchVicLegislation(
+          query,
+          { limit: typeof args.limit === "number" ? args.limit : undefined },
+        );
+        const event: AuVicLegislationToolEvent = {
+          type: "au_search_vic_legislation",
+          query,
+          result_count: titles.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            count: titles.length,
+            titles: titles.map((title) => ({
+              id: title.id,
+              name: title.name,
+              collection: title.collection,
+              url: title.url,
+            })),
+            citationLinks: titles.map((title) => ({
+              title_id: title.id,
+              name: title.name,
+              url: title.url,
+            })),
+          }),
+        });
+      } catch (err) {
+        const error =
+          err instanceof AuVicError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Victorian legislation search failed.";
+        const event: AuVicLegislationToolEvent = {
+          type: "au_search_vic_legislation",
+          query,
+          result_count: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      }
+    } else if (
+      tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.get ||
+      tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.getAsAt
+    ) {
+      const titleId = typeof args.titleId === "string" ? args.titleId : "";
+      const asAt =
+        tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.getAsAt &&
+        typeof args.date === "string"
+          ? args.date
+          : undefined;
+      const section =
+        typeof args.section === "string" ? args.section : undefined;
+      const eventType =
+        tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.getAsAt
+          ? "au_get_vic_legislation_as_at"
+          : "au_get_vic_legislation";
+      write(
+        `data: ${JSON.stringify({
+          type: `${eventType}_start`,
+          title_id: titleId,
+          ...(asAt ? { date: asAt } : {}),
+          ...(section ? { section } : {}),
+        })}\n\n`,
+      );
+      try {
+        const fetched = await getVicLegislationText(titleId, {
+          asAt,
+          section,
+          page: typeof args.page === "number" ? args.page : undefined,
+          store: legalSourceStore,
+        });
+        const record = upsertAuVicLegislation(auState, fetched);
+        legislationCitationEvents.push(vicCitationEventFromRecord(record));
+        const event: AuVicLegislationToolEvent =
+          eventType === "au_get_vic_legislation_as_at"
+            ? {
+                type: "au_get_vic_legislation_as_at",
+                title_id: titleId,
+                date: asAt ?? "",
+                name: record.name,
+                section: section ?? null,
+              }
+            : {
+                type: "au_get_vic_legislation",
+                title_id: titleId,
+                name: record.name,
+                section: section ?? null,
+                as_at: record.asAt,
+              };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title_id: record.titleId,
+            name: record.name,
+            version: record.compilationNumber,
+            start: record.start,
+            end: record.end,
+            as_at: record.asAt,
+            section: fetched.section,
+            page: fetched.page,
+            page_count: fetched.pageCount,
+            url: record.url,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+            text: fetched.text,
+            attribution: fetched.attribution,
+          }),
+        });
+      } catch (err) {
+        const failure = officialSourceToolFailure(
+          err,
+          err instanceof AuVicError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Victorian legislation read failed.",
+          { legalSourceId: legalSourceAskId("vic_legislation", titleId) },
+        );
+        const event: AuVicLegislationToolEvent =
+          eventType === "au_get_vic_legislation_as_at"
+            ? {
+                type: "au_get_vic_legislation_as_at",
+                title_id: titleId,
+                date: asAt ?? "",
+                section: section ?? null,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
+              }
+            : {
+                type: "au_get_vic_legislation",
+                title_id: titleId,
+                section: section ?? null,
+                error: failure.error,
+                ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
+              };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: failure.content,
+        });
+      }
+    } else if (tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.versions) {
+      const titleId = typeof args.titleId === "string" ? args.titleId : "";
+      write(
+        `data: ${JSON.stringify({ type: "au_vic_legislation_versions_start", title_id: titleId })}\n\n`,
+      );
+      try {
+        const { versions } = await listVicVersions(titleId);
+        const event: AuVicLegislationToolEvent = {
+          type: "au_vic_legislation_versions",
+          title_id: titleId,
+          version_count: versions.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title_id: titleId,
+            versions: versions.map(vicVersionSummary),
+          }),
+        });
+      } catch (err) {
+        const error =
+          err instanceof AuVicError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Victorian legislation versions lookup failed.";
+        const event: AuVicLegislationToolEvent = {
+          type: "au_vic_legislation_versions",
+          title_id: titleId,
+          version_count: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      }
+    } else if (tc.function.name === AU_VIC_LEGISLATION_TOOL_NAMES.findIn) {
+      const titleId = typeof args.titleId === "string" ? args.titleId : "";
+      const query = typeof args.query === "string" ? args.query : "";
+      const asAt = typeof args.date === "string" ? args.date : null;
+      write(
+        `data: ${JSON.stringify({
+          type: "au_find_in_vic_legislation_start",
+          title_id: titleId,
+          query,
+        })}\n\n`,
+      );
+      const record = getCachedLegislation(auState, titleId, asAt);
+      if (!record) {
+        const error =
+          "Title has not been fetched in this turn. Call au_get_vic_legislation or au_get_vic_legislation_as_at first.";
+        const event: AuVicLegislationToolEvent = {
+          type: "au_find_in_vic_legislation",
+          title_id: titleId || null,
+          query,
+          total_matches: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      } else {
+        const maxResults =
+          typeof args.max_results === "number" ? args.max_results : 20;
+        const contextChars =
+          typeof args.context_chars === "number" ? args.context_chars : 160;
+        const { hits, totalMatches } = findTextMatches({
+          text: record.fullText,
+          query,
+          maxResults,
+          contextChars,
+        });
+        const event: AuVicLegislationToolEvent = {
+          type: "au_find_in_vic_legislation",
+          title_id: record.titleId,
+          query,
+          total_matches: totalMatches,
+          name: record.name,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auVicLegislationEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title_id: record.titleId,
+            name: record.name,
+            url: record.url,
+            query,
+            total_matches: totalMatches,
+            matches: hits,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+          }),
+        });
+      }
+    } else if (tc.function.name === AU_CASE_LAW_TOOL_NAMES.search) {
+      const query = typeof args.query === "string" ? args.query : "";
+      write(
+        `data: ${JSON.stringify({ type: "au_search_case_law_start", query })}\n\n`,
+      );
+      try {
+        const cases = await searchAuCases(query, {
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        const event: AuCaseLawToolEvent = {
+          type: "au_search_case_law",
+          query,
+          result_count: cases.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auCaseLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            count: cases.length,
+            cases: cases.map((row) => ({
+              id: row.id,
+              citation: row.citation,
+              name: row.name,
+              court: row.court,
+              url: row.url,
+            })),
+            citationLinks: cases.map((row) => ({
+              title_id: row.id,
+              name: row.name,
+              url: row.url,
+            })),
+          }),
+        });
+      } catch (err) {
+        const error =
+          err instanceof AuCaseError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Australian case-law search failed.";
+        const event: AuCaseLawToolEvent = {
+          type: "au_search_case_law",
+          query,
+          result_count: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auCaseLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      }
+    } else if (tc.function.name === AU_CASE_LAW_TOOL_NAMES.get) {
+      const caseId = typeof args.caseId === "string" ? args.caseId : "";
+      const paragraph =
+        typeof args.paragraph === "string" ? args.paragraph : undefined;
+      write(
+        `data: ${JSON.stringify({
+          type: "au_get_case_start",
+          title_id: caseId,
+          ...(paragraph ? { section: paragraph } : {}),
+        })}\n\n`,
+      );
+      try {
+        const fetched = await getAuCase(caseId, {
+          paragraph,
+          page: typeof args.page === "number" ? args.page : undefined,
+          store: legalSourceStore,
+        });
+        const record = upsertAuCase(auState, fetched);
+        legislationCitationEvents.push(caseCitationEventFromAuRecord(record));
+        const event: AuCaseLawToolEvent = {
+          type: "au_get_case",
+          title_id: record.titleId,
+          name: record.name,
+          section: paragraph ?? null,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auCaseLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            case_id: record.titleId,
+            citation: record.registerId,
+            name: record.name,
+            court: record.compilationNumber,
+            paragraph: fetched.section,
+            page: fetched.page,
+            page_count: fetched.pageCount,
+            url: record.url,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+            text: fetched.text,
+            attribution: fetched.attribution,
+          }),
+        });
+      } catch (err) {
+        const failure = officialSourceToolFailure(
+          err,
+          err instanceof AuCaseError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Australian case read failed.",
+          { legalSourceId: legalSourceAskId("case_law", caseId) },
+        );
+        const event: AuCaseLawToolEvent = {
+          type: "au_get_case",
+          title_id: caseId,
+          section: paragraph ?? null,
+          error: failure.error,
+          ...(failure.safeToDisplay ? { safe_to_display: true } : {}),
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auCaseLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: failure.content,
+        });
+      }
+    } else if (tc.function.name === AU_CASE_LAW_TOOL_NAMES.findIn) {
+      const caseId = typeof args.caseId === "string" ? args.caseId : "";
+      const query = typeof args.query === "string" ? args.query : "";
+      write(
+        `data: ${JSON.stringify({
+          type: "au_find_in_case_start",
+          title_id: caseId,
+          query,
+        })}\n\n`,
+      );
+      const record = getCachedLegislation(auState, caseId, null);
+      if (!record) {
+        const error =
+          "Case has not been fetched in this turn. Call au_get_case first.";
+        const event: AuCaseLawToolEvent = {
+          type: "au_find_in_case",
+          title_id: caseId || null,
+          query,
+          total_matches: 0,
+          error,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auCaseLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error }),
+        });
+      } else {
+        const maxResults =
+          typeof args.max_results === "number" ? args.max_results : 20;
+        const contextChars =
+          typeof args.context_chars === "number" ? args.context_chars : 160;
+        const { hits, totalMatches } = findTextMatches({
+          text: record.fullText,
+          query,
+          maxResults,
+          contextChars,
+        });
+        const event: AuCaseLawToolEvent = {
+          type: "au_find_in_case",
+          title_id: record.titleId,
+          query,
+          total_matches: totalMatches,
+          name: record.name,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        auCaseLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            case_id: record.titleId,
+            name: record.name,
+            url: record.url,
+            query,
+            total_matches: totalMatches,
+            matches: hits,
+            citationLinks: [
+              {
+                title_id: record.titleId,
+                name: record.name,
+                url: record.url,
+              },
+            ],
+          }),
+        });
+      }
     } else if (tc.function.name === "edit_document" && docIndex) {
       const rawDocId = args.doc_id as string;
       const editsRaw = args.edits as unknown[] | undefined;
@@ -1745,7 +3076,6 @@ export async function runToolCalls(
                 // doc-N slug so the model can edit/read any of
                 // them in the same turn.
                 const existingLabels = new Set(Object.keys(docIndex));
-                let nextLabelIdx = 0;
                 const copies: {
                   new_filename: string;
                   document_id: string;
@@ -1787,10 +3117,7 @@ export async function runToolCalls(
                       );
                     }
                   }
-                  while (existingLabels.has(`doc-${nextLabelIdx}`))
-                    nextLabelIdx++;
-                  const slug = `doc-${nextLabelIdx}`;
-                  existingLabels.add(slug);
+                  const slug = allocateNextDocLabel(existingLabels);
                   docIndex[slug] = {
                     document_id: d.id,
                     filename: d.filename,
@@ -1862,6 +3189,118 @@ export async function runToolCalls(
           fail("replicate_document failed");
         }
       }
+    } else if (tc.function.name === "finalize_document" && docIndex) {
+      const rawDocId = args.doc_id as string;
+      const requestedFilename =
+        typeof args.new_filename === "string" && args.new_filename.trim()
+          ? args.new_filename.trim()
+          : null;
+      const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+      const docInfo = docStore.get(docId);
+      const indexed = docIndex[docId];
+      const sourceFilename = docInfo?.filename ?? rawDocId;
+
+      write(
+        `data: ${JSON.stringify({
+          type: "doc_finalized_start",
+          filename: sourceFilename,
+        })}\n\n`,
+      );
+      const fail = (error: string) => {
+        write(
+          `data: ${JSON.stringify({
+            type: "doc_finalized",
+            filename: sourceFilename,
+            document_id: "",
+            version_id: "",
+            version_number: null,
+            source_document_id: indexed?.document_id ?? "",
+            source_filename: sourceFilename,
+            download_url: "",
+            accepted: 0,
+            comments_removed: 0,
+            error,
+          })}\n\n`,
+        );
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: false, error }),
+        });
+      };
+
+      if (!docInfo || !indexed) {
+        fail(`Document '${rawDocId}' is not available in this chat.`);
+      } else if (docInfo.file_type?.toLowerCase() !== "docx") {
+        fail("finalize_document only supports .docx files.");
+      } else if (
+        docInfo.source_kind === "library_template" ||
+        docInfo.source_kind === "workflow_asset"
+      ) {
+        fail(
+          "Templates and workflow assets carry no redline to accept. Call replicate_document to work from a copy.",
+        );
+      } else {
+        const result = await runFinalizeDocument({
+          sourceDocumentId: indexed.document_id,
+          sourceFilename: docInfo.filename,
+          userId,
+          projectId: projectId ?? null,
+          newFilename: requestedFilename,
+          db,
+        });
+        if (!result.ok) {
+          fail(result.error);
+        } else {
+          const slug = allocateNextDocLabel(new Set(Object.keys(docIndex)));
+          docIndex[slug] = {
+            document_id: result.document_id,
+            filename: result.filename,
+            version_id: result.version_id,
+            version_number: result.version_number,
+          };
+          docStore.set(slug, {
+            storage_path: storageKey(userId, result.document_id, result.filename),
+            file_type: "docx",
+            filename: result.filename,
+            source_kind: "document",
+          });
+          const payload: DocFinalizedResult = {
+            filename: result.filename,
+            document_id: result.document_id,
+            version_id: result.version_id,
+            version_number: result.version_number,
+            source_document_id: result.source_document_id,
+            source_filename: result.source_filename,
+            download_url: result.download_url,
+            accepted: result.accepted,
+            comments_removed: result.comments_removed,
+          };
+          docsFinalized.push(payload);
+          write(
+            `data: ${JSON.stringify({ type: "doc_finalized", ...payload })}\n\n`,
+          );
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: true,
+              doc_id: slug,
+              document_id: result.document_id,
+              version_id: result.version_id,
+              filename: result.filename,
+              accepted: result.accepted,
+              comments_removed: result.comments_removed,
+              saved_to: projectId ? "project_documents" : "library_files",
+              next_required_action: [
+                `The clean copy is available as doc_id "${slug}"; the source "${docId}" still carries its redline.`,
+                `To show only your own changes, call edit_document on "${slug}".`,
+                `Do not include download links or URLs in your prose response; the document card is shown automatically by the UI.`,
+              ].join(" "),
+            }),
+          });
+        }
+      }
     } else if (tc.function.name === "generate_docx") {
       const title = args.title as string;
       const landscape = !!args.landscape;
@@ -1928,6 +3367,201 @@ export async function runToolCalls(
         previewFilename,
         "pptx",
       );
+    } else if (tc.function.name === OUTLOOK_DRAFT_TOOL_NAME) {
+      const stage = args.stage === true;
+      write(
+        `data: ${JSON.stringify({ type: "outlook_draft_start", stage })}\n\n`,
+      );
+      const to = asStringList(args.to);
+      const cc = asStringList(args.cc);
+      const bcc = asStringList(args.bcc);
+      const subject =
+        typeof args.subject === "string" ? args.subject.trim() : "";
+      const htmlBody =
+        typeof args.html_body === "string" ? args.html_body : "";
+      const attachmentIds = asStringList(args.attachment_doc_ids);
+      if (!stage) {
+        const attachmentNames: string[] = [];
+        let previewAttachmentError: string | null = null;
+        for (const rawId of attachmentIds) {
+          const filename = outlookAttachmentName(rawId, docStore, docIndex);
+          if (!filename) {
+            previewAttachmentError =
+              "One of the attached documents is not available.";
+            break;
+          }
+          attachmentNames.push(filename);
+        }
+        if (previewAttachmentError) {
+          write(
+            `data: ${JSON.stringify({
+              type: "error",
+              message: previewAttachmentError,
+              safe_to_display: true,
+            })}\n\n`,
+          );
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: false,
+              error: previewAttachmentError,
+            }),
+          });
+        } else {
+          const event: OutlookDraftPreviewEvent = {
+            type: "outlook_draft_preview",
+            subject,
+            to,
+            cc,
+            html_body: outlookInnerHtmlFromDraftBody(htmlBody),
+            attachment_names: attachmentNames,
+          };
+          outlookEvents.push(event);
+          write(`data: ${JSON.stringify(event)}\n\n`);
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: true,
+              preview: true,
+              subject,
+              to,
+              attachment_names: attachmentNames,
+              next_required_action:
+                "The draft is a chat preview only. Wait for the user to ask for changes or to stage it to Outlook. Do not say it is in Outlook.",
+            }),
+          });
+        }
+      } else if (!microsoftOAuthEnabled()) {
+        const event: OutlookAuthRequiredEvent = {
+          type: "outlook_auth_required",
+        };
+        outlookEvents.push(event);
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            ok: false,
+            error: "outlook_auth_required",
+            next_required_action:
+              "Ask the user to connect Microsoft from Settings before staging the draft.",
+          }),
+        });
+      } else {
+        const attachments: {
+          filename: string;
+          contentType: string;
+          bytes: Buffer;
+        }[] = [];
+        let attachmentError: string | null = null;
+        for (const rawId of attachmentIds) {
+          const loaded = await loadOutlookAttachment(
+            rawId,
+            docStore,
+            docIndex,
+            db,
+          );
+          if (!loaded) {
+            attachmentError = "One of the attached documents is not available.";
+            break;
+          }
+          attachments.push(loaded);
+        }
+        const replyDocId =
+          typeof args.reply_to_doc_id === "string"
+            ? args.reply_to_doc_id
+            : null;
+        const explicitMessageId = normalizeInternetMessageId(
+          typeof args.in_reply_to_internet_message_id === "string"
+            ? args.in_reply_to_internet_message_id
+            : null,
+        );
+        const filedMessageId = replyDocId
+          ? await loadFiledInternetMessageId(replyDocId, docStore, docIndex, db)
+          : null;
+        if (attachmentError) {
+          write(
+            `data: ${JSON.stringify({
+              type: "error",
+              message: attachmentError,
+              safe_to_display: true,
+            })}\n\n`,
+          );
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({ ok: false, error: attachmentError }),
+          });
+        } else {
+          const result = await createOutlookDraft(db, userId, {
+            to,
+            cc,
+            bcc,
+            subject,
+            htmlBody,
+            attachments,
+            inReplyToInternetMessageId: explicitMessageId ?? filedMessageId,
+          });
+          if (result.kind === "outlook_auth_required") {
+            const event: OutlookAuthRequiredEvent = {
+              type: "outlook_auth_required",
+            };
+            outlookEvents.push(event);
+            write(`data: ${JSON.stringify(event)}\n\n`);
+            toolResults.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                ok: false,
+                error: "outlook_auth_required",
+                next_required_action:
+                  "Ask the user to connect Microsoft. Do not claim the draft was created.",
+              }),
+            });
+          } else if (result.kind === "outlook_draft_created") {
+            const event: OutlookDraftCreatedEvent = {
+              type: "outlook_draft_created",
+              web_link: result.webLink,
+              subject: result.subject,
+              to: result.to,
+              attachment_names: result.attachmentNames,
+              threaded: result.threaded,
+              thread_status: result.threadStatus,
+            };
+            outlookEvents.push(event);
+            write(`data: ${JSON.stringify(event)}\n\n`);
+            toolResults.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                ok: true,
+                subject: result.subject,
+                to: result.to,
+                attachment_names: result.attachmentNames,
+                threaded: result.threaded,
+                thread_status: result.threadStatus,
+                next_required_action:
+                  "Do not paste the Outlook URL in prose. Tell the user a review-only draft is ready in Outlook. Never say it was sent.",
+              }),
+            });
+          } else {
+            write(
+              `data: ${JSON.stringify({
+                type: "error",
+                message: result.message,
+                safe_to_display: true,
+              })}\n\n`,
+            );
+            toolResults.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({ ok: false, error: result.message }),
+            });
+          }
+        }
+      }
     }
   }
 
@@ -1958,9 +3592,17 @@ export async function runToolCalls(
     docsReplicated,
     workflowsApplied,
     docsEdited,
+    docsFinalized,
     askInputsEvents,
+    planEvents,
     courtlistenerEvents,
     caseCitationEvents,
+    auLegislationEvents,
+    auEnergyEvents,
+    auVicLegislationEvents,
+    auCaseLawEvents,
+    legislationCitationEvents,
     mcpEvents,
+    outlookEvents,
   };
 }

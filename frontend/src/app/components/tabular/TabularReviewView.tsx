@@ -87,6 +87,9 @@ import { LIQUID_GLASS_FLOAT_CLASS } from "@/shared/ui/LiquidGlassUI";
 import { ModelToggle, type NoModelsReason } from "../assistant/ModelToggle";
 import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 interface Props {
     reviewId: string;
@@ -1208,7 +1211,7 @@ export function TRView({ reviewId, projectId }: Props) {
                         ...(projectId
                             ? [
                                   {
-                                      label: "Projects",
+                                      label: t.projects,
                                       onClick: () => router.push("/projects"),
                                   },
                                   loading
@@ -1219,7 +1222,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                                 router.push(
                                                     `/projects/${projectId}`,
                                                 ),
-                                            title: "Back to project",
+                                            title: `Back to ${t.projectLower}`,
                                         }
                                       : {
                                             label: project?.name ?? "",
@@ -1227,7 +1230,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                                 router.push(
                                                     `/projects/${projectId}`,
                                                 ),
-                                            title: "Back to project",
+                                            title: `Back to ${t.projectLower}`,
                                         },
                               ]
                             : [
@@ -1750,7 +1753,7 @@ export function TRView({ reviewId, projectId }: Props) {
                     onClose={() => setAddDocsOpen(false)}
                     onSelect={(docs: Document[]) => handleAddDocuments(docs)}
                     breadcrumb={[
-                        "Projects",
+                        t.projects,
                         project.name +
                             (project.cm_number
                                 ? ` (#${project.cm_number})`
@@ -1829,7 +1832,7 @@ export function TRView({ reviewId, projectId }: Props) {
                 breadcrumbs={[
                     ...(project
                         ? [
-                              "Projects",
+                              t.projects,
                               project.name +
                                   (project.cm_number
                                       ? ` (#${project.cm_number})`
@@ -1878,8 +1881,8 @@ export function TRView({ reviewId, projectId }: Props) {
 
             <WarningPopup
                 open={projectLoadWarning}
-                title="Project unavailable"
-                message="The project for this tabular review could not be loaded. Please try again."
+                title={`${t.project} unavailable`}
+                message={`The ${t.projectLower} for this tabular review could not be loaded. Please try again.`}
                 onClose={() => setProjectLoadWarning(false)}
             />
 

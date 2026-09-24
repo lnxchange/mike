@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { FieldLabel } from "@/app/components/ui/form-field";
 import { authenticatedFetch } from "@/app/lib/authEvents";
+import { appConfig } from "@/config";
 
 type FeedbackType = "bug" | "feature" | "question" | "other";
 
@@ -44,7 +45,7 @@ export default function SupportPage() {
         {
             value: "question",
             label: "Question",
-            description: "Ask a question about using Mike",
+            description: `Ask a question about using ${appConfig.branding.appName}`,
         },
         {
             value: "other",

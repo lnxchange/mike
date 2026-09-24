@@ -44,6 +44,50 @@ export function browserAuthCallbackUrl(next: string): string | undefined {
     return authCallbackUrl(window.location.origin, next);
 }
 
+const AUTH_HANDOFF_QUERY_KEYS = [
+    "code",
+    "next",
+    "error",
+    "error_code",
+    "error_description",
+] as const;
+
+/**
+ * If this URL still carries a GoTrue OAuth code or error, send it to the
+ * callback page. Site URL landings (`/?code=`) otherwise lose the code on the
+ * home redirect to `/assistant`.
+ */
+export function authCallbackPathFromSearch(
+    search: string | URLSearchParams,
+): string | null {
+    const params =
+        typeof search === "string"
+            ? new URLSearchParams(
+                  search.startsWith("?") ? search.slice(1) : search,
+              )
+            : new URLSearchParams(search);
+    if (
+        !params.get("code") &&
+        !params.get("error") &&
+        !params.get("error_description")
+    ) {
+        return null;
+    }
+    const forwarded = new URLSearchParams();
+    for (const key of AUTH_HANDOFF_QUERY_KEYS) {
+        const value = params.get(key);
+        if (value) forwarded.set(key, value);
+    }
+    const query = forwarded.toString();
+    return query ? `/auth/callback?${query}` : "/auth/callback";
+}
+
+export function homeRedirectPath(
+    search: string | URLSearchParams,
+): string {
+    return authCallbackPathFromSearch(search) ?? "/assistant";
+}
+
 export function authErrorDescription(
     search: string,
     hash: string,

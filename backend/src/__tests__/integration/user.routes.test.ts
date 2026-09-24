@@ -326,6 +326,8 @@ describe("user.routes", () => {
                 messageCreditsUsed: 3,
                 tier: "Pro",
                 legalResearchUs: true,
+                legalResearchAu: false,
+                legalResearchAuEnergy: false,
                 quickActionsVisible: true,
                 mfaOnLogin: false,
                 openRouterModels: [
@@ -670,6 +672,98 @@ describe("user.routes", () => {
     });
 
     describe("PATCH /user/profile", () => {
+        it("persists the Australian legal research toggle", async () => {
+            supabaseState.tables.user_profiles = {
+                data: profileRow({
+                    legal_research_au: true,
+                    jurisdiction: "Australia",
+                }),
+                error: null,
+            };
+
+            const res = await request(app)
+                .patch("/user/profile")
+                .set(...AUTH)
+                .send({ legalResearchAu: true });
+
+            expect(res.status).toBe(200);
+            expect(supabaseState.updates.user_profiles).toContainEqual(
+                expect.objectContaining({
+                    legal_research_au: true,
+                }),
+            );
+            expect(res.body.legalResearchAu).toBe(true);
+        });
+
+        it("persists the Australian energy law research toggle", async () => {
+            supabaseState.tables.user_profiles = {
+                data: profileRow({
+                    legal_research_au_energy: true,
+                    jurisdiction: "Australia",
+                }),
+                error: null,
+            };
+
+            const res = await request(app)
+                .patch("/user/profile")
+                .set(...AUTH)
+                .send({ legalResearchAuEnergy: true });
+
+            expect(res.status).toBe(200);
+            expect(supabaseState.updates.user_profiles).toContainEqual(
+                expect.objectContaining({
+                    legal_research_au_energy: true,
+                }),
+            );
+            expect(res.body.legalResearchAuEnergy).toBe(true);
+        });
+
+        it("persists the Victorian legislation research toggle", async () => {
+            supabaseState.tables.user_profiles = {
+                data: profileRow({
+                    legal_research_au_vic: true,
+                    jurisdiction: "Australia",
+                }),
+                error: null,
+            };
+
+            const res = await request(app)
+                .patch("/user/profile")
+                .set(...AUTH)
+                .send({ legalResearchAuVic: true });
+
+            expect(res.status).toBe(200);
+            expect(supabaseState.updates.user_profiles).toContainEqual(
+                expect.objectContaining({
+                    legal_research_au_vic: true,
+                }),
+            );
+            expect(res.body.legalResearchAuVic).toBe(true);
+        });
+
+        it("persists the Australian case-law research toggle", async () => {
+            supabaseState.tables.user_profiles = {
+                data: profileRow({
+                    legal_research_au_cases: true,
+                    jurisdiction: "Australia",
+                }),
+                error: null,
+            };
+
+            const res = await request(app)
+                .patch("/user/profile")
+                .set(...AUTH)
+                .send({ legalResearchAuCases: true });
+
+            expect(res.status).toBe(200);
+            expect(supabaseState.updates.user_profiles).toContainEqual(
+                expect.objectContaining({
+                    legal_research_au_cases: true,
+                }),
+            );
+            expect(res.body.legalResearchAuCases).toBe(true);
+        });
+
         it("persists the last-selected model from the initial chat view", async () => {
             supabaseState.tables.user_profiles = {
                 data: profileRow({

@@ -1015,6 +1015,13 @@ export function ChatView({
                                                     { askInputsResponse: response },
                                                 );
                                             }}
+                                            onContinue={() => {
+                                                void handleChat({
+                                                    role: "user",
+                                                    content:
+                                                        "Continue with the next step.",
+                                                });
+                                            }}
                                             onCancel={cancel}
                                         >
                                             <ChatInput

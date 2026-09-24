@@ -25,6 +25,7 @@ import {
   type OrgRole,
 } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { appConfig } from "@/config";
 
 function friendlyError(error: unknown, fallback: string) {
   return userFacingApiError(error, fallback);
@@ -463,8 +464,9 @@ export function OrganizationSettingsModal({
               Delete organization
             </p>
             <p className="mt-1 max-w-md text-xs text-gray-400">
-              Only an empty organization can be deleted. Move or delete its
-              projects, chats, reviews, documents and workflows first.
+              Only an empty organization can be deleted. Move or delete its{" "}
+              {appConfig.terminology.projectsLower}, chats, reviews, documents
+              and workflows first.
             </p>
             <PillButtonUI
               tone="danger"

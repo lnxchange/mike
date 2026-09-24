@@ -1,6 +1,7 @@
-// Business logic for the memory module: the per-user and per-project memory
-// files that the curator maintains and that people can read, edit, enable,
-// disable, or wipe from the settings surfaces.
+// Business logic for the memory module: the per-user, per-project, and
+// per-organization memory files. The curator maintains user and project
+// files; org memory is admin-edited only. People can read, edit, enable,
+// disable, or wipe the file they are allowed to touch.
 //
 // Service layer behind memory.routes.ts. The storage rules themselves
 // (revision fencing, disabled-file guards, size validation) live in
@@ -8,7 +9,7 @@
 // share them; this file resolves WHO may touch WHICH file and hands the
 // route a context it can act on. It never touches req/res.
 
-import { checkProjectAccess } from "../../lib/access";
+import { checkProjectAccess, getOrgRole, isOrgAdmin } from "../../lib/access";
 import {
     enableMemoryFile,
     ensureMemoryFile,
@@ -83,6 +84,35 @@ export async function resolveProjectMemoryContext(
     };
 }
 
+/**
+ * An organization's memory file. Any member may read it; only admins may
+ * edit, enable, or disable it. A caller who is not in the org sees 404 so
+ * the endpoint never doubles as an existence oracle.
+ */
+export async function resolveOrgMemoryContext(
+    db: Db,
+    args: {
+        orgId: string;
+        userId: string;
+        required: "read" | "write" | "manage";
+    },
+): Promise<MemoryContextResult> {
+    const role = await getOrgRole(args.userId, args.orgId, db);
+    if (!role) return { ok: false, status: 404, detail: "Organization not found" };
+    if (args.required !== "read" && !isOrgAdmin(role)) {
+        return {
+            ok: false,
+            status: 403,
+            detail: "You do not have permission to manage this memory.",
+        };
+    }
+    const file = await ensureMemoryFile(db, "org", args.orgId);
+    return {
+        ok: true,
+        context: { scope: "org", ownerId: args.orgId, file },
+    };
+}
+
 export async function currentMemory(db: Db, ctx: MemoryContext) {
     return (await getMemoryCurrent(db, ctx.scope, ctx.ownerId)).current;
 }
@@ -137,3 +167,10 @@ export async function wipeMemory(
 }
 
 export { handleMemoryConsolidation, markMemoryConsolidationFailed } from "./memory.curator";
+export {
+    enqueueMatterBriefForDocument,
+    enqueueMatterBriefsForExistingProjects,
+    enqueueProjectMatterBrief,
+    handleMemoryMatterBrief,
+    MATTER_BRIEF_JOB_KIND,
+} from "./memory.matterBrief";

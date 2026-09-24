@@ -20,9 +20,11 @@ import { modelsRouter } from "./modules/models/models.routes";
 import { downloadsRouter } from "./modules/downloads/downloads.routes";
 import { sourceDocumentsRouter } from "./modules/source-documents/sourceDocuments.routes";
 import { auditRouter } from "./modules/audit/audit.routes";
+import { integrationsRouter } from "./modules/integrations/integrations.routes";
 import { authRouter } from "./modules/auth/auth.routes";
 import { uploadSessionsRouter } from "./modules/uploads/uploads.routes";
 import {
+  orgMemoryRouter,
   projectMemoryRouter,
   userMemoryRouter,
 } from "./modules/memory/memory.routes";
@@ -291,6 +293,7 @@ app.use("/word-chat", wordChatRouter);
 app.use("/models", modelsRouter);
 app.use("/projects/:projectId/memory", projectMemoryRouter);
 app.use("/projects", projectsRouter);
+app.use("/orgs/:orgId/memory", orgMemoryRouter);
 app.use("/orgs", orgsRouter);
 app.use("/projects/:projectId/chat", projectChatRouter);
 app.use("/single-documents", documentsRouter);
@@ -305,6 +308,7 @@ app.use("/users", userRouter);
 app.use("/download", downloadsRouter);
 app.use("/documents", sourceDocumentsRouter);
 app.use("/audit", auditRouter);
+app.use("/integrations", integrationsRouter);
 app.use("/upload-sessions", uploadSessionsRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));

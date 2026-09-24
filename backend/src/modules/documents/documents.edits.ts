@@ -13,6 +13,7 @@ import { can } from "../../lib/permissions";
 import { downloadFilenameForVersion, type Db } from "./documents.shared";
 import { ensureDocumentAccess } from "./documents.access";
 import { updateDocumentVersion } from "./documents.lifecycle";
+import { saveSyncedMatterVersionToSharePoint } from "../integrations/integrations.service";
 // devLog comes from lib/chat/types (a leaf file — importing the whole chat
 // barrel here just for a logger would be a heavy dependency edge).
 import { devLog } from "../../lib/log";
@@ -254,6 +255,17 @@ export async function resolveEdit(
     if (versionErr) {
         devLog(`[edit-resolution] hash write failed; version stays unhashed`, {
             versionErr,
+        });
+    }
+
+    if (mode === "accept" && doc.current_version_id) {
+        await saveSyncedMatterVersionToSharePoint(db, {
+            documentId,
+            versionId: doc.current_version_id as string,
+            storagePath: latestPath,
+            filename:
+                (active?.filename as string | undefined)?.trim() ||
+                "Untitled document",
         });
     }
 

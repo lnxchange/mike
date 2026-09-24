@@ -1,6 +1,7 @@
 import {
   aiSdkFetch,
   completeAiSdkText,
+  HOSTED_MAX_OUTPUT_TOKENS,
   streamAiSdk,
   type AiSdkAdapterConfig,
 } from "./aiSdk";
@@ -86,7 +87,7 @@ function requiredKey(
     "";
   if (!key) {
     throw new Error(
-      `${label} API key is not configured. Set ${environmentVariable} or add a user ${label} key.`,
+      `${label} API key is not configured. Set ${environmentVariable}, add an organisation ${label} key, or add a user ${label} key.`,
     );
   }
   return key;
@@ -117,7 +118,7 @@ function routerKey(provider: RouterProvider, apiKeys?: UserApiKeys): string {
     routerUserKey(provider, apiKeys)?.trim() || routerEnvironmentKey(provider);
   if (!key) {
     throw new Error(
-      `${ROUTER_LABELS[provider]} API key is not configured. Set ${ROUTER_KEY_ENV_HINTS[provider]} or add a user ${ROUTER_LABELS[provider]} key.`,
+      `${ROUTER_LABELS[provider]} API key is not configured. Set ${ROUTER_KEY_ENV_HINTS[provider]}, add an organisation ${ROUTER_LABELS[provider]} key, or add a user ${ROUTER_LABELS[provider]} key.`,
     );
   }
   return key;
@@ -130,6 +131,7 @@ async function createAnthropicAdapter(args: {
   apiKey: string;
   baseURL?: string;
   supportsReasoning: boolean;
+  maxOutputTokens?: number;
 }): Promise<AiSdkAdapterConfig> {
   const { createAnthropic } = await import("@ai-sdk/anthropic");
   const anthropic = createAnthropic({
@@ -144,6 +146,7 @@ async function createAnthropicAdapter(args: {
     model: anthropic(args.model),
     modelId: args.model,
     supportsReasoning: args.supportsReasoning,
+    ...(args.maxOutputTokens ? { maxOutputTokens: args.maxOutputTokens } : {}),
   };
 }
 
@@ -294,6 +297,7 @@ async function createProviderAdapter(
       model,
       apiKey: requiredKey("Anthropic", "ANTHROPIC_API_KEY", apiKeys?.claude),
       supportsReasoning: true,
+      maxOutputTokens: HOSTED_MAX_OUTPUT_TOKENS,
     });
   }
 
@@ -303,7 +307,13 @@ async function createProviderAdapter(
       apiKey: requiredKey("Gemini", "GEMINI_API_KEY", apiKeys?.gemini),
       fetch: aiSdkFetch,
     });
-    return { provider, label: "Gemini", model: google(model), modelId: model };
+    return {
+      provider,
+      label: "Gemini",
+      model: google(model),
+      modelId: model,
+      maxOutputTokens: HOSTED_MAX_OUTPUT_TOKENS,
+    };
   }
 
   if (provider === "openai") {
@@ -318,6 +328,7 @@ async function createProviderAdapter(
       model: openai.responses(model),
       modelId: model,
       courtlistenerCitationReminder: true,
+      maxOutputTokens: HOSTED_MAX_OUTPUT_TOKENS,
     };
   }
 

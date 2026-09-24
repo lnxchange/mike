@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useAssistantChat } from "@/app/hooks/useAssistantChat";
+import { findRunningTurn, useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { ChatView } from "@/app/components/assistant/ChatView";
 import { getChat } from "@/app/lib/mikeApi";
@@ -18,8 +18,14 @@ export default function AssistantChatPage() {
         useChatHistoryContext();
 
     const initialMessages = newChatMessages ?? [];
-    const { messages, isResponseLoading, handleChat, setMessages, cancel } =
-        useAssistantChat({ initialMessages, chatId: id });
+    const {
+        messages,
+        isResponseLoading,
+        handleChat,
+        attachToTurn,
+        setMessages,
+        cancel,
+    } = useAssistantChat({ initialMessages, chatId: id });
 
     const hasAutoSent = useRef(false);
     const hasLoaded = useRef(false);
@@ -73,6 +79,8 @@ export default function AssistantChatPage() {
                 setAccessResolved(true);
                 if (loaded.length > 0) {
                     setMessages(loaded);
+                    const running = findRunningTurn(loaded);
+                    if (running?.id) void attachToTurn(running.id);
                 } else {
                     router.replace("/assistant");
                 }

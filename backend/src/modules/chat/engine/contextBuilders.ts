@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import type { Db } from "../../../lib/supabase";
 import { attachActiveVersionPaths } from "../../../lib/documentVersions";
+import { ensureDocAccess } from "../../../lib/access";
 import {
   type DocStore,
   type DocIndex,
@@ -17,6 +18,11 @@ import { ACTIVE_WORD_DOCUMENT_LIVE_FILENAME } from "./wordPrompt";
 import { parseCitations, createCitation } from "./citations";
 import type { AssistantEvent } from "./streaming";
 import { catalogWorkflowId, ensureDefaultWorkflows } from "../../../lib/workflowCatalog";
+import {
+  formatActivePlanBlock,
+  latestPlanEvent,
+  planHasPendingItems,
+} from "./tools/planTools";
 
 // ---------------------------------------------------------------------------
 // Prompt-injection spotlighting helpers
@@ -71,7 +77,7 @@ export type UserPersonalisation = {
 const PRACTICE_SETTING_LABELS: Record<string, string> = {
   private_practice: "Private practice",
   in_house: "In-house",
-  not_practising: "Not a practising attorney",
+  not_practising: "Not currently practising",
 };
 
 /**
@@ -152,11 +158,11 @@ export async function enrichWithPriorEvents(
     .eq("role", "assistant")
     .not("content", "is", null)
     .order("created_at", { ascending: false })
-    .limit(1);
+    .limit(8);
 
   const lastRow = rows?.[0] as { content?: unknown } | undefined;
-  const content = lastRow?.content;
-  if (!Array.isArray(content)) return messages;
+  const content = Array.isArray(lastRow?.content) ? lastRow.content : [];
+  if (!rows?.length) return messages;
 
   const slugByDocumentId = new Map<string, string>();
   for (const [slug, info] of Object.entries(docIndex)) {
@@ -184,6 +190,11 @@ export async function enrichWithPriorEvents(
       );
     } else if (ev?.type === "doc_edited") {
       lines.push(`- edit_document → ${refFor(ev.document_id, ev.filename)}`);
+    } else if (ev?.type === "doc_finalized") {
+      const src = refFor(ev.source_document_id, ev.source_filename);
+      lines.push(
+        `- finalize_document → ${refFor(ev.document_id, ev.filename)} (clean copy of ${src}, all changes accepted)`,
+      );
     } else if (ev?.type === "doc_read") {
       // Live Word reads have no doc_id and belong to a different tool;
       // labeling them read_document would name a handle that doesn't exist.
@@ -214,6 +225,12 @@ export async function enrichWithPriorEvents(
       }
     } else if (ev?.type === "workflow_applied") {
       lines.push(`- applied workflow: ${untrustedRef(ev.title)}`);
+    } else if (ev?.type === "plan") {
+      const title =
+        typeof ev.title === "string" && ev.title.trim()
+          ? untrustedRef(ev.title)
+          : "Plan";
+      lines.push(`- recorded plan: ${title}`);
     } else if (ev?.type === "ask_inputs") {
       const count = Array.isArray(ev.items) ? ev.items.length : 0;
       lines.push(`- asked user for ${count} input${count === 1 ? "" : "s"}`);
@@ -257,8 +274,35 @@ export async function enrichWithPriorEvents(
       "- Instruction: do not ask for any skipped input again. If drafting or editing a document, insert a descriptive placeholder in square brackets wherever a skipped value is required.",
     );
   }
-  if (lines.length === 0) return messages;
-  const summary = `\n\n[Tool activity in your previous turn]\n${lines.join("\n")}`;
+  const readLines = lines.filter((line) => line.includes("read_document →"));
+  if (readLines.length > 0) {
+    lines.push(
+      "- Instruction: do not reread those documents unless you need a targeted find_in_document check or a fresh copy after an edit.",
+    );
+  }
+  const workingNotes = priorTurnWorkingNotes(content as Record<string, unknown>[]);
+  let latestPlan: ReturnType<typeof latestPlanEvent> = null;
+  for (const row of rows ?? []) {
+    const rowContent = (row as { content?: unknown }).content;
+    if (!Array.isArray(rowContent)) continue;
+    latestPlan = latestPlanEvent(rowContent);
+    if (latestPlan) break;
+  }
+  const activePlan =
+    latestPlan && planHasPendingItems(latestPlan)
+      ? formatActivePlanBlock(latestPlan)
+      : "";
+  if (lines.length === 0 && !workingNotes && !activePlan) return messages;
+  const parts = [
+    lines.length
+      ? `[Tool activity in your previous turn]\n${lines.join("\n")}`
+      : "",
+    workingNotes
+      ? `[Working notes from your previous turn]\nThese are your own notes from the previous turn. Use them. Do not restart the document research unless a required document is missing from the notes.\n\n${workingNotes}`
+      : "",
+    activePlan,
+  ].filter(Boolean);
+  const summary = `\n\n${parts.join("\n\n")}`;
 
   // Find the index of the last assistant message and attach the
   // summary there only.
@@ -323,7 +367,7 @@ export function buildMessages(
   }[],
   systemPromptExtra?: string,
   docIndex?: DocIndex,
-  includeResearchTools = true,
+  includeResearchTools: boolean | import("./prompts").ResearchPromptFlags = true,
   nonce?: string,
   systemPromptMode: "append" | "replace" = "append",
 ) {
@@ -349,7 +393,7 @@ export function buildMessages(
       systemContent += `- ${doc.doc_id}: ${label}\n`;
     }
     systemContent +=
-      "\nYou do NOT retain document content between conversation turns. You MUST call read_document (or fetch_documents) once at the start of every response that involves a document's content, even if you have read it in a previous turn. Within the same response, do not call read_document or fetch_documents again for a document/version that has already been read; use the prior tool result, find_in_document for targeted checks, or proceed to the next required tool. Failure to read once per turn will result in hallucinated or stale content.\n---\n";
+      "\nDocument text is not automatically carried into the next turn. If this conversation already contains the needed text, or the previous-turn working notes cover it, do not reread those documents. Call read_document or fetch_documents only for documents you do not already have in this response, or when you need a fresh copy after an edit. Within the same response, read each document/version at most once; then use the prior result or find_in_document. Do not invent document content you have not read.\n---\n";
   }
   formatted.push({ role: "system", content: systemContent });
 
@@ -712,8 +756,32 @@ export async function appendAskInputsResponseToAssistantMessage(
         : "failed";
 }
 
+const PRIOR_TURN_WORKING_NOTE_LIMIT = 6_000;
+
+function priorTurnWorkingNotes(
+  events: Record<string, unknown>[],
+): string {
+  const notes = events
+    .filter((event) => event?.type === "reasoning")
+    .map((event) => (typeof event.text === "string" ? event.text.trim() : ""))
+    .filter(Boolean);
+  if (notes.length === 0) return "";
+  const joined = notes.join("\n\n");
+  if (joined.length <= PRIOR_TURN_WORKING_NOTE_LIMIT) return joined;
+  return joined.slice(-PRIOR_TURN_WORKING_NOTE_LIMIT);
+}
+
 export function appendCancelledAssistantEvent(events: AssistantEvent[]) {
-  return [...events, { type: "content" as const, text: "Cancelled by user." }];
+  return [
+    ...events,
+    { type: "content" as const, text: "Cancelled by user." },
+    {
+      type: "error" as const,
+      message:
+        "The response was interrupted before it finished. Ask me to continue and I will pick up from the documents already read.",
+      safe_to_display: true,
+    },
+  ];
 }
 
 export function buildCancelledAssistantMessage(args: {
@@ -768,7 +836,9 @@ export async function buildDocContext(
       if (!Array.isArray(content)) continue;
       for (const ev of content as Record<string, unknown>[]) {
         if (
-          (ev?.type === "doc_created" || ev?.type === "doc_edited") &&
+          (ev?.type === "doc_created" ||
+            ev?.type === "doc_edited" ||
+            ev?.type === "doc_finalized") &&
           typeof ev.document_id === "string"
         ) {
           documentIds.add(ev.document_id);
@@ -792,12 +862,26 @@ export async function buildDocContext(
   if (ids.length > 0) {
     const { data: docs } = await db
       .from("documents")
-      .select("id, current_version_id, status, library_kind")
+      .select("id, current_version_id, status, library_kind, user_id, project_id, org_id, workflow_id")
       .in("id", ids)
-      .eq("user_id", userId)
       .eq("status", "ready");
 
-    const docList = (docs ?? []) as unknown as {
+    const accessibleDocs = [];
+    for (const doc of docs ?? []) {
+      const access = await ensureDocAccess(
+        doc as {
+          user_id: string | null;
+          project_id: string | null;
+          org_id?: string | null;
+          workflow_id?: string | null;
+        },
+        userId,
+        undefined,
+        db,
+      );
+      if (access.ok) accessibleDocs.push(doc);
+    }
+    const docList = accessibleDocs as unknown as {
       id: string;
       filename?: string | null;
       file_type?: string | null;

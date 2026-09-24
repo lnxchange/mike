@@ -3,6 +3,12 @@
 import { useEffect, useState } from "react";
 import { getDocumentFileUrl } from "@/app/lib/mikeApi";
 import { authenticatedFetch } from "@/app/lib/authEvents";
+import {
+    DOCUMENT_FETCH_TIMEOUT_MS,
+    DOCUMENT_LOAD_FAILED_MESSAGE,
+    DOCUMENT_LOAD_TIMEOUT_MESSAGE,
+    withTimeout,
+} from "@/app/lib/documentViewerTimeout";
 
 export interface FetchDocxResult {
     bytes: ArrayBuffer | null;
@@ -80,6 +86,7 @@ export function useFetchDocxBytes(
                 // Stream bytes through the backend (avoids CORS on R2
                 // signed URLs).
                 const bin = await authenticatedFetch(url, {
+                    cache: "no-store",
                     signal: cacheBytes ? undefined : controller.signal,
                 });
                 if (!bin.ok) throw new Error(`HTTP ${bin.status}`);
@@ -89,15 +96,18 @@ export function useFetchDocxBytes(
             })();
         if (cacheBytes && !inFlight.has(key)) inFlight.set(key, pending);
 
-        pending
+        withTimeout(pending, DOCUMENT_FETCH_TIMEOUT_MS)
             .then((buf) => {
                 if (cancelled) return;
                 setBytes(buf);
             })
-            .catch(() => {
+            .catch((error: unknown) => {
                 if (cancelled) return;
                 setError(
-                    "This document could not be loaded. Please try again.",
+                    error instanceof Error &&
+                        error.message === DOCUMENT_LOAD_TIMEOUT_MESSAGE
+                        ? DOCUMENT_LOAD_TIMEOUT_MESSAGE
+                        : DOCUMENT_LOAD_FAILED_MESSAGE,
                 );
             })
             .finally(() => {

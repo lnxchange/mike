@@ -109,6 +109,7 @@ describe("GET /single-documents/:documentId/file", () => {
       "financials.xlsx",
     );
     expect(response.headers["content-length"]).toBe("3");
+    expect(response.headers["cache-control"]).toBe("private, no-store");
     expect(mocks.loadActiveVersion).toHaveBeenCalledWith(
       "document-1",
       database,

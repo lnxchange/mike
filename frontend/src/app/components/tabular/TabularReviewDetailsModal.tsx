@@ -6,6 +6,9 @@ import { ModalSelect } from "../modals/ModalSelect";
 import { FieldLabel, FormTextInput } from "../ui/form-field";
 import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
 import type { Project, TabularReview } from "../shared/types";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 interface TabularReviewDetailsModalProps {
     open: boolean;
@@ -57,7 +60,7 @@ export function TabularReviewDetailsModal({
                           project.name +
                           (project.cm_number ? ` (#${project.cm_number})` : ""),
                   }))
-                : [{ value: "", label: "No projects found" }],
+                : [{ value: "", label: `No ${t.projectsLower} found` }],
         [projects],
     );
     const hasChanges = useMemo(() => {
@@ -151,7 +154,7 @@ export function TabularReviewDetailsModal({
 
                 {!lockProject && (
                     <div className="space-y-3">
-                        <FieldLabel as="p">Project</FieldLabel>
+                        <FieldLabel as="p">{t.project}</FieldLabel>
                         <ToggleSwitchUI
                             checked={underProject}
                             disabled={!canEdit || saving}
@@ -162,7 +165,7 @@ export function TabularReviewDetailsModal({
                                 setError(null);
                             }}
                         >
-                            Move under a project
+                            Move under a {t.projectLower}
                         </ToggleSwitchUI>
 
                         {underProject && (

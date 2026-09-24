@@ -350,6 +350,259 @@ describe("useAssistantChat SSE parsing", () => {
         expect(result.current.isResponseLoading).toBe(false);
     });
 
+    it("detaches without aborting the request when the host switches threads", async () => {
+        let requestSignal: AbortSignal | undefined;
+        let stream!: ReadableStreamDefaultController<Uint8Array>;
+        fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+            requestSignal = init.signal ?? undefined;
+            return Promise.resolve(
+                new Response(
+                    new ReadableStream({
+                        start(controller) {
+                            stream = controller;
+                        },
+                    }),
+                ),
+            );
+        });
+        const { result, rerender } = renderHook(
+            ({ chatId }) => useAssistantChat({ chatId }),
+            { initialProps: { chatId: "old-chat" } },
+        );
+        let pending!: Promise<string | null>;
+        act(() => {
+            pending = result.current.handleChat(userMessage());
+        });
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        rerender({ chatId: "other-chat" });
+        // The server owns the turn: leaving the thread must not cancel it.
+        expect(requestSignal?.aborted).toBe(false);
+        await act(async () => {
+            stream.close();
+            await pending;
+        });
+        // No cancel was sent either.
+        expect(
+            fetchMock.mock.calls.some(([url]) => String(url).endsWith("/cancel")),
+        ).toBe(false);
+    });
+
+    it("sends Stop to the server turn before aborting the local reader", async () => {
+        let stream!: ReadableStreamDefaultController<Uint8Array>;
+        fetchMock.mockImplementation((url: string) => {
+            if (String(url).endsWith("/cancel")) {
+                return Promise.resolve(
+                    new Response(JSON.stringify({ cancelled: true }), {
+                        status: 202,
+                        headers: { "Content-Type": "application/json" },
+                    }),
+                );
+            }
+            return Promise.resolve(
+                new Response(
+                    new ReadableStream({
+                        start(controller) {
+                            stream = controller;
+                            controller.enqueue(
+                                new TextEncoder().encode(
+                                    'data: {"type":"chat_id","chatId":"chat-1","assistantMessageId":"asst-1"}\n\n',
+                                ),
+                            );
+                        },
+                    }),
+                    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+                ),
+            );
+        });
+        const { result } = renderHook(() => useAssistantChat({ chatId: "chat-1" }));
+        let pending!: Promise<string | null>;
+        act(() => {
+            pending = result.current.handleChat(userMessage());
+        });
+        await waitFor(() =>
+            expect(result.current.messages.at(-1)?.id).toBe("asst-1"),
+        );
+        act(() => result.current.cancel());
+        await waitFor(() =>
+            expect(
+                fetchMock.mock.calls.some(([url]) =>
+                    String(url).endsWith("/chat/chat-1/turns/asst-1/cancel"),
+                ),
+            ).toBe(true),
+        );
+        await act(async () => {
+            stream.close();
+            await pending;
+        });
+        expect(result.current.messages.at(-1)?.events).toEqual([
+            { type: "content", text: "Cancelled by user." },
+        ]);
+    });
+
+    it("attaches to the running turn instead of erroring when the chat is busy", async () => {
+        fetchMock.mockImplementation((url: string) => {
+            if (String(url).endsWith("/turns/asst-running/stream")) {
+                return Promise.resolve(
+                    sseResponse([
+                        'data: {"type":"chat_id","chatId":"chat-1","assistantMessageId":"asst-running"}\n\n',
+                        'data: {"type":"content_delta","text":"Still writing"}\n\n',
+                        "data: [DONE]\n\n",
+                    ]),
+                );
+            }
+            return Promise.resolve(
+                new Response(
+                    JSON.stringify({
+                        code: "turn_in_progress",
+                        assistant_message_id: "asst-running",
+                        started_at: "2026-09-20T07:08:49.000Z",
+                    }),
+                    { status: 409, headers: { "Content-Type": "application/json" } },
+                ),
+            );
+        });
+        const { result } = renderHook(() =>
+            useAssistantChat({
+                chatId: "chat-1",
+                initialMessages: [userMessage("Draft the email")],
+            }),
+        );
+        await act(async () => {
+            await result.current.handleChat(userMessage("Continue"));
+        });
+        const roles = result.current.messages.map((m) => m.role);
+        // The refused "Continue" is gone; the running turn is shown in its place.
+        expect(roles).toEqual(["user", "assistant"]);
+        const assistant = result.current.messages.at(-1);
+        expect(assistant?.id).toBe("asst-running");
+        expect(assistant?.error).toBeUndefined();
+        expect(assistant?.events).toEqual([
+            expect.objectContaining({ type: "content", text: "Still writing" }),
+        ]);
+        expect(result.current.isResponseLoading).toBe(false);
+    });
+
+    it("reattaches to a running turn reported by the transcript and replays its frames", async () => {
+        fetchMock.mockResolvedValue(
+            sseResponse([
+                'data: {"type":"chat_id","chatId":"chat-1","assistantMessageId":"asst-live"}\n\n',
+                'data: {"type":"content_delta","text":"Part one"}\n\n',
+                'data: {"type":"content_delta","text":" and two"}\n\n',
+                "data: [DONE]\n\n",
+            ]),
+        );
+        const { result } = renderHook(() =>
+            useAssistantChat({
+                chatId: "chat-1",
+                initialMessages: [
+                    userMessage("Draft the email"),
+                    {
+                        id: "asst-live",
+                        role: "assistant",
+                        content: "",
+                        status: "running",
+                    },
+                ],
+            }),
+        );
+        await act(async () => {
+            await result.current.attachToTurn("asst-live");
+        });
+        const [url, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+        expect(String(url)).toContain("/chat/chat-1/turns/asst-live/stream");
+        expect(init.method).toBe("GET");
+        expect(result.current.messages).toHaveLength(2);
+        const assistant = result.current.messages.at(-1);
+        expect(assistant?.id).toBe("asst-live");
+        expect(assistant?.status).toBeUndefined();
+        expect(assistant?.events).toEqual([
+            expect.objectContaining({ type: "content", text: "Part one and two" }),
+        ]);
+    });
+
+    it("polls the transcript when the running turn is not attachable here", async () => {
+        vi.useFakeTimers();
+        try {
+            let chatReads = 0;
+            fetchMock.mockImplementation((url: string) => {
+                if (String(url).endsWith("/stream")) {
+                    return Promise.resolve(
+                        new Response(JSON.stringify({ status: "running" }), {
+                            status: 202,
+                            headers: { "Content-Type": "application/json" },
+                        }),
+                    );
+                }
+                chatReads += 1;
+                const stillRunning = chatReads === 1;
+                return Promise.resolve(
+                    new Response(
+                        JSON.stringify({
+                            chat: { id: "chat-1", title: "t" },
+                            messages: [
+                                {
+                                    id: "u-1",
+                                    chat_id: "chat-1",
+                                    role: "user",
+                                    content: "Draft the email",
+                                    created_at: "2026-09-20T07:00:00Z",
+                                },
+                                stillRunning
+                                    ? {
+                                          id: "asst-x",
+                                          chat_id: "chat-1",
+                                          role: "assistant",
+                                          content: null,
+                                          status: "running",
+                                          created_at: "2026-09-20T07:00:01Z",
+                                      }
+                                    : {
+                                          id: "asst-x",
+                                          chat_id: "chat-1",
+                                          role: "assistant",
+                                          content: [{ type: "content", text: "Done." }],
+                                          created_at: "2026-09-20T07:00:01Z",
+                                      },
+                            ],
+                        }),
+                        { status: 200, headers: { "Content-Type": "application/json" } },
+                    ),
+                );
+            });
+            const { result } = renderHook(() =>
+                useAssistantChat({
+                    chatId: "chat-1",
+                    initialMessages: [
+                        userMessage("Draft the email"),
+                        { id: "asst-x", role: "assistant", content: "", status: "running" },
+                    ],
+                }),
+            );
+            let pending!: Promise<string | null>;
+            act(() => {
+                pending = result.current.attachToTurn("asst-x");
+            });
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            expect(chatReads).toBe(1);
+            expect(result.current.isResponseLoading).toBe(true);
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(5_000);
+                await pending;
+            });
+            expect(chatReads).toBe(2);
+            expect(result.current.isResponseLoading).toBe(false);
+            expect(result.current.messages.at(-1)).toMatchObject({
+                id: "asst-x",
+                content: "Done.",
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("records Stop once in the current thread without waiting for the aborted request", async () => {
         let rejectRequest!: (error: Error) => void;
         fetchMock.mockImplementation(

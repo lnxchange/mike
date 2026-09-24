@@ -10,13 +10,14 @@
  * rewrite. See `allowDocumentMutation` in ../streaming.ts.
  *
  * Everything else in the base set — read_document, find_in_document,
- * list_documents, fetch_documents, ask_inputs, the workflow and research
- * tools — only reads, so a collaborator who may talk in the thread keeps the
- * whole conversational surface.
+ * list_documents, fetch_documents, ask_inputs, create_plan, update_plan, the
+ * workflow and research tools — only reads, so a collaborator who may talk
+ * in the thread keeps the whole conversational surface.
  */
 export const DOCUMENT_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "edit_document",
   "replicate_document",
+  "finalize_document",
   "generate_docx",
   "generate_excel",
   "generate_ppt",
@@ -135,6 +136,31 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "search_library",
+      description:
+        "Search the caller's Library shelves (personal Files/Templates plus every organisation they belong to). Use this to find a letterhead, precedent, or other Library Template before drafting. Results are registered in this chat so you can read_document or replicate_document them. Library Templates are immutable: copy with replicate_document before editing. Do not use generate_docx when a matching template exists.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Filename search, for example letterhead, NDA, or privacy policy.",
+          },
+          kind: {
+            type: "string",
+            enum: ["template", "file"],
+            description:
+              "Which shelf to search. Defaults to template (the firm or personal Templates shelf).",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "replicate_document",
       description:
         "Copy an available document, Library Template, or workflow asset without changing the source. In a project chat, copies are saved to Project Documents; otherwise they are saved to Library Files. Always use this before editing or drafting from a Library Template or workflow asset. For an ordinary document, use it only when the user specifically asks for a copy/duplicate or a new document based on that file. Returns new doc_id slugs for read_document and edit_document.",
@@ -249,6 +275,88 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "create_plan",
+      description:
+        "Record the remaining work as a short ordered plan, then stop this response. Use this for a selected workflow or any job with more than two distinct steps. Read only enough to name the steps. After this call, do not draft, copy, edit, or generate documents in the same response.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Short plan title shown to the user.",
+          },
+          items: {
+            type: "array",
+            minItems: 2,
+            maxItems: 12,
+            description:
+              "Ordered remaining steps. At most 8. Each content is one short sentence.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description:
+                    "Stable short ID for this step, unique within the plan.",
+                },
+                content: {
+                  type: "string",
+                  description: "One concrete step in plain language.",
+                },
+              },
+              required: ["id", "content"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_plan",
+      description:
+        "Replace the active plan after finishing one slice of work. Send the full updated list. Mark finished items completed, the current item in_progress, and later items pending. Then stop this response.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Short plan title shown to the user.",
+          },
+          items: {
+            type: "array",
+            minItems: 1,
+            maxItems: 12,
+            description: "Full updated plan, not only the changed rows.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "Stable short ID from the existing plan.",
+                },
+                content: {
+                  type: "string",
+                  description: "One concrete step in plain language.",
+                },
+                status: {
+                  type: "string",
+                  enum: ["pending", "in_progress", "completed"],
+                },
+              },
+              required: ["id", "content", "status"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_document",
       description:
         "Read the full text content of an available document. Always call this before answering questions about, summarising, citing from, or editing a document, but call it at most once per document/version in a single response. After this returns, use the prior tool result or find_in_document for targeted checks instead of reading the same document/version again.",
@@ -324,7 +432,7 @@ export const TOOLS = [
           sections: {
             type: "array",
             description:
-              "List of document sections. Each section may contain a heading, prose content, or a table.",
+              "List of document sections. Each section may contain a heading, prose content, a table, or Australian execution blocks.",
             items: {
               type: "object",
               properties: {
@@ -364,8 +472,64 @@ export const TOOLS = [
                       description:
                         "Array of rows, each row is an array of cell strings matching the headers order",
                     },
+                    borders: {
+                      type: "boolean",
+                      description:
+                        "Set to false for a borderless table. Required for Australian execution blocks if you emit them as a table instead of executionBlocks.",
+                    },
                   },
                   required: ["headers", "rows"],
+                },
+                executionBlocks: {
+                  type: "array",
+                  description:
+                    "Australian execution blocks for a document that will be signed. One object per signing party. Renders as a borderless two-column table. Do not hand-draft signature lines when this is available.",
+                  items: {
+                    type: "object",
+                    properties: {
+                      party: {
+                        type: "string",
+                        enum: [
+                          "company",
+                          "company_sole_director",
+                          "company_two_directors",
+                          "individual",
+                          "partnership_authorised",
+                          "partnership_individuals",
+                          "company_trustee",
+                          "company_trustee_sole_director",
+                          "company_trustee_two_directors",
+                          "individual_trustee",
+                          "individual_trustees_multiple",
+                        ],
+                        description:
+                          "Signing party type. Company default is the s126 authorised signatory block.",
+                      },
+                      id: {
+                        type: "string",
+                        enum: [
+                          "01",
+                          "02",
+                          "03",
+                          "04",
+                          "05",
+                          "06",
+                          "07",
+                          "08",
+                          "09",
+                          "10",
+                          "11",
+                        ],
+                        description:
+                          "Optional explicit block id. Prefer party so the selection rules choose the block.",
+                      },
+                      values: {
+                        type: "object",
+                        description:
+                          "Known # token replacements (companyName, authorisedSignatoryName, directorName, trustName, and the other named placeholders). Leave signature, Date, and witness fields blank.",
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -515,6 +679,29 @@ export const TOOLS = [
           },
         },
         required: ["doc_id", "edits"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "finalize_document",
+      description:
+        "Accept every tracked change in a .docx and remove its comments, saving the result as a new clean document beside the source (the source keeps its redline). Use this for an execution-ready or clean version. To produce a markup that shows only your own changes on top of the other side's draft, call finalize_document on their draft first, then edit_document on the clean copy. read_document lists the pending changes in a TRACKED CHANGES section so you can see what will be accepted. Returns the new doc_id for read_document and edit_document.",
+      parameters: {
+        type: "object",
+        properties: {
+          doc_id: {
+            type: "string",
+            description: "Chat-local ID of the marked-up .docx (e.g. 'doc-0').",
+          },
+          new_filename: {
+            type: "string",
+            description:
+              "Filename for the clean copy. Defaults to the source name with ' (clean)' appended. The .docx extension is forced.",
+          },
+        },
+        required: ["doc_id"],
       },
     },
   },

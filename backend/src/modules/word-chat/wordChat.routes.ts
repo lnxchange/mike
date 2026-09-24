@@ -666,9 +666,14 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       db,
       write,
       workflowStore,
-      // CourtListener is intentionally unavailable in document-scoped Word
-      // chats. Legal research remains a web-assistant capability.
+      // CourtListener and AU legislation are intentionally unavailable in
+      // document-scoped Word chats. Legal research remains a web-assistant
+      // capability.
       includeResearchTools: false,
+      includeAuResearchTools: false,
+      includeAuEnergyResearchTools: false,
+      includeAuVicResearchTools: false,
+      includeAuCasesResearchTools: false,
       includeAskInputs: false,
       ...(clientToolsEnabled
         ? {
@@ -720,7 +725,9 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         persistChat &&
         !persistedEvents.some((event) =>
           typeof event === "object" && event !== null && "type" in event
-            ? event.type === "error" || event.type === "ask_inputs"
+            ? event.type === "error" ||
+              event.type === "ask_inputs" ||
+              event.type === "plan"
             : false,
         )
       ) {

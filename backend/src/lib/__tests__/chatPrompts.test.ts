@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildSystemPrompt } from "../../modules/chat/engine/prompts";
 import { COURTLISTENER_SYSTEM_PROMPT } from "../../modules/chat/engine/tools/courtlistenerTools";
+import { AU_LEGISLATION_SYSTEM_PROMPT } from "../../modules/chat/engine/tools/auLegislationTools";
+import { AU_ENERGY_SYSTEM_PROMPT } from "../../modules/chat/engine/tools/auEnergyTools";
+import { AU_VIC_LEGISLATION_SYSTEM_PROMPT } from "../../modules/chat/engine/tools/auVicLegislationTools";
+import { AU_CASE_LAW_SYSTEM_PROMPT } from "../../modules/chat/engine/tools/auCaseLawTools";
 
 describe("buildSystemPrompt", () => {
     it("always contains the core identity and rules", () => {
@@ -10,6 +14,15 @@ describe("buildSystemPrompt", () => {
             );
             expect(prompt).toContain("Do not fabricate document content.");
             expect(prompt).toContain(
+                "Use at most 15 tool-use rounds per response",
+            );
+            expect(prompt).toContain(
+                "write the deliverable from the previous-turn working notes",
+            );
+            expect(prompt).toContain("PLANNING:");
+            expect(prompt).toContain("call create_plan and stop");
+            expect(prompt).toContain("one slice at a time");
+            expect(prompt).toContain(
                 "In user-facing responses, use natural language only",
             );
             expect(prompt).toContain(
@@ -17,6 +30,11 @@ describe("buildSystemPrompt", () => {
             );
             expect(prompt).toContain("DOCX GENERATION:");
             expect(prompt).toContain("DOCUMENT EDITING:");
+            expect(prompt).toContain(
+                "When Australian execution-block instructions are present",
+            );
+            expect(prompt).not.toContain("Attune");
+            expect(prompt).not.toContain("AL H");
         }
     });
 
@@ -58,6 +76,11 @@ describe("buildSystemPrompt", () => {
                 "Workflow assets used as templates are immutable",
             );
             expect(prompt).toContain("Library Templates are immutable");
+            expect(prompt).toContain("call search_library");
+            expect(prompt).toContain(
+                "Do not call generate_docx when a matching Library Template exists",
+            );
+            expect(prompt).toContain("use only those style names");
             expect(prompt).toContain(
                 "call replicate_document with a descriptive new_filename",
             );
@@ -103,5 +126,67 @@ describe("buildSystemPrompt", () => {
 
     it("defaults to including research tools", () => {
         expect(buildSystemPrompt()).toBe(buildSystemPrompt(true));
+    });
+
+    it("splices the AU legislation instructions only when AU research is on", () => {
+        const prompt = buildSystemPrompt({ us: false, au: true });
+        expect(prompt).toContain(AU_LEGISLATION_SYSTEM_PROMPT);
+        expect(prompt).not.toContain("US CASE LAW RESEARCH");
+        const researchIdx = prompt.indexOf("AUSTRALIAN COMMONWEALTH LEGISLATION RESEARCH:");
+        const editingIdx = prompt.indexOf("DOCUMENT EDITING:");
+        const afterIdx = prompt.indexOf("DOCUMENT NAMES IN PROSE:");
+        expect(editingIdx).toBeLessThan(researchIdx);
+        expect(researchIdx).toBeLessThan(afterIdx);
+    });
+
+    it("omits AU legislation instructions when AU research is off", () => {
+        const prompt = buildSystemPrompt({ us: true, au: false });
+        expect(prompt).toContain(COURTLISTENER_SYSTEM_PROMPT);
+        expect(prompt).not.toContain("AUSTRALIAN COMMONWEALTH LEGISLATION RESEARCH");
+        expect(prompt).not.toContain("au_search_legislation");
+    });
+
+    it("splices the AU energy instructions only when energy research is on", () => {
+        const prompt = buildSystemPrompt({ us: false, au: false, energy: true });
+        expect(prompt).toContain(AU_ENERGY_SYSTEM_PROMPT);
+        expect(prompt).not.toContain("US CASE LAW RESEARCH");
+        expect(prompt).not.toContain("AUSTRALIAN COMMONWEALTH LEGISLATION RESEARCH");
+        const researchIdx = prompt.indexOf("AUSTRALIAN ENERGY LAW RESEARCH:");
+        const editingIdx = prompt.indexOf("DOCUMENT EDITING:");
+        const afterIdx = prompt.indexOf("DOCUMENT NAMES IN PROSE:");
+        expect(editingIdx).toBeLessThan(researchIdx);
+        expect(researchIdx).toBeLessThan(afterIdx);
+    });
+
+    it("omits AU energy instructions when energy research is off", () => {
+        const prompt = buildSystemPrompt({ us: true, au: true, energy: false });
+        expect(prompt).toContain(COURTLISTENER_SYSTEM_PROMPT);
+        expect(prompt).toContain(AU_LEGISLATION_SYSTEM_PROMPT);
+        expect(prompt).not.toContain("AUSTRALIAN ENERGY LAW RESEARCH");
+        expect(prompt).not.toContain("au_search_energy");
+    });
+
+    it("splices Victorian legislation instructions only when Vic research is on", () => {
+        const prompt = buildSystemPrompt({
+            us: false,
+            au: false,
+            energy: false,
+            vic: true,
+        });
+        expect(prompt).toContain(AU_VIC_LEGISLATION_SYSTEM_PROMPT);
+        expect(prompt).not.toContain("AUSTRALIAN ENERGY LAW RESEARCH");
+        expect(prompt).not.toContain("AUSTRALIAN CASE LAW RESEARCH");
+    });
+
+    it("splices Australian case-law instructions only when case research is on", () => {
+        const prompt = buildSystemPrompt({
+            us: false,
+            au: false,
+            energy: false,
+            cases: true,
+        });
+        expect(prompt).toContain(AU_CASE_LAW_SYSTEM_PROMPT);
+        expect(prompt).not.toContain("AUSTRALIAN VICTORIAN LEGISLATION RESEARCH");
+        expect(prompt).not.toContain("au_search_vic_legislation");
     });
 });

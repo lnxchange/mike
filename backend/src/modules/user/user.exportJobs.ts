@@ -13,6 +13,7 @@
 //   document.precompute_text — extract a legacy Office file's text once, so
 //                      read_document stops paying for LibreOffice per call
 //   memory.consolidate — curate scoped Markdown after chat inactivity
+//   memory.matter_brief — email-only project status into memory.md
 import { recordAudit } from "../../lib/audit";
 import { buildUserAccountExport, buildUserChatsExport, buildUserTabularReviewsExport, userExportFilename } from "./user.dataExport";
 import { AUDIT_CSV_FILENAME, buildAuditCsv, type AuditQuery } from "../../lib/auditExport";

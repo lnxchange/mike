@@ -30,7 +30,13 @@ describe("isSupportedDocumentFile", () => {
     it("rejects unsupported types", () => {
         expect(isSupportedDocumentFile(file("notes.txt"))).toBe(false);
         expect(isSupportedDocumentFile(file("photo.png"))).toBe(false);
-        expect(isSupportedDocumentFile(file("archive.zip"))).toBe(false);
+        expect(isSupportedDocumentFile(file("setup.exe"))).toBe(false);
+    });
+
+    it("accepts correspondence and archives, which the server expands", () => {
+        expect(isSupportedDocumentFile(file("letter.eml"))).toBe(true);
+        expect(isSupportedDocumentFile(file("letter.MSG"))).toBe(true);
+        expect(isSupportedDocumentFile(file("matter.zip"))).toBe(true);
     });
 
     it("uses only the last extension for multi-dot filenames", () => {

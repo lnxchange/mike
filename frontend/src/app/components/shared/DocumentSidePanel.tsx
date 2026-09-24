@@ -249,6 +249,7 @@ export function DocumentSidePanel({
     const selectedViewType = resolveDocumentViewType({
         filename: selectedFilename,
         fileType: selectedFileType,
+        preferPdfForWord: Boolean(doc.pdf_storage_path),
     });
     const selectedSizeBytes =
         selectedVersion?.size_bytes === undefined

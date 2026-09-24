@@ -2,7 +2,13 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { streamChat, streamProjectChat } from "@/app/lib/mikeApi";
+import {
+  cancelChatTurn,
+  getChat,
+  streamChat,
+  streamChatTurn,
+  streamProjectChat,
+} from "@/app/lib/mikeApi";
 import { assistantHistoryContent } from "@/app/lib/assistantHistoryContent";
 import { readSseFrames } from "@/app/lib/sse";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
@@ -12,6 +18,16 @@ import type {
   Citation,
   Message,
 } from "@/app/components/shared/types";
+import type { OutlookThreadStatus } from "@mike/contracts";
+
+function parseOutlookThreadStatus(value: unknown): OutlookThreadStatus | undefined {
+  return value === "matched" ||
+    value === "ambiguous" ||
+    value === "not_found" ||
+    value === "new"
+    ? value
+    : undefined;
+}
 
 interface UseAssistantChatOptions {
   initialMessages?: Message[];
@@ -19,6 +35,17 @@ interface UseAssistantChatOptions {
   projectId?: string;
   /** Adopts the server id as soon as it arrives, without navigation. */
   onChatCreated?: (chatId: string) => void;
+}
+
+/** How often a detached turn is re-read while no live stream is attachable. */
+export const RUNNING_TURN_POLL_MS = 5_000;
+
+/** The one assistant row the server reports as still being written. */
+export function findRunningTurn(messages: Message[]): Message | undefined {
+  return messages.find(
+    (message) =>
+      message.role === "assistant" && message.status === "running" && !!message.id,
+  );
 }
 
 function readableStreamError(value: unknown, safeToDisplay: boolean): string {
@@ -98,16 +125,26 @@ export function useAssistantChat({
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const requestGenerationRef = useRef(0);
+  // The server-side turn this hook is currently showing. Stop sends the
+  // cancel there; detaching from the socket alone no longer ends the turn.
+  const activeTurnRef = useRef<{
+    chatId: string;
+    assistantMessageId: string;
+  } | null>(null);
 
-  // Invalidate the previous request before a new thread can receive updates.
+  // Detach the previous request before a new thread can receive updates.
   //
   // Keyed on the thread itself, never on effect lifecycle. StrictMode replays
   // create/destroy/create on mount without the thread changing, and doing this
-  // in a cleanup aborted a request the host had just started: a first message
-  // auto-sent from a mount effect was killed mid-flight, and because the catch
-  // ignores a superseded request the turn stalled on its empty placeholder with
-  // no error. A layout effect still runs inside the switching commit, so no
+  // in a cleanup detached a request the host had just started: a first message
+  // auto-sent from a mount effect stalled on its empty placeholder with no
+  // error. A layout effect still runs inside the switching commit, so no
   // async continuation from the old request can land in the new thread first.
+  //
+  // Detach, not abort: the server owns the turn and keeps writing it to the
+  // transcript. Bumping the generation makes the old read loop exit at its
+  // next frame, which closes this viewer's connection and nothing more; the
+  // turn is picked up again from GET /chat when the user comes back.
   const threadKey = `${projectId ?? ""}:${initialChatId ?? ""}`;
   const threadKeyRef = useRef(threadKey);
   const adoptedThreadKeyRef = useRef<string | null>(null);
@@ -119,8 +156,8 @@ export function useAssistantChat({
     // A new chat receiving its persisted id is still the same live turn.
     if (isAdoptedThread) return;
     requestGenerationRef.current += 1;
-    abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    activeTurnRef.current = null;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset request status when the host selects another thread
     setIsResponseLoading(false);
     setIsLoadingCitations(false);
@@ -212,6 +249,12 @@ export function useAssistantChat({
   const cancel = () => {
     const controller = abortControllerRef.current;
     if (!controller) return;
+    // Tell the server first: closing our connection no longer stops the turn.
+    const activeTurn = activeTurnRef.current;
+    activeTurnRef.current = null;
+    if (activeTurn) {
+      void cancelChatTurn(activeTurn).catch(() => {});
+    }
     requestGenerationRef.current += 1;
     controller.abort();
     abortControllerRef.current = null;
@@ -290,6 +333,53 @@ export function useAssistantChat({
     return true;
   };
 
+  /**
+   * A turn is still running but no live stream is attachable from here (it
+   * finished a moment ago, or another server instance owns it). Re-read the
+   * transcript until the running row resolves, then show what was saved.
+   */
+  const pollRunningTurn = async (
+    targetChatId: string,
+    generation: number,
+    signal: AbortSignal,
+  ) => {
+    const isCurrentRequest = () => requestGenerationRef.current === generation;
+    const settleIfFinished = async (): Promise<boolean> => {
+      if (!isCurrentRequest() || signal.aborted) return true;
+      let loaded: Awaited<ReturnType<typeof getChat>>;
+      try {
+        loaded = await getChat(targetChatId);
+      } catch {
+        return false;
+      }
+      if (!isCurrentRequest() || signal.aborted) return true;
+      if (findRunningTurn(loaded.messages)) return false;
+      setMessages(loaded.messages);
+      setIsResponseLoading(false);
+      setIsLoadingCitations(false);
+      activeTurnRef.current = null;
+      if (abortControllerRef.current?.signal === signal) {
+        abortControllerRef.current = null;
+      }
+      return true;
+    };
+    if (await settleIfFinished()) return;
+    for (;;) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, RUNNING_TURN_POLL_MS);
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      if (await settleIfFinished()) return;
+    }
+  };
+
   const handleChat = async (
     message: Message,
     opts?: {
@@ -298,17 +388,25 @@ export function useAssistantChat({
         AssistantEvent,
         { type: "ask_inputs_response" }
       >;
+      /**
+       * Reattach to a turn the server is already running instead of
+       * starting one. The message argument is ignored.
+       */
+      resumeTurn?: { assistantMessageId: string };
     },
   ): Promise<string | null> => {
-    if (!message.content.trim()) return null;
+    const resumeTurn = opts?.resumeTurn ?? null;
+    if (!resumeTurn && !message.content.trim()) return null;
+    if (resumeTurn && !chatId) return null;
 
     setIsResponseLoading(true);
 
     const lastMessage = messages[messages.length - 1];
     const isMessageAlreadyAdded =
-      lastMessage &&
-      lastMessage.role === "user" &&
-      lastMessage.content === message.content;
+      !!resumeTurn ||
+      (lastMessage &&
+        lastMessage.role === "user" &&
+        lastMessage.content === message.content);
 
     const apiMessagesForTurn: Message[] = isMessageAlreadyAdded
       ? messages
@@ -344,33 +442,72 @@ export function useAssistantChat({
         })()
       : apiMessagesForTurn;
 
-    setMessages(
-      optimisticResponseEvent
-        ? displayMessages
-        : [
-            ...displayMessages,
-            {
-              role: "assistant",
-              content: "",
-              citations: [],
-              events: [],
-            },
-          ],
-    );
+    if (resumeTurn) {
+      // The running row from GET /chat becomes the live placeholder; its
+      // events are rebuilt from the replayed frames. Functional update: the
+      // host usually calls this right after setMessages(loaded), before
+      // this closure has seen that render.
+      setMessages((prev) =>
+        prev.some((item) => item.id === resumeTurn.assistantMessageId)
+          ? prev.map((item) =>
+              item.id === resumeTurn.assistantMessageId
+                ? {
+                    ...item,
+                    content: "",
+                    citations: [],
+                    events: [],
+                    status: undefined,
+                  }
+                : item,
+            )
+          : [
+              ...prev,
+              {
+                id: resumeTurn.assistantMessageId,
+                role: "assistant",
+                content: "",
+                citations: [],
+                events: [],
+              },
+            ],
+      );
+    } else {
+      setMessages(
+        optimisticResponseEvent
+          ? displayMessages
+          : [
+              ...displayMessages,
+              {
+                role: "assistant",
+                content: "",
+                citations: [],
+                events: [],
+              },
+            ],
+      );
+    }
 
     let streamedChatId: string | null = null;
 
-    eventsRef.current = optimisticResponseEvent
-      ? ([...displayMessages]
-          .reverse()
-          .find((item) => item.role === "assistant")?.events ?? [])
-      : [];
+    eventsRef.current =
+      optimisticResponseEvent && !resumeTurn
+        ? ([...displayMessages]
+            .reverse()
+            .find((item) => item.role === "assistant")?.events ?? [])
+        : [];
 
     const generation = ++requestGenerationRef.current;
-    abortControllerRef.current?.abort();
+    // A previous viewer loop on this hook exits on its next frame; the turn
+    // it was showing belongs to the server and is not cancelled here.
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const isCurrentRequest = () => requestGenerationRef.current === generation;
+    if (resumeTurn && chatId) {
+      activeTurnRef.current = {
+        chatId,
+        assistantMessageId: resumeTurn.assistantMessageId,
+      };
+    }
 
     try {
       const apiMessages = apiMessagesForTurn.map((currentMessage) => ({
@@ -400,36 +537,75 @@ export function useAssistantChat({
         document_id: f.document_id as string,
       }));
 
-      const response = await (projectId
-        ? streamProjectChat({
-            projectId,
-            messages: apiMessages,
-            chat_id: chatId,
-            model,
-            reasoning,
-            displayed_doc: displayedDoc
-              ? {
-                  filename: displayedDoc.filename,
-                  document_id: displayedDoc.documentId,
-                }
-              : undefined,
-            attached_documents:
-              attachedDocs.length > 0 ? attachedDocs : undefined,
-            ask_inputs_response: opts?.askInputsResponse,
+      const response = await (resumeTurn && chatId
+        ? streamChatTurn({
+            chatId,
+            assistantMessageId: resumeTurn.assistantMessageId,
             signal: controller.signal,
           })
-        : streamChat({
-            messages: apiMessages,
-            chat_id: chatId,
-            model,
-            reasoning,
-            ask_inputs_response: opts?.askInputsResponse,
-            signal: controller.signal,
-          }));
+        : projectId
+          ? streamProjectChat({
+              projectId,
+              messages: apiMessages,
+              chat_id: chatId,
+              model,
+              reasoning,
+              displayed_doc: displayedDoc
+                ? {
+                    filename: displayedDoc.filename,
+                    document_id: displayedDoc.documentId,
+                  }
+                : undefined,
+              attached_documents:
+                attachedDocs.length > 0 ? attachedDocs : undefined,
+              ask_inputs_response: opts?.askInputsResponse,
+              signal: controller.signal,
+            })
+          : streamChat({
+              messages: apiMessages,
+              chat_id: chatId,
+              model,
+              reasoning,
+              ask_inputs_response: opts?.askInputsResponse,
+              signal: controller.signal,
+            }));
 
       if (!isCurrentRequest()) {
         await response.body?.cancel().catch(() => {});
         return null;
+      }
+      if (resumeTurn && response.status === 202 && chatId) {
+        // Nothing to attach to here: the turn finished a moment ago or runs
+        // on another instance. Poll the transcript until it settles.
+        await response.body?.cancel().catch(() => {});
+        await pollRunningTurn(chatId, generation, controller.signal);
+        return chatId;
+      }
+      if (response.status === 409 && !resumeTurn) {
+        // Another turn already holds this chat. Show that one rather than an
+        // error; the server dropped the user row this request added.
+        const body = (await response.json().catch(() => null)) as {
+          code?: string;
+          assistant_message_id?: string | null;
+        } | null;
+        if (
+          body?.code === "turn_in_progress" &&
+          typeof body.assistant_message_id === "string" &&
+          chatId &&
+          isCurrentRequest()
+        ) {
+          // Drop the optimistic user row and placeholder this send added; the
+          // recursive resume call appends the running turn in their place.
+          if (!optimisticResponseEvent) {
+            const dropped = isMessageAlreadyAdded ? 1 : 2;
+            setMessages((prev) => prev.slice(0, prev.length - dropped));
+          }
+          abortControllerRef.current = null;
+          return handleChat(message, {
+            resumeTurn: { assistantMessageId: body.assistant_message_id },
+          });
+        }
+        throw new Error(`Chat request failed with status ${response.status}`);
       }
       if (!response.ok) {
         await response.body?.cancel().catch(() => {});
@@ -462,6 +638,10 @@ export function useAssistantChat({
               }
               const assistantMessageId = data.assistantMessageId;
               if (typeof assistantMessageId === "string") {
+                activeTurnRef.current = {
+                  chatId: streamed,
+                  assistantMessageId,
+                };
                 updateLatestAssistantMessage((message) => ({
                   ...message,
                   id: assistantMessageId,
@@ -668,6 +848,28 @@ export function useAssistantChat({
                 document: isPanelDocument(data.document)
                     ? data.document
                     : undefined,
+              });
+              continue;
+            }
+
+            if (data.type === "legislation_citation") {
+              pushEvent({
+                type: "legislation_citation",
+                title_id: (data.title_id as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
+                as_at:
+                  typeof data.as_at === "string"
+                    ? (data.as_at as string)
+                    : null,
+                compilation_number:
+                  typeof data.compilation_number === "string"
+                    ? (data.compilation_number as string)
+                    : null,
+                url: (data.url as string) ?? "",
+                document: isPanelDocument(data.document)
+                  ? data.document
+                  : undefined,
               });
               continue;
             }
@@ -956,6 +1158,741 @@ export function useAssistantChat({
               continue;
             }
 
+            if (data.type === "au_search_legislation_start") {
+              pushEvent({
+                type: "au_search_legislation",
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_search_legislation") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_search_legislation" &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_search_legislation",
+                  query: (data.query as string) ?? "",
+                  result_count:
+                    typeof data.result_count === "number"
+                      ? (data.result_count as number)
+                      : 0,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_get_legislation_start") {
+              pushEvent({
+                type: "au_get_legislation",
+                title_id: (data.title_id as string) ?? "",
+                section:
+                  typeof data.section === "string"
+                    ? (data.section as string)
+                    : null,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_get_legislation") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_get_legislation" &&
+                  e.title_id === (data.title_id as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_get_legislation",
+                  title_id: (data.title_id as string) ?? "",
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  section:
+                    typeof data.section === "string"
+                      ? (data.section as string)
+                      : null,
+                  as_at:
+                    typeof data.as_at === "string"
+                      ? (data.as_at as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_get_legislation_as_at_start") {
+              pushEvent({
+                type: "au_get_legislation_as_at",
+                title_id: (data.title_id as string) ?? "",
+                date: (data.date as string) ?? "",
+                section:
+                  typeof data.section === "string"
+                    ? (data.section as string)
+                    : null,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_get_legislation_as_at") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_get_legislation_as_at" &&
+                  e.title_id === (data.title_id as string) &&
+                  e.date === (data.date as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_get_legislation_as_at",
+                  title_id: (data.title_id as string) ?? "",
+                  date: (data.date as string) ?? "",
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  section:
+                    typeof data.section === "string"
+                      ? (data.section as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_legislation_versions_start") {
+              pushEvent({
+                type: "au_legislation_versions",
+                title_id: (data.title_id as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_legislation_versions") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_legislation_versions" &&
+                  e.title_id === (data.title_id as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_legislation_versions",
+                  title_id: (data.title_id as string) ?? "",
+                  version_count:
+                    typeof data.version_count === "number"
+                      ? (data.version_count as number)
+                      : 0,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_find_in_legislation_start") {
+              pushEvent({
+                type: "au_find_in_legislation",
+                title_id:
+                  typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null,
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_find_in_legislation") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_find_in_legislation" &&
+                  e.title_id ===
+                    (typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null) &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_find_in_legislation",
+                  title_id:
+                    typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null,
+                  query: (data.query as string) ?? "",
+                  total_matches:
+                    typeof data.total_matches === "number"
+                      ? (data.total_matches as number)
+                      : 0,
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_search_energy_start") {
+              pushEvent({
+                type: "au_search_energy",
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_search_energy") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_search_energy" &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_search_energy",
+                  query: (data.query as string) ?? "",
+                  result_count:
+                    typeof data.result_count === "number"
+                      ? (data.result_count as number)
+                      : 0,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_get_energy_start") {
+              pushEvent({
+                type: "au_get_energy",
+                title_id: (data.title_id as string) ?? "",
+                section:
+                  typeof data.section === "string"
+                    ? (data.section as string)
+                    : null,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_get_energy") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_get_energy" &&
+                  e.title_id === (data.title_id as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_get_energy",
+                  title_id: (data.title_id as string) ?? "",
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  section:
+                    typeof data.section === "string"
+                      ? (data.section as string)
+                      : null,
+                  as_at:
+                    typeof data.as_at === "string"
+                      ? (data.as_at as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_get_energy_as_at_start") {
+              pushEvent({
+                type: "au_get_energy_as_at",
+                title_id: (data.title_id as string) ?? "",
+                date: (data.date as string) ?? "",
+                section:
+                  typeof data.section === "string"
+                    ? (data.section as string)
+                    : null,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_get_energy_as_at") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_get_energy_as_at" &&
+                  e.title_id === (data.title_id as string) &&
+                  e.date === (data.date as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_get_energy_as_at",
+                  title_id: (data.title_id as string) ?? "",
+                  date: (data.date as string) ?? "",
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  section:
+                    typeof data.section === "string"
+                      ? (data.section as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_energy_versions_start") {
+              pushEvent({
+                type: "au_energy_versions",
+                title_id: (data.title_id as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_energy_versions") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_energy_versions" &&
+                  e.title_id === (data.title_id as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_energy_versions",
+                  title_id: (data.title_id as string) ?? "",
+                  version_count:
+                    typeof data.version_count === "number"
+                      ? (data.version_count as number)
+                      : 0,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_find_in_energy_start") {
+              pushEvent({
+                type: "au_find_in_energy",
+                title_id:
+                  typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null,
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_find_in_energy") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_find_in_energy" &&
+                  e.title_id ===
+                    (typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null) &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_find_in_energy",
+                  title_id:
+                    typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null,
+                  query: (data.query as string) ?? "",
+                  total_matches:
+                    typeof data.total_matches === "number"
+                      ? (data.total_matches as number)
+                      : 0,
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_search_vic_legislation_start") {
+              pushEvent({
+                type: "au_search_vic_legislation",
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_search_vic_legislation") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_search_vic_legislation" &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_search_vic_legislation",
+                  query: (data.query as string) ?? "",
+                  result_count:
+                    typeof data.result_count === "number"
+                      ? (data.result_count as number)
+                      : 0,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_get_vic_legislation_start") {
+              pushEvent({
+                type: "au_get_vic_legislation",
+                title_id: (data.title_id as string) ?? "",
+                section:
+                  typeof data.section === "string"
+                    ? (data.section as string)
+                    : null,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_get_vic_legislation") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_get_vic_legislation" &&
+                  e.title_id === (data.title_id as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_get_vic_legislation",
+                  title_id: (data.title_id as string) ?? "",
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  section:
+                    typeof data.section === "string"
+                      ? (data.section as string)
+                      : null,
+                  as_at:
+                    typeof data.as_at === "string"
+                      ? (data.as_at as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_get_vic_legislation_as_at_start") {
+              pushEvent({
+                type: "au_get_vic_legislation_as_at",
+                title_id: (data.title_id as string) ?? "",
+                date: (data.date as string) ?? "",
+                section:
+                  typeof data.section === "string"
+                    ? (data.section as string)
+                    : null,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_get_vic_legislation_as_at") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_get_vic_legislation_as_at" &&
+                  e.title_id === (data.title_id as string) &&
+                  e.date === (data.date as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_get_vic_legislation_as_at",
+                  title_id: (data.title_id as string) ?? "",
+                  date: (data.date as string) ?? "",
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  section:
+                    typeof data.section === "string"
+                      ? (data.section as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_vic_legislation_versions_start") {
+              pushEvent({
+                type: "au_vic_legislation_versions",
+                title_id: (data.title_id as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_vic_legislation_versions") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_vic_legislation_versions" &&
+                  e.title_id === (data.title_id as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_vic_legislation_versions",
+                  title_id: (data.title_id as string) ?? "",
+                  version_count:
+                    typeof data.version_count === "number"
+                      ? (data.version_count as number)
+                      : 0,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_find_in_vic_legislation_start") {
+              pushEvent({
+                type: "au_find_in_vic_legislation",
+                title_id:
+                  typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null,
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_find_in_vic_legislation") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_find_in_vic_legislation" &&
+                  e.title_id ===
+                    (typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null) &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_find_in_vic_legislation",
+                  title_id:
+                    typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null,
+                  query: (data.query as string) ?? "",
+                  total_matches:
+                    typeof data.total_matches === "number"
+                      ? (data.total_matches as number)
+                      : 0,
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_search_case_law_start") {
+              pushEvent({
+                type: "au_search_case_law",
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_search_case_law") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_search_case_law" &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_search_case_law",
+                  query: (data.query as string) ?? "",
+                  result_count:
+                    typeof data.result_count === "number"
+                      ? (data.result_count as number)
+                      : 0,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_get_case_start") {
+              pushEvent({
+                type: "au_get_case",
+                title_id: (data.title_id as string) ?? "",
+                section:
+                  typeof data.section === "string"
+                    ? (data.section as string)
+                    : null,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_get_case") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_get_case" &&
+                  e.title_id === (data.title_id as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_get_case",
+                  title_id: (data.title_id as string) ?? "",
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  section:
+                    typeof data.section === "string"
+                      ? (data.section as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "au_find_in_case_start") {
+              pushEvent({
+                type: "au_find_in_case",
+                title_id:
+                  typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null,
+                query: (data.query as string) ?? "",
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "au_find_in_case") {
+              updateMatchingEvent(
+                (e) =>
+                  e.type === "au_find_in_case" &&
+                  e.title_id ===
+                    (typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null) &&
+                  e.query === (data.query as string) &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "au_find_in_case",
+                  title_id:
+                    typeof data.title_id === "string"
+                      ? (data.title_id as string)
+                      : null,
+                  query: (data.query as string) ?? "",
+                  total_matches:
+                    typeof data.total_matches === "number"
+                      ? (data.total_matches as number)
+                      : 0,
+                  name:
+                    typeof data.name === "string"
+                      ? (data.name as string)
+                      : null,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
             if (data.type === "doc_read_start") {
               pushEvent({
                 type: "doc_read",
@@ -975,6 +1912,50 @@ export function useAssistantChat({
                 isStreaming: true,
               });
               continue;
+            }
+
+            if (data.type === "plan") {
+                const eventId =
+                    typeof data.event_id === "string" ? data.event_id.trim() : "";
+                const title =
+                    typeof data.title === "string" && data.title.trim()
+                        ? data.title.trim()
+                        : "Plan";
+                const rawItems = Array.isArray(data.items)
+                    ? (data.items as unknown[])
+                    : [];
+                const items = rawItems.flatMap((item, index) => {
+                    if (!item || typeof item !== "object") return [];
+                    const row = item as Record<string, unknown>;
+                    const content =
+                        typeof row.content === "string" ? row.content.trim() : "";
+                    if (!content) return [];
+                    const status =
+                        row.status === "completed"
+                            ? ("completed" as const)
+                            : row.status === "in_progress"
+                              ? ("in_progress" as const)
+                              : ("pending" as const);
+                    return [
+                        {
+                            id:
+                                typeof row.id === "string" && row.id.trim()
+                                    ? row.id.trim()
+                                    : `step-${index + 1}`,
+                            content,
+                            status,
+                        },
+                    ];
+                });
+                if (eventId && items.length > 0) {
+                    pushEvent({
+                        type: "plan",
+                        event_id: eventId,
+                        title,
+                        items,
+                    });
+                }
+                continue;
             }
 
             if (data.type === "ask_inputs") {
@@ -1173,6 +2154,90 @@ export function useAssistantChat({
               continue;
             }
 
+            if (data.type === "outlook_draft_start") {
+              if (data.stage === true) {
+                pushEvent({
+                  type: "outlook_draft_created",
+                  web_link: "",
+                  subject: "",
+                  to: [],
+                  attachment_names: [],
+                  threaded: false,
+                  isStreaming: true,
+                });
+              } else {
+                pushEvent({
+                  type: "outlook_draft_preview",
+                  subject: "",
+                  to: [],
+                  html_body: "",
+                  attachment_names: [],
+                  isStreaming: true,
+                });
+              }
+              continue;
+            }
+
+            if (data.type === "outlook_draft_preview") {
+              const next = {
+                type: "outlook_draft_preview" as const,
+                subject: typeof data.subject === "string" ? data.subject : "",
+                to: Array.isArray(data.to)
+                  ? data.to.filter((item): item is string => typeof item === "string")
+                  : [],
+                cc: Array.isArray(data.cc)
+                  ? data.cc.filter((item): item is string => typeof item === "string")
+                  : undefined,
+                html_body:
+                  typeof data.html_body === "string" ? data.html_body : "",
+                attachment_names: Array.isArray(data.attachment_names)
+                  ? data.attachment_names.filter(
+                      (item): item is string => typeof item === "string",
+                    )
+                  : [],
+                isStreaming: false,
+              };
+              const replaced = updateMatchingEvent(
+                (e) => e.type === "outlook_draft_preview" && !!e.isStreaming,
+                () => next,
+              );
+              if (!replaced) pushEvent(next);
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "outlook_draft_created") {
+              const next = {
+                type: "outlook_draft_created" as const,
+                web_link: typeof data.web_link === "string" ? data.web_link : "",
+                subject: typeof data.subject === "string" ? data.subject : "",
+                to: Array.isArray(data.to)
+                  ? data.to.filter((item): item is string => typeof item === "string")
+                  : [],
+                attachment_names: Array.isArray(data.attachment_names)
+                  ? data.attachment_names.filter(
+                      (item): item is string => typeof item === "string",
+                    )
+                  : [],
+                threaded: data.threaded === true,
+                thread_status: parseOutlookThreadStatus(data.thread_status),
+                isStreaming: false,
+              };
+              const replaced = updateMatchingEvent(
+                (e) => e.type === "outlook_draft_created" && !!e.isStreaming,
+                () => next,
+              );
+              if (!replaced) pushEvent(next);
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "outlook_auth_required") {
+              pushEvent({ type: "outlook_auth_required" });
+              pushThinkingPlaceholder();
+              continue;
+            }
+
             if (data.type === "doc_created_start") {
               pushEvent({
                 type: "doc_created",
@@ -1218,6 +2283,80 @@ export function useAssistantChat({
                   return next;
                 },
               );
+              pushThinkingPlaceholder();
+              continue;
+            }
+
+            if (data.type === "doc_finalized_start") {
+              pushEvent({
+                type: "doc_finalized",
+                filename: data.filename as string,
+                source_filename: data.filename as string,
+                isStreaming: true,
+              });
+              continue;
+            }
+
+            if (data.type === "doc_finalized") {
+              const sourceFilename =
+                typeof data.source_filename === "string"
+                  ? (data.source_filename as string)
+                  : (data.filename as string);
+              const replaced = updateMatchingEvent(
+                (e) =>
+                  e.type === "doc_finalized" &&
+                  e.source_filename === sourceFilename &&
+                  !!e.isStreaming,
+                () => ({
+                  type: "doc_finalized",
+                  filename: data.filename as string,
+                  source_filename: sourceFilename,
+                  document_id:
+                    typeof data.document_id === "string" && data.document_id
+                      ? (data.document_id as string)
+                      : undefined,
+                  version_id:
+                    typeof data.version_id === "string" && data.version_id
+                      ? (data.version_id as string)
+                      : undefined,
+                  version_number:
+                    typeof data.version_number === "number"
+                      ? (data.version_number as number)
+                      : null,
+                  source_document_id:
+                    typeof data.source_document_id === "string"
+                      ? (data.source_document_id as string)
+                      : undefined,
+                  download_url:
+                    typeof data.download_url === "string"
+                      ? (data.download_url as string)
+                      : undefined,
+                  accepted:
+                    typeof data.accepted === "number"
+                      ? (data.accepted as number)
+                      : undefined,
+                  comments_removed:
+                    typeof data.comments_removed === "number"
+                      ? (data.comments_removed as number)
+                      : undefined,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                  isStreaming: false,
+                }),
+              );
+              if (!replaced) {
+                pushEvent({
+                  type: "doc_finalized",
+                  filename: data.filename as string,
+                  source_filename: sourceFilename,
+                  error:
+                    typeof data.error === "string"
+                      ? (data.error as string)
+                      : undefined,
+                });
+              }
               pushThinkingPlaceholder();
               continue;
             }
@@ -1349,6 +2488,7 @@ export function useAssistantChat({
       finalizeStreamingReasoning();
       setIsResponseLoading(false);
       setIsLoadingCitations(false);
+      activeTurnRef.current = null;
 
       const finalChatId = streamedChatId || chatId || null;
       if (finalChatId && finalChatId !== chatId) {
@@ -1373,6 +2513,7 @@ export function useAssistantChat({
       return streamedChatId || null;
     } catch (error: unknown) {
       if (!isCurrentRequest()) return null;
+      activeTurnRef.current = null;
       finalizeStreamingContent();
       if (error instanceof Error && error.name === "AbortError") {
         finalizeStreamingReasoning();
@@ -1417,6 +2558,17 @@ export function useAssistantChat({
     return newChatId;
   };
 
+  /**
+   * Reattach to a turn the server is still writing (GET /chat reported an
+   * assistant row with status "running"). Shows it as working, disables the
+   * composer through isResponseLoading, and lets Stop cancel it.
+   */
+  const attachToTurn = (assistantMessageId: string): Promise<string | null> =>
+    handleChat(
+      { role: "user", content: "" },
+      { resumeTurn: { assistantMessageId } },
+    );
+
   return {
     messages,
     isResponseLoading,
@@ -1424,6 +2576,7 @@ export function useAssistantChat({
     isLoadingCitations,
     handleChat,
     handleNewChat,
+    attachToTurn,
     setMessages,
     cancel,
     resetChat: () => {

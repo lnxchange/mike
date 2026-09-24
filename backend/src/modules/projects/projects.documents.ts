@@ -23,25 +23,85 @@ import {
   attachDocumentOwnerLabels,
 } from "./projects.shared";
 
+const DOCUMENT_LIST_PAGE = 1000;
+
+async function listPushedExternalCopies(db: Db, documentIds: string[]) {
+  const copies: {
+    id: string;
+    external_provider: string | null;
+    external_item_id: string;
+    external_ctag: string | null;
+  }[] = [];
+  for (let offset = 0; offset < documentIds.length; offset += 200) {
+    const slice = documentIds.slice(offset, offset + 200);
+    const { data } = await db
+      .from("document_versions")
+      .select("id, external_provider, external_item_id, external_ctag")
+      .in("document_id", slice)
+      .not("external_item_id", "is", null);
+    for (const row of data ?? []) {
+      const version = row as {
+        id?: string;
+        external_provider?: string | null;
+        external_item_id?: string | null;
+        external_ctag?: string | null;
+      };
+      if (!version.id || !version.external_item_id) continue;
+      copies.push({
+        id: version.id,
+        external_provider: version.external_provider ?? "sharepoint",
+        external_item_id: version.external_item_id,
+        external_ctag: version.external_ctag ?? null,
+      });
+    }
+  }
+  return copies;
+}
+
 export async function listProjectDocuments(
   db: Db,
-  args: { projectId: string; userId: string; userEmail?: string },
+  args: {
+    projectId: string;
+    userId: string;
+    userEmail?: string;
+    /** Sync clients only need external ids; skip version-path enrichment. */
+    lite?: boolean;
+  },
 ): Promise<{ ok: true; docs: unknown } | { ok: false; kind: "forbidden" }> {
-  const { projectId, userId, userEmail } = args;
+  const { projectId, userId, userEmail, lite = false } = args;
 
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok) return { ok: false, kind: "forbidden" };
 
-  const { data: docs } = await db
-    .from("documents")
-    .select("*")
-    .eq("project_id", projectId)
-    .order("created_at", { ascending: true });
-  const docsTyped = (docs ?? []) as unknown as {
+  const columns = lite
+    ? "id, external_provider, external_item_id, external_ctag"
+    : "*";
+  const docsTyped: {
     id: string;
     current_version_id?: string | null;
-  }[];
-  await attachActiveVersionPaths(db, docsTyped);
+  }[] = [];
+  for (let offset = 0; ; offset += DOCUMENT_LIST_PAGE) {
+    const { data: docs } = await db
+      .from("documents")
+      .select(columns)
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true })
+      .range(offset, offset + DOCUMENT_LIST_PAGE - 1);
+    const page = (docs ?? []) as unknown as {
+      id: string;
+      current_version_id?: string | null;
+    }[];
+    docsTyped.push(...page);
+    if (page.length < DOCUMENT_LIST_PAGE) break;
+  }
+  if (!lite) await attachActiveVersionPaths(db, docsTyped);
+  if (lite && docsTyped.length > 0) {
+    const copies = await listPushedExternalCopies(
+      db,
+      docsTyped.map((doc) => doc.id),
+    );
+    docsTyped.push(...copies);
+  }
   return { ok: true, docs: docsTyped };
 }
 

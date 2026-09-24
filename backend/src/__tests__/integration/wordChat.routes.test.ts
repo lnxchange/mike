@@ -146,6 +146,10 @@ vi.mock("../../modules/chat/engine/index", async (importOriginal) => {
 vi.mock("../../modules/user/user.settings", () => ({
   getUserModelSettings: vi.fn(async () => ({
     legal_research_us: false,
+    legal_research_au: false,
+    legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
     title_model: "test-model",
     tabular_model: "test-model",
     last_selected_chat_model: null,

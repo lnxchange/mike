@@ -11,6 +11,7 @@ import { SettingsCard } from "@/app/components/settings/SettingsCard";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";
 import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { appConfig } from "@/config";
 
 export default function AppearancePage() {
   const { profile, updateDarkMode } = useUserProfile();
@@ -45,7 +46,7 @@ export default function AppearancePage() {
           <div className="min-w-0 space-y-1">
             <SettingsLabel>Dark mode</SettingsLabel>
             <SettingsDescription>
-              Use a darker color palette throughout Mike.
+              Use a darker color palette throughout {appConfig.branding.appName}.
             </SettingsDescription>
             {darkModeError && (
               <p role="alert" className="text-xs text-red-600">

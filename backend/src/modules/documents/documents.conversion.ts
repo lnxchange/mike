@@ -4,6 +4,7 @@ import { type ConversionJobData } from "../../lib/queue/conversionQueue";
 import { downloadFile, uploadFile } from "../../lib/storage";
 import { docxToPdf, convertedPdfKey } from "../../lib/convert";
 import { createServerSupabase, type Db } from "../../lib/supabase";
+import { enqueueMatterBriefForDocument } from "../memory/memory.service";
 
 /**
  * Convert one uploaded DOCX/DOC to PDF and finalize the document.
@@ -105,6 +106,7 @@ export async function runConversionJob(
             throw new Error(
                 `[conversion-worker] document finalize failed: ${error.message}`,
             );
+        await enqueueMatterBriefForDocument(db, documentId);
     }
     if (pdfBuf)
         console.log("[conversion-worker] converted", { documentId, versionId });

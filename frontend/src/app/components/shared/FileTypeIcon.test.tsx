@@ -13,6 +13,9 @@ describe("fileTypeKind", () => {
         expect(fileTypeKind("xls")).toBe("excel");
         expect(fileTypeKind("pptx")).toBe("ppt");
         expect(fileTypeKind("ppt")).toBe("ppt");
+        expect(fileTypeKind("eml")).toBe("email");
+        expect(fileTypeKind("Re: advice.msg")).toBe("email");
+        expect(fileTypeKind("matter.zip")).toBe("archive");
     });
 
     it("maps filenames by their extension", () => {
@@ -65,6 +68,13 @@ describe("FileTypeIcon", () => {
     it("renders a grey icon for unknown types", () => {
         const { container } = render(<FileTypeIcon fileType={null} />);
         expect(svgOf(container)).toHaveClass("text-gray-500");
+    });
+
+    it("renders a distinct glyph for emails and archives", () => {
+        const email = render(<FileTypeIcon fileType="eml" />);
+        expect(svgOf(email.container)).toHaveClass("lucide-mail");
+        const archive = render(<FileTypeIcon fileType="zip" />);
+        expect(svgOf(archive.container)).toHaveClass("lucide-folder-archive");
     });
 
     it("renders a muted grayscale image for a known kind", () => {

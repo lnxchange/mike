@@ -9,6 +9,7 @@
 // is delicate. Only the pre-stream preparation lives here.
 
 import type { Db } from "../../lib/supabase";
+import { withAuExecutionBlocksPrompt } from "../../lib/auExecutionBlocks";
 import {
     buildProjectDocContext,
     buildMessages,
@@ -55,7 +56,10 @@ You are operating within a project folder that contains a collection of legal do
 A document may currently be displayed in the user's side panel; when provided, treat it as context for the user's likely focus, but do NOT assume it is the only or definitive document the user is asking about. If the request could apply to other files in the project, identify and read those as well. Prefer coverage across the relevant project documents over an over-narrow reading of only the displayed one.
 
 REPLICATING A DOCUMENT:
-Copies created with replicate_document are saved as project documents in this project. After replication, use the returned doc_id for any requested edits.`;
+Copies created with replicate_document are saved as project documents in this project. After replication, use the returned doc_id for any requested edits.
+
+LIBRARY LOOKUP:
+Project documents are only the files already on this matter. To use a letterhead or other Library Template, call search_library, then replicate_document into this project. Do not call generate_docx when a matching template exists.`;
 
 // Persist the assistant's turn for a project chat.
 //
@@ -113,6 +117,10 @@ export type PreparedProjectChatStream = {
     apiMessages: ReturnType<typeof buildMessages>;
     workflowStore: Awaited<ReturnType<typeof buildWorkflowStore>>;
     legalResearchUs: boolean;
+    legalResearchAu: boolean;
+    legalResearchAuEnergy: boolean;
+    legalResearchAuVic: boolean;
+    legalResearchAuCases: boolean;
     apiKeys: Awaited<ReturnType<typeof getUserModelSettings>>["api_keys"];
     titleModel: Awaited<ReturnType<typeof getUserModelSettings>>["title_model"];
     selectedModel: string;
@@ -464,12 +472,16 @@ export async function prepareProjectChatStream(
         const {
             api_keys: apiKeys,
             legal_research_us: legalResearchUs,
+            legal_research_au: legalResearchAu,
+            legal_research_au_energy: legalResearchAuEnergy,
+            legal_research_au_vic: legalResearchAuVic,
+            legal_research_au_cases: legalResearchAuCases,
             title_model: titleModel,
             personalisation,
         } = modelSettings;
-        const personalisationPrompt = buildUserPersonalisationPrompt(
-            personalisation,
-            nonce,
+        const personalisationPrompt = withAuExecutionBlocksPrompt(
+            buildUserPersonalisationPrompt(personalisation, nonce) || undefined,
+            personalisation?.jurisdiction,
         );
         if (personalisationPrompt) {
             systemPromptExtra += `\n\n${personalisationPrompt}`;
@@ -479,7 +491,13 @@ export async function prepareProjectChatStream(
             docAvailability,
             systemPromptExtra,
             undefined,
-            legalResearchUs,
+            {
+                us: legalResearchUs,
+                au: legalResearchAu,
+                energy: legalResearchAuEnergy,
+                vic: legalResearchAuVic,
+                cases: legalResearchAuCases,
+            },
             nonce,
         );
 
@@ -500,6 +518,10 @@ export async function prepareProjectChatStream(
                 apiMessages,
                 workflowStore,
                 legalResearchUs,
+                legalResearchAu,
+                legalResearchAuEnergy,
+                legalResearchAuVic,
+                legalResearchAuCases,
                 apiKeys,
                 titleModel,
                 selectedModel,

@@ -1,0 +1,296 @@
+import { normalizeMailboxSubject } from "../../lib/emailMessage";
+import { logError } from "../../lib/log";
+import {
+  appendOutlookSignature,
+  extractOutlookSignatureHtml,
+  outlookInnerHtmlFromDraftBody,
+  referencedContentIds,
+  wrapOutlookHtmlDocument,
+} from "../../lib/outlookDraftHtml";
+import type { Db } from "../../lib/supabase";
+import {
+  GraphAuthError,
+  GraphRequestError,
+  addFileAttachment,
+  createDraftMessage,
+  createReplyDraft,
+  findMessageByInternetMessageId,
+  getMessageHtml,
+  listInlineFileAttachments,
+  listRecentSentMessageBodies,
+  patchDraftMessage,
+  searchMailboxMessages,
+} from "./integrations.graph";
+import {
+  deleteMicrosoftTokens,
+  getGraphAccessToken,
+} from "./integrations.microsoftAuth";
+import {
+  MAX_OUTLOOK_ATTACHMENT_BYTES,
+  MAX_OUTLOOK_ATTACHMENTS,
+  type CreateOutlookDraftInput,
+  type GraphMessage,
+  type OutlookAttachment,
+  type OutlookDraftResult,
+  type OutlookThreadStatus,
+} from "./integrations.shared";
+
+function matchingInlineImages(
+  needed: string[],
+  attachments: OutlookAttachment[],
+): OutlookAttachment[] {
+  if (!needed.length) return [];
+  return attachments.filter((attachment) => {
+    const contentId = attachment.contentId;
+    if (!contentId) return false;
+    return needed.some(
+      (id) =>
+        id === contentId ||
+        id.startsWith(`${contentId}@`) ||
+        contentId.startsWith(`${id}@`),
+    );
+  });
+}
+
+async function signatureFromHtml(
+  accessToken: string,
+  messageId: string,
+  rawHtml: string,
+): Promise<{ html: string; images: OutlookAttachment[] } | null> {
+  const html = extractOutlookSignatureHtml(rawHtml);
+  if (!html) return null;
+  const needed = referencedContentIds(html);
+  const images = needed.length
+    ? matchingInlineImages(
+        needed,
+        await listInlineFileAttachments(accessToken, messageId),
+      )
+    : [];
+  return { html, images };
+}
+
+async function loadMailboxSignature(
+  accessToken: string,
+): Promise<{ html: string; images: OutlookAttachment[] } | null> {
+  try {
+    const sent = await listRecentSentMessageBodies(accessToken);
+    for (const message of sent) {
+      const signature = await signatureFromHtml(
+        accessToken,
+        message.id,
+        message.html,
+      );
+      if (signature) return signature;
+    }
+  } catch (error) {
+    if (error instanceof GraphAuthError) throw error;
+    logError("integrations/outlook-draft", error, { stage: "signature" });
+  }
+  return null;
+}
+
+function composeStagedHtml(
+  rawBody: string,
+  signatureHtml: string | null,
+): string {
+  const inner = appendOutlookSignature(
+    outlookInnerHtmlFromDraftBody(rawBody),
+    signatureHtml ?? "",
+  );
+  return wrapOutlookHtmlDocument(inner);
+}
+
+function uniqueConversationIds(messages: GraphMessage[]) {
+  return [
+    ...new Set(
+      messages
+        .map((message) => message.conversationId)
+        .filter((id): id is string => !!id),
+    ),
+  ];
+}
+
+function newestInConversation(messages: GraphMessage[]) {
+  return [...messages].sort((left, right) => {
+    const leftTime = Date.parse(left.receivedDateTime ?? "") || 0;
+    const rightTime = Date.parse(right.receivedDateTime ?? "") || 0;
+    return rightTime - leftTime;
+  })[0];
+}
+
+function mailboxSearchQuery(subject: string, participants: string[]) {
+  const terms = [
+    normalizeMailboxSubject(subject),
+    ...participants.map((address) => address.trim()).filter(Boolean),
+  ]
+    .map((term) => term.replace(/["\\]/g, "").trim())
+    .filter(Boolean);
+  return terms.join(" AND ");
+}
+
+async function resolveThreadMessage(
+  accessToken: string,
+  input: CreateOutlookDraftInput,
+): Promise<GraphMessage | null | "ambiguous"> {
+  if (input.inReplyToInternetMessageId) {
+    try {
+      const exact = await findMessageByInternetMessageId(
+        accessToken,
+        input.inReplyToInternetMessageId,
+      );
+      if (exact) return exact;
+    } catch (error) {
+      if (error instanceof GraphAuthError) throw error;
+      logError("integrations/outlook-draft", error, {
+        stage: "message-id-lookup",
+      });
+    }
+  }
+
+  const participants = [...input.to, ...(input.cc ?? [])];
+  const query = mailboxSearchQuery(input.subject, participants);
+  if (!query) return null;
+
+  try {
+    const matches = await searchMailboxMessages(accessToken, query);
+    if (matches.length === 0) return null;
+    const conversations = uniqueConversationIds(matches);
+    if (conversations.length !== 1) return "ambiguous";
+    return newestInConversation(matches) ?? null;
+  } catch (error) {
+    if (error instanceof GraphAuthError) throw error;
+    logError("integrations/outlook-draft", error, { stage: "mailbox-search" });
+    return null;
+  }
+}
+
+export async function createOutlookDraft(
+  db: Db,
+  userId: string,
+  input: CreateOutlookDraftInput,
+): Promise<OutlookDraftResult> {
+  const attachments = input.attachments ?? [];
+  if (attachments.length > MAX_OUTLOOK_ATTACHMENTS) {
+    return {
+      kind: "error",
+      message: "A draft can attach at most 25 files.",
+    };
+  }
+  const oversized = attachments.find(
+    (attachment) => attachment.bytes.length > MAX_OUTLOOK_ATTACHMENT_BYTES,
+  );
+  if (oversized) {
+    return {
+      kind: "error",
+      message: "An attached file is larger than Outlook allows.",
+    };
+  }
+
+  const token = await getGraphAccessToken(db, userId);
+  if (token.kind === "outlook_auth_required") return token;
+
+  try {
+    let signature = await loadMailboxSignature(token.accessToken);
+    let htmlBody = composeStagedHtml(input.htmlBody, signature?.html ?? null);
+    let inlineAttachments = signature?.images ?? [];
+    // A reply draft Outlook just created already carries the mailbox signature.
+    // Replacing the body without copying it would drop the signature when sent
+    // mail did not yield one. Those images are already on the draft.
+    let signatureAlreadyOnDraft = false;
+    const thread = await resolveThreadMessage(token.accessToken, input);
+    let drafted: GraphMessage;
+    let threaded = false;
+    let threadStatus: OutlookThreadStatus = "new";
+    if (thread && thread !== "ambiguous" && thread.id) {
+      drafted = await createReplyDraft(token.accessToken, thread.id);
+      if (!drafted.id) throw new Error("graph_request_failed");
+      if (!signature) {
+        try {
+          const existing = await getMessageHtml(token.accessToken, drafted.id);
+          if (existing) {
+            const fromReply = await signatureFromHtml(
+              token.accessToken,
+              drafted.id,
+              existing,
+            );
+            if (fromReply) {
+              signature = fromReply;
+              htmlBody = composeStagedHtml(input.htmlBody, fromReply.html);
+              inlineAttachments = [];
+              signatureAlreadyOnDraft = true;
+            }
+          }
+        } catch (error) {
+          if (error instanceof GraphAuthError) throw error;
+          logError("integrations/outlook-draft", error, {
+            stage: "reply-signature",
+          });
+        }
+      }
+      drafted = await patchDraftMessage(token.accessToken, drafted.id, {
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        subject: input.subject,
+        htmlBody,
+      });
+      threaded = true;
+      threadStatus = "matched";
+    } else {
+      drafted = await createDraftMessage(token.accessToken, {
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        subject: input.subject,
+        htmlBody,
+        inlineAttachments,
+      });
+      threadStatus = thread === "ambiguous" ? "ambiguous" : "not_found";
+    }
+    if (!drafted.id) throw new Error("graph_request_failed");
+
+    if (threaded && !signatureAlreadyOnDraft) {
+      for (const image of inlineAttachments) {
+        await addFileAttachment(token.accessToken, drafted.id, image);
+      }
+    }
+    for (const attachment of attachments) {
+      await addFileAttachment(token.accessToken, drafted.id, attachment);
+    }
+
+    return {
+      kind: "outlook_draft_created",
+      webLink: drafted.webLink ?? "",
+      subject: input.subject,
+      to: input.to,
+      attachmentNames: attachments.map((attachment) => attachment.filename),
+      threaded,
+      threadStatus,
+    };
+  } catch (error) {
+    if (error instanceof GraphAuthError) {
+      if (error.invalidGrant) {
+        await deleteMicrosoftTokens(db, userId).catch(() => undefined);
+      }
+      return { kind: "outlook_auth_required" };
+    }
+    logError("integrations/outlook-draft", error, {
+      stage: "create",
+      status: error instanceof GraphRequestError ? error.status : undefined,
+      graphCode: error instanceof GraphRequestError ? error.graphCode : undefined,
+      operation:
+        error instanceof GraphRequestError ? error.operation : undefined,
+    });
+    if (error instanceof GraphRequestError && error.status === 403) {
+      return {
+        kind: "error",
+        message:
+          "Microsoft did not allow mailbox access. Reconnect Microsoft from Settings.",
+      };
+    }
+    return {
+      kind: "error",
+      message: "The Outlook draft could not be created.",
+    };
+  }
+}

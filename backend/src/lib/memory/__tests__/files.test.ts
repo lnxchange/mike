@@ -14,6 +14,7 @@ const file: MemoryFileRow = {
   scope: "user",
   user_id: "user-1",
   project_id: null,
+  org_id: null,
   enabled: true,
   epoch: 9,
   revision: 3,
@@ -57,6 +58,43 @@ beforeEach(() => {
 });
 
 describe("direct memory file writes", () => {
+  it("creates a missing org memory file enabled by default", async () => {
+    const orgFile: MemoryFileRow = {
+      ...file,
+      id: "org-file-1",
+      scope: "org",
+      user_id: null,
+      project_id: null,
+      org_id: "org-1",
+      content: "",
+      content_sha256: null,
+      size_bytes: 0,
+      revision: 0,
+    };
+    const maybeSingle = vi
+      .fn()
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({ data: orgFile, error: null });
+    const builder: Record<string, ReturnType<typeof vi.fn>> = {};
+    builder.select = vi.fn(() => builder);
+    builder.eq = vi.fn(() => builder);
+    builder.upsert = vi.fn(() => builder);
+    builder.maybeSingle = maybeSingle;
+    const db = { from: vi.fn(() => builder) };
+
+    await expect(
+      ensureMemoryFile(db as never, "org", "org-1"),
+    ).resolves.toEqual(orgFile);
+    expect(builder.upsert).toHaveBeenCalledWith(
+      {
+        scope: "org",
+        org_id: "org-1",
+        enabled: true,
+      },
+      { onConflict: "org_id", ignoreDuplicates: true },
+    );
+  });
+
   it("creates a missing project memory file enabled by default", async () => {
     const projectFile: MemoryFileRow = {
       ...file,
@@ -64,6 +102,7 @@ describe("direct memory file writes", () => {
       scope: "project",
       user_id: null,
       project_id: "project-1",
+      org_id: null,
       content: "",
       content_sha256: null,
       size_bytes: 0,
@@ -103,6 +142,11 @@ describe("direct memory file writes", () => {
       .toThrow("content contains executable HTML");
     expect(() => normalizeMemoryMarkdown('<a href="javascript:run()">x</a>'))
       .toThrow("content contains executable HTML");
+    expect(
+      normalizeMemoryMarkdown(
+        "<!-- matter-status:start -->\nAs at 18 September 2026.\n<!-- matter-status:end -->\n",
+      ),
+    ).toContain("matter-status:start");
   });
 
   it("sends the normalized body, its digest and size under the loaded CAS token", async () => {

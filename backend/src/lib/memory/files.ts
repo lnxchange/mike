@@ -3,7 +3,7 @@ import type { Db } from "../dbq/types";
 
 export const MEMORY_MAX_BYTES = 16 * 1024;
 
-export type MemoryScope = "user" | "project";
+export type MemoryScope = "user" | "project" | "org";
 export type MemoryStatus = "idle" | "scheduled" | "processing" | "failed";
 export type MemorySource = "manual" | "curator";
 export type MemorySurface = "chat" | "word" | "tabular";
@@ -25,6 +25,7 @@ export type MemoryFileRow = {
   scope: MemoryScope;
   user_id: string | null;
   project_id: string | null;
+  org_id: string | null;
   enabled: boolean;
   epoch: number | string;
   revision: number | string;
@@ -94,12 +95,24 @@ function memoryHash(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+export function memoryOwnerColumn(
+  scope: MemoryScope,
+): "user_id" | "project_id" | "org_id" {
+  if (scope === "user") return "user_id";
+  if (scope === "org") return "org_id";
+  return "project_id";
+}
+
+export function memoryOwnerId(file: Pick<MemoryFileRow, "user_id" | "project_id" | "org_id">): string {
+  return (file.user_id ?? file.project_id ?? file.org_id) as string;
+}
+
 export async function ensureMemoryFile(
   db: Db,
   scope: MemoryScope,
   ownerId: string,
 ): Promise<MemoryFileRow> {
-  const ownerColumn = scope === "user" ? "user_id" : "project_id";
+  const ownerColumn = memoryOwnerColumn(scope);
   const { data: existing, error: readError } = await db
     .from("memory_files")
     .select("*")
@@ -182,7 +195,7 @@ export async function writeMemoryFile(args: {
   const fresh = await ensureMemoryFile(
     args.db,
     args.file.scope,
-    (args.file.user_id ?? args.file.project_id) as string,
+    memoryOwnerId(args.file),
   );
   if (!fresh.enabled) throw new MemoryDisabledError("Memory is disabled");
   const expectedEpoch =
@@ -254,7 +267,7 @@ export async function writeMemoryFile(args: {
     current: (await getMemoryCurrent(
       args.db,
       fresh.scope,
-      (fresh.user_id ?? fresh.project_id) as string,
+      memoryOwnerId(fresh),
     )).current,
   };
 }
@@ -307,7 +320,7 @@ export async function enableMemoryFile(
       await getMemoryCurrent(
         db,
         file.scope,
-        (file.user_id ?? file.project_id) as string,
+        memoryOwnerId(file),
       )
     ).current;
   }

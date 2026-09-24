@@ -10,6 +10,14 @@ and Cloudflare R2-compatible object storage.
 
 Website: [mikeoss.com](https://mikeoss.com)
 
+This `lnxchange/mike` fork keeps `main` as a clean mirror of upstream
+(`open-legal-products/mike`) and carries deployment-profile / setup work on
+the working branch. Fork-specific notes:
+
+- [`config/README.md`](./config/README.md) — branding and deployment-profile layer (`DEPLOYMENT_PROFILE` / `NEXT_PUBLIC_DEPLOYMENT_PROFILE`)
+- [`QUICKSTART.md`](./QUICKSTART.md), [`SETUP_AUDIT.md`](./SETUP_AUDIT.md), [`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md), [`API_BOUNDARY.md`](./API_BOUNDARY.md), [`TESTING.md`](./TESTING.md) — written against the May 2026 tree; treat them as historical until they are refreshed against the current Compose / same-origin `/api` gateway architecture
+- [`docs/integrations/`](./docs/integrations/) — design notes for planned integrations
+
 ![Mike assistant home screen](docs/assets/mike-home.png)
 
 ## Features
@@ -79,6 +87,7 @@ authentication behavior, Ollama setup, and first-run guidance.
 - [Tamper-evident exports](docs/tamper-evident-exports.md)
 - [Safe local testing](docs/safe-local-testing.md)
 - [End-to-end testing and CI](docs/e2e-ci.md)
+- [Deployment-profile config layer](config/README.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 

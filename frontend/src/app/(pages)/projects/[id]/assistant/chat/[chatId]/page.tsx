@@ -37,7 +37,7 @@ import {
     moveSubfolderToFolder,
     resolveProjectFolderPath,
 } from "@/app/lib/mikeApi";
-import { useAssistantChat } from "@/app/hooks/useAssistantChat";
+import { findRunningTurn, useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useAssistantMessageLayout } from "@/app/hooks/useAssistantMessageLayout";
 import { useProjectPicker } from "@/app/hooks/useProjectPicker";
 import {
@@ -58,6 +58,7 @@ import {
     type ProjectExplorerHandle,
 } from "@/app/components/projects/ProjectExplorer";
 import { ProjectMemoryModal } from "@/app/components/projects/ProjectMemoryModal";
+import { useProjectWorkspaceOptional } from "@/app/components/projects/ProjectWorkspace";
 import { ChatPanelHeader } from "@/app/components/shared/ChatPanelHeader";
 import { ProjectDocumentTabs } from "@/app/components/projects/ProjectDocumentTabs";
 import {
@@ -73,7 +74,7 @@ import { DocumentUploadMenu } from "@/app/components/shared/DocumentUploadMenu";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import { PermissionDeniedPopup } from "@/app/components/popups/PermissionDeniedPopup";
-import { MikeIcon } from "@/app/components/chat/mike-icon";
+import { BrandMark } from "@/app/components/brand-mark";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { useSidebar } from "@/app/contexts/SidebarContext";
@@ -107,6 +108,9 @@ import {
     type DocumentUploadEntry,
 } from "@/app/lib/documentDirectoryUpload";
 import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 interface Props {
     params: Promise<{ id: string; chatId?: string }>;
@@ -198,7 +202,7 @@ function AssistantGreeting({ username }: { username: string }) {
                             "transform 900ms cubic-bezier(0.25, 0.46, 0.45, 0.94)",
                     }}
                 >
-                    <MikeIcon size={ICON_SIZE} />
+                    <BrandMark size={ICON_SIZE} />
                 </div>
                 <h1
                     ref={textRef}
@@ -276,6 +280,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const { setSidebarOpen } = useSidebar();
     const { user, authLoading } = useAuth();
     const { profile } = useUserProfile();
+    const sharepointIngest =
+        useProjectWorkspaceOptional()?.sharepointIngest ?? null;
     const username =
         profile?.displayName?.trim() || user?.email?.split("@")[0] || "there";
     const explorerDownload = useExplorerDownload();
@@ -391,6 +397,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         messages,
         isResponseLoading,
         handleChat,
+        attachToTurn,
         setMessages,
         cancel,
         resetChat,
@@ -551,6 +558,12 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     edited.add(
                         `${ev.document_id}:${ev.version_id ?? ""}:${ev.version_number ?? ""}`,
                     );
+                    continue;
+                }
+                if (ev.type === "doc_finalized" && ev.document_id) {
+                    created.push(
+                        `${ev.document_id}:${ev.version_id ?? ""}:${ev.filename}`,
+                    );
                 }
             }
         }
@@ -608,6 +621,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 setChatModel(chat.model ?? null);
                 setChatReasoningLevel(chat.reasoning_level ?? null);
                 setMessages(loaded);
+                // A turn the server is still writing (the user navigated away
+                // mid-turn) is shown live again rather than as unanswered.
+                const running = findRunningTurn(loaded);
+                if (running?.id) void attachToTurn(running.id);
                 setProjectChats((current) => {
                     if (!current) return current;
                     const nextChat = { ...chat, project_id: projectId };
@@ -751,7 +768,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     };
 
     const handleCitationClick = (citation: Citation) => {
-        if (citation.kind === "case") return;
+        if (citation.kind === "case" || citation.kind === "legislation") return;
         openTab(
             citation.document_id,
             citation.filename,
@@ -947,7 +964,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         if (!canEditContent) {
             // Only accuse somebody of lacking a role once we know they do.
             if (projectRole) {
-                setEditorGateAction("upload documents to this project");
+                setEditorGateAction(
+                    `upload documents to this ${t.projectLower}`,
+                );
             }
             return;
         }
@@ -1569,7 +1588,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                     triggerClassName="h-6 w-6 text-gray-500 hover:text-gray-900"
                                     items={[
                                         {
-                                            label: "Select project",
+                                            label: `Select ${t.projectLower}`,
                                             icon: FolderOpen,
                                             onSelect: () =>
                                                 void projectPicker.openPicker(),
@@ -1582,7 +1601,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             disabled: !canEditContent,
                                         },
                                         {
-                                            label: "Go to project page",
+                                            label: `Go to ${t.projectLower} page`,
                                             icon: ArrowUpRight,
                                             onSelect: () =>
                                                 router.push(
@@ -1662,6 +1681,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                 onMoveDoc={handleMoveDoc}
                                 onMoveFolder={handleMoveFolder}
                                 uploadingDocuments={uploadingDocuments}
+                                sharepointIngest={sharepointIngest}
                             />
                         </div>
                     </div>
@@ -1976,6 +1996,12 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         { askInputsResponse: response },
                                     );
                                 }}
+                                onContinue={() => {
+                                    void handleSubmit({
+                                        role: "user",
+                                        content: "Continue with the next step.",
+                                    });
+                                }}
                                 onCancel={cancel}
                             >
                                 <ChatInput
@@ -2006,7 +2032,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     onClose={() => setAddDocumentsOpen(false)}
                     onSelect={(documents) => addUploadedDocuments(documents)}
                     breadcrumb={[
-                        "Projects",
+                        t.projects,
                         project.name +
                             (project.cm_number
                                 ? ` (${project.cm_number})`
@@ -2020,7 +2046,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             <WarningPopup
                 open={!!projectPicker.error}
                 onClose={projectPicker.clearError}
-                title="Projects could not be loaded"
+                title={`${t.projects} could not be loaded`}
                 message={projectPicker.error ?? ""}
             />
             <WarningPopup
@@ -2036,9 +2062,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 loading={projectPicker.loading}
                 selectedId={projectPicker.selectedId}
                 onSelect={projectPicker.setSelectedId}
-                breadcrumbs={["IDE", "Select project"]}
+                breadcrumbs={["IDE", `Select ${t.projectLower}`]}
                 primaryAction={{
-                    label: "Select project",
+                    label: `Select ${t.projectLower}`,
                     type: "button",
                     onClick: selectProject,
                     disabled: !projectPicker.selectedId,

@@ -24,6 +24,7 @@ import { parsePaginationQuery } from "../../lib/pagination";
 import { normalizeSearchTerm } from "../../lib/search";
 import {
   normalizeLibraryKind,
+  resolveLibraryActor,
   getLibrary,
   searchLibraryDocuments,
   getLibraryLevels,
@@ -59,7 +60,11 @@ type LibraryDocumentSortKey =
   | "size"
   | "version"
   | "created"
-  | "updated";
+  | "updated"
+  | "arrived"
+  | "from"
+  | "to"
+  | "subject";
 
 const LIBRARY_DOCUMENT_SORT_KEYS: LibraryDocumentSortKey[] = [
   "name",
@@ -68,6 +73,10 @@ const LIBRARY_DOCUMENT_SORT_KEYS: LibraryDocumentSortKey[] = [
   "version",
   "created",
   "updated",
+  "arrived",
+  "from",
+  "to",
+  "subject",
 ];
 
 function parseLibraryDocumentSort(query: Record<string, unknown>): {
@@ -93,6 +102,7 @@ libraryRouter.get("/:kind", requireAuth, asyncRoute(async (req, res) => {
   if (!kind) return void res.status(404).json({ detail: "Library not found" });
 
   const db = createServerSupabase();
+  const actor = await resolveLibraryActor(db, userId);
   const pagination = parsePaginationQuery(req.query as Record<string, unknown>);
   if (req.query.view === "search") {
     const searchTerm = normalizeSearchTerm(req.query.search);
@@ -101,7 +111,7 @@ libraryRouter.get("/:kind", requireAuth, asyncRoute(async (req, res) => {
     const sort = parseLibraryDocumentSort(req.query as Record<string, unknown>);
     const result = await searchLibraryDocuments(
       db,
-      userId,
+      actor,
       kind,
       searchTerm,
       fileType,
@@ -114,7 +124,7 @@ libraryRouter.get("/:kind", requireAuth, asyncRoute(async (req, res) => {
   }
 
   const parentFolderId = normalizeSearchTerm(req.query.parent_folder_id);
-  const result = await getLibrary(db, userId, kind, parentFolderId, pagination);
+  const result = await getLibrary(db, actor, kind, parentFolderId, pagination);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.json(result.data);
@@ -152,7 +162,8 @@ libraryRouter.post("/:kind/levels", requireAuth, asyncRoute(async (req, res) => 
   }
 
   const db = createServerSupabase();
-  const result = await getLibraryLevels(db, userId, kind, levels);
+  const actor = await resolveLibraryActor(db, userId);
+  const result = await getLibraryLevels(db, actor, kind, levels);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.json(result.data);
@@ -165,7 +176,8 @@ libraryRouter.get("/:kind/filter-options", requireAuth, asyncRoute(async (req, r
   if (!kind) return void res.status(404).json({ detail: "Library not found" });
 
   const db = createServerSupabase();
-  const result = await getLibraryFilterOptions(db, userId, kind);
+  const actor = await resolveLibraryActor(db, userId);
+  const result = await getLibraryFilterOptions(db, actor, kind);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.json(result.data);
@@ -179,10 +191,11 @@ libraryRouter.get("/:kind/ids", requireAuth, asyncRoute(async (req, res) => {
   if (!kind) return void res.status(404).json({ detail: "Library not found" });
 
   const db = createServerSupabase();
+  const actor = await resolveLibraryActor(db, userId);
   const searchTerm = normalizeSearchTerm(req.query.search);
   const fileType =
     normalizeSearchTerm(req.query.file_type)?.toLowerCase() ?? null;
-  const result = await getLibraryDocumentIds(db, userId, kind, searchTerm, fileType);
+  const result = await getLibraryDocumentIds(db, actor, kind, searchTerm, fileType);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.json(result.data);
@@ -207,7 +220,8 @@ libraryRouter.post(
     if (ids.length === 0) return void res.json({ deletedIds: [] });
 
     const db = createServerSupabase();
-    const result = await bulkDeleteLibraryDocuments(db, userId, kind, ids);
+    const actor = await resolveLibraryActor(db, userId);
+    const result = await bulkDeleteLibraryDocuments(db, actor, kind, ids);
     if (!result.ok)
       return void sendServiceError(res, result);
     res.json(result.data);
@@ -221,7 +235,8 @@ libraryRouter.get("/:kind/folders/:folderId", requireAuth, asyncRoute(async (req
   if (!kind) return void res.status(404).json({ detail: "Library not found" });
 
   const db = createServerSupabase();
-  const result = await getLibraryFolderPath(db, userId, kind, req.params.folderId);
+  const actor = await resolveLibraryActor(db, userId);
+  const result = await getLibraryFolderPath(db, actor, kind, req.params.folderId);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.json(result.data);
@@ -240,11 +255,13 @@ libraryRouter.post(
 
     const body = req.body as {
       base_folder_id?: string | null;
+      org_id?: string | null;
       segments?: unknown;
       conflict_resolution?: unknown;
     };
     const db = createServerSupabase();
-    const result = await resolveLibraryFolderPath(db, userId, kind, body);
+    const actor = await resolveLibraryActor(db, userId);
+    const result = await resolveLibraryFolderPath(db, actor, kind, body);
     if (!result.ok) return void sendServiceError(res, result);
     res.json(result.data);
   }),
@@ -256,9 +273,14 @@ libraryRouter.post("/:kind/folders", requireAuth, asyncRoute(async (req, res) =>
   const kind = normalizeLibraryKind(req.params.kind);
   if (!kind) return void res.status(404).json({ detail: "Library not found" });
 
-  const body = req.body as { name?: string; parent_folder_id?: string | null };
+  const body = req.body as {
+    name?: string;
+    parent_folder_id?: string | null;
+    org_id?: string | null;
+  };
   const db = createServerSupabase();
-  const result = await createLibraryFolder(db, userId, kind, body);
+  const actor = await resolveLibraryActor(db, userId);
+  const result = await createLibraryFolder(db, actor, kind, body);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.status(201).json(result.data);
@@ -273,7 +295,8 @@ libraryRouter.patch("/:kind/folders/:folderId", requireAuth, asyncRoute(async (r
   const { folderId } = req.params;
   const body = req.body as { name?: string; parent_folder_id?: string | null };
   const db = createServerSupabase();
-  const result = await updateLibraryFolder(db, userId, kind, folderId, body);
+  const actor = await resolveLibraryActor(db, userId);
+  const result = await updateLibraryFolder(db, actor, kind, folderId, body);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.json(result.data);
@@ -287,7 +310,8 @@ libraryRouter.delete("/:kind/folders/:folderId", requireAuth, asyncRoute(async (
 
   const { folderId } = req.params;
   const db = createServerSupabase();
-  const result = await deleteLibraryFolder(db, userId, kind, folderId);
+  const actor = await resolveLibraryActor(db, userId);
+  const result = await deleteLibraryFolder(db, actor, kind, folderId);
   if (!result.ok)
     return void sendServiceError(res, result);
   res.status(204).send();
@@ -305,7 +329,8 @@ libraryRouter.patch(
     const { documentId } = req.params;
     const { folder_id } = req.body as { folder_id: string | null };
     const db = createServerSupabase();
-    const result = await moveLibraryDocument(db, userId, kind, documentId, folder_id);
+    const actor = await resolveLibraryActor(db, userId);
+    const result = await moveLibraryDocument(db, actor, kind, documentId, folder_id);
     if (!result.ok)
       return void sendServiceError(res, result);
     res.json(result.data);
@@ -323,9 +348,10 @@ libraryRouter.patch(
 
     const { documentId } = req.params;
     const db = createServerSupabase();
+    const actor = await resolveLibraryActor(db, userId);
     const result = await renameLibraryDocument(
       db,
-      userId,
+      actor,
       kind,
       documentId,
       req.body?.filename,

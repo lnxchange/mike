@@ -24,6 +24,7 @@ import {
     uploadProjectDocuments,
 } from "@/app/lib/mikeApi";
 import type { Document } from "@/app/components/shared/types";
+import { takePendingProjectUploads } from "@/app/lib/pendingProjectUploads";
 import { AddDocumentsModal } from "@/app/components/modals/AddDocumentsModal";
 import {
     DocTable,
@@ -45,6 +46,37 @@ interface Props {
 
 const PROJECT_DIRECTORY_PAGE_SIZE = 40;
 
+function SharePointSyncBanner({
+    ready,
+    expected,
+}: {
+    ready: number;
+    expected: number;
+}) {
+    const total = Math.max(expected, ready, 1);
+    const percent = Math.min(100, Math.round((ready / total) * 100));
+    return (
+        <div className="mx-4 mb-3 md:mx-8" role="status">
+            <p className="text-sm text-gray-700">
+                Syncing from SharePoint, {ready} of {expected} ready
+            </p>
+            <div
+                className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-200"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={percent}
+                aria-label={`Syncing from SharePoint, ${ready} of ${expected} ready`}
+            >
+                <div
+                    className="h-full rounded-full bg-gray-700"
+                    style={{ width: `${percent}%` }}
+                />
+            </div>
+        </div>
+    );
+}
+
 export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
     const router = useRouter();
     const workspace = useProjectWorkspace();
@@ -61,6 +93,7 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
         setDocumentUploadHeaderAction,
         accessRole,
         canDo,
+        sharepointIngest,
     } = workspace;
     // Null while the project row is in flight. The folder controls keep their
     // place in the toolbar during that window — removing them would reflow the
@@ -76,6 +109,12 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
     const [selectionActions, setSelectionActions] =
         useState<DocTableSelectionActions | null>(null);
     const [actionsOpen, setActionsOpen] = useState(false);
+    // Files the New Project dialog chose for this project. Taken once on
+    // mount and released to the table when it can act on them.
+    const [handoffFiles, setHandoffFiles] = useState<File[]>(() =>
+        takePendingProjectUploads(projectId),
+    );
+    const clearHandoffFiles = useCallback(() => setHandoffFiles([]), []);
     const [directoryPagination, setDirectoryPagination] = useState<{
         projectId: string;
         limits: Record<string, number>;
@@ -373,6 +412,12 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 backAction={folderBackAction}
                 actions={toolbarActions}
             />
+            {sharepointIngest ? (
+                <SharePointSyncBanner
+                    ready={sharepointIngest.ready}
+                    expected={sharepointIngest.expected}
+                />
+            ) : null}
             <DocTable
                 scopeKey={projectId}
                 documents={documents}
@@ -385,6 +430,13 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 search={search}
                 operations={operations}
                 emptyStateTitle="Documents"
+                emptyStateDescription={
+                    sharepointIngest
+                        ? `Syncing from SharePoint, ${sharepointIngest.ready} of ${sharepointIngest.expected} ready`
+                        : undefined
+                }
+                hideEmptyStateAction={sharepointIngest != null}
+                syncFiles={sharepointIngest?.files ?? []}
                 onAddDocumentsActionChange={
                     canDo("content.edit")
                         ? handleSavedFilesActionChange
@@ -434,6 +486,12 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 }
                 onOwnerOnlyAction={setOwnerOnlyAction}
                 canDo={canDo}
+                handoffUploadFiles={
+                    roleKnown && !projectLoading && !folderId
+                        ? handoffFiles
+                        : undefined
+                }
+                onHandoffUploadFilesConsumed={clearHandoffFiles}
             />
         </>
     );

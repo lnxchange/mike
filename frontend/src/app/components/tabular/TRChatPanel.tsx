@@ -11,7 +11,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Pencil, Trash2 } from "lucide-react";
-import { MikeIcon } from "@/app/components/chat/mike-icon";
+import { BrandMark } from "@/app/components/brand-mark";
 import {
     streamTabularChat,
     getTabularChats,
@@ -174,10 +174,9 @@ function TRResponseStatus({ isActive }: { isActive: boolean }) {
 
     return (
         <div className="w-full h-9 flex items-center mb-2">
-            <MikeIcon
+            <BrandMark
                 spin={isActive}
                 done={showDone && doneVisible}
-                mike={!(showDone && doneVisible)}
                 size={22}
             />
         </div>
@@ -1398,6 +1397,414 @@ export function TRChatPanel({
                             continue;
                         }
 
+                        if (data.type === "au_search_legislation_start") {
+                            pushEvent({
+                                type: "au_search_legislation",
+                                query: (data.query as string) ?? "",
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_search_legislation") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_search_legislation" &&
+                                    e.query === (data.query as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_search_legislation",
+                                    query: (data.query as string) ?? "",
+                                    result_count:
+                                        typeof data.result_count === "number"
+                                            ? (data.result_count as number)
+                                            : 0,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_get_legislation_start") {
+                            pushEvent({
+                                type: "au_get_legislation",
+                                title_id: (data.title_id as string) ?? "",
+                                section:
+                                    typeof data.section === "string"
+                                        ? (data.section as string)
+                                        : null,
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_get_legislation") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_get_legislation" &&
+                                    e.title_id === (data.title_id as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_get_legislation",
+                                    title_id: (data.title_id as string) ?? "",
+                                    name:
+                                        typeof data.name === "string"
+                                            ? (data.name as string)
+                                            : null,
+                                    section:
+                                        typeof data.section === "string"
+                                            ? (data.section as string)
+                                            : null,
+                                    as_at:
+                                        typeof data.as_at === "string"
+                                            ? (data.as_at as string)
+                                            : null,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_get_legislation_as_at_start") {
+                            pushEvent({
+                                type: "au_get_legislation_as_at",
+                                title_id: (data.title_id as string) ?? "",
+                                date: (data.date as string) ?? "",
+                                section:
+                                    typeof data.section === "string"
+                                        ? (data.section as string)
+                                        : null,
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_get_legislation_as_at") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_get_legislation_as_at" &&
+                                    e.title_id === (data.title_id as string) &&
+                                    e.date === (data.date as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_get_legislation_as_at",
+                                    title_id: (data.title_id as string) ?? "",
+                                    date: (data.date as string) ?? "",
+                                    name:
+                                        typeof data.name === "string"
+                                            ? (data.name as string)
+                                            : null,
+                                    section:
+                                        typeof data.section === "string"
+                                            ? (data.section as string)
+                                            : null,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_legislation_versions_start") {
+                            pushEvent({
+                                type: "au_legislation_versions",
+                                title_id: (data.title_id as string) ?? "",
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_legislation_versions") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_legislation_versions" &&
+                                    e.title_id === (data.title_id as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_legislation_versions",
+                                    title_id: (data.title_id as string) ?? "",
+                                    version_count:
+                                        typeof data.version_count === "number"
+                                            ? (data.version_count as number)
+                                            : 0,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_find_in_legislation_start") {
+                            pushEvent({
+                                type: "au_find_in_legislation",
+                                title_id:
+                                    typeof data.title_id === "string"
+                                        ? (data.title_id as string)
+                                        : null,
+                                query: (data.query as string) ?? "",
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_find_in_legislation") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_find_in_legislation" &&
+                                    e.title_id ===
+                                        (typeof data.title_id === "string"
+                                            ? (data.title_id as string)
+                                            : null) &&
+                                    e.query === (data.query as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_find_in_legislation",
+                                    title_id:
+                                        typeof data.title_id === "string"
+                                            ? (data.title_id as string)
+                                            : null,
+                                    query: (data.query as string) ?? "",
+                                    total_matches:
+                                        typeof data.total_matches === "number"
+                                            ? (data.total_matches as number)
+                                            : 0,
+                                    name:
+                                        typeof data.name === "string"
+                                            ? (data.name as string)
+                                            : null,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_search_energy_start") {
+                            pushEvent({
+                                type: "au_search_energy",
+                                query: (data.query as string) ?? "",
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_search_energy") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_search_energy" &&
+                                    e.query === (data.query as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_search_energy",
+                                    query: (data.query as string) ?? "",
+                                    result_count:
+                                        typeof data.result_count === "number"
+                                            ? (data.result_count as number)
+                                            : 0,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_get_energy_start") {
+                            pushEvent({
+                                type: "au_get_energy",
+                                title_id: (data.title_id as string) ?? "",
+                                section:
+                                    typeof data.section === "string"
+                                        ? (data.section as string)
+                                        : null,
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_get_energy") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_get_energy" &&
+                                    e.title_id === (data.title_id as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_get_energy",
+                                    title_id: (data.title_id as string) ?? "",
+                                    name:
+                                        typeof data.name === "string"
+                                            ? (data.name as string)
+                                            : null,
+                                    section:
+                                        typeof data.section === "string"
+                                            ? (data.section as string)
+                                            : null,
+                                    as_at:
+                                        typeof data.as_at === "string"
+                                            ? (data.as_at as string)
+                                            : null,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_get_energy_as_at_start") {
+                            pushEvent({
+                                type: "au_get_energy_as_at",
+                                title_id: (data.title_id as string) ?? "",
+                                date: (data.date as string) ?? "",
+                                section:
+                                    typeof data.section === "string"
+                                        ? (data.section as string)
+                                        : null,
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_get_energy_as_at") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_get_energy_as_at" &&
+                                    e.title_id === (data.title_id as string) &&
+                                    e.date === (data.date as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_get_energy_as_at",
+                                    title_id: (data.title_id as string) ?? "",
+                                    date: (data.date as string) ?? "",
+                                    name:
+                                        typeof data.name === "string"
+                                            ? (data.name as string)
+                                            : null,
+                                    section:
+                                        typeof data.section === "string"
+                                            ? (data.section as string)
+                                            : null,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_energy_versions_start") {
+                            pushEvent({
+                                type: "au_energy_versions",
+                                title_id: (data.title_id as string) ?? "",
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_energy_versions") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_energy_versions" &&
+                                    e.title_id === (data.title_id as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_energy_versions",
+                                    title_id: (data.title_id as string) ?? "",
+                                    version_count:
+                                        typeof data.version_count === "number"
+                                            ? (data.version_count as number)
+                                            : 0,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "au_find_in_energy_start") {
+                            pushEvent({
+                                type: "au_find_in_energy",
+                                title_id:
+                                    typeof data.title_id === "string"
+                                        ? (data.title_id as string)
+                                        : null,
+                                query: (data.query as string) ?? "",
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "au_find_in_energy") {
+                            updateMatchingEvent(
+                                (e) =>
+                                    e.type === "au_find_in_energy" &&
+                                    e.title_id ===
+                                        (typeof data.title_id === "string"
+                                            ? (data.title_id as string)
+                                            : null) &&
+                                    e.query === (data.query as string) &&
+                                    !!e.isStreaming,
+                                () => ({
+                                    type: "au_find_in_energy",
+                                    title_id:
+                                        typeof data.title_id === "string"
+                                            ? (data.title_id as string)
+                                            : null,
+                                    query: (data.query as string) ?? "",
+                                    total_matches:
+                                        typeof data.total_matches === "number"
+                                            ? (data.total_matches as number)
+                                            : 0,
+                                    name:
+                                        typeof data.name === "string"
+                                            ? (data.name as string)
+                                            : null,
+                                    error:
+                                        typeof data.error === "string"
+                                            ? (data.error as string)
+                                            : undefined,
+                                    isStreaming: false,
+                                }),
+                            );
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
                         if (data.type === "case_citation") {
                             pushEvent({
                                 type: "case_citation",
@@ -1414,6 +1821,30 @@ export function TRChatPanel({
                                         ? (data.citation as string)
                                         : null,
                                 url: data.url as string,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "legislation_citation") {
+                            pushEvent({
+                                type: "legislation_citation",
+                                title_id: (data.title_id as string) ?? "",
+                                name:
+                                    typeof data.name === "string"
+                                        ? (data.name as string)
+                                        : null,
+                                as_at:
+                                    typeof data.as_at === "string"
+                                        ? (data.as_at as string)
+                                        : null,
+                                compilation_number:
+                                    typeof data.compilation_number === "string"
+                                        ? (data.compilation_number as string)
+                                        : null,
+                                url: (data.url as string) ?? "",
+                                document: isPanelDocument(data.document)
+                                    ? data.document
+                                    : undefined,
                             });
                             continue;
                         }

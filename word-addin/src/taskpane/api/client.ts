@@ -277,7 +277,7 @@ export interface ApiKeyStatus {
       | "vercel"
       | "opencode-go"
       | "courtlistener",
-      "user" | "env" | null
+      "user" | "org" | "env" | null
     >
   >;
 }

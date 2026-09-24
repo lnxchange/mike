@@ -239,6 +239,10 @@ describe("tabular.routes", () => {
             last_selected_chat_model: "claude-sonnet-5",
             last_selected_reasoning_level: "high",
             legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             api_keys: { claude: "sk-test" },
         });
         runLLMStream.mockResolvedValue({
@@ -1402,6 +1406,10 @@ describe("tabular.routes", () => {
                 title_model: "claude-haiku-4-5",
                 tabular_model: "claude-sonnet-5",
                 legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
                 api_keys: {},
             });
 
@@ -1500,6 +1508,10 @@ describe("tabular.routes", () => {
                 title_model: "claude-haiku-4-5",
                 tabular_model: "claude-sonnet-5",
                 legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
                 api_keys: {},
             });
 
@@ -1679,6 +1691,10 @@ describe("tabular.routes", () => {
                 title_model: "claude-haiku-4-5",
                 tabular_model: "claude-sonnet-5",
                 legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
                 api_keys: {},
             });
 
@@ -1890,6 +1906,10 @@ describe("tabular.routes", () => {
                 last_selected_chat_model: "claude-sonnet-5",
                 last_selected_reasoning_level: "high",
                 legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
                 api_keys: { openai: "sk-test" },
             });
 

@@ -102,4 +102,32 @@ describe("AssistantMessage timeline", () => {
             screen.getByText("The response was interrupted."),
         ).toBeInTheDocument();
     });
+
+    it("labels a research-only interrupted turn as stopped", () => {
+        render(
+            <AssistantMessage
+                events={[
+                    {
+                        type: "doc_read",
+                        filename: "msa.docx",
+                        document_id: "d1",
+                        version_id: "v1",
+                        version_number: 1,
+                    },
+                    {
+                        type: "error",
+                        message: "The response was interrupted.",
+                        safe_to_display: true,
+                    } as AssistantEvent,
+                ]}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "Stopped after 1 step" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByText("The response was interrupted."),
+        ).toBeInTheDocument();
+    });
 });

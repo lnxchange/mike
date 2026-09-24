@@ -56,6 +56,18 @@ import {
     revokeChatAccess,
     updateChatSettings,
     updateChatTitle,
+    claimChatTurn,
+    discardChatInputMessage,
+    releaseChatTurn,
+    requestChatTurnCancel,
+    turnInProgressBody,
+    withRunningTurnMessage,
+    bindChatTurnStream,
+    cancelRunningTurn,
+    getRunningTurn,
+    subscribeToTurn,
+    activeTurnFromChatRow,
+    type ChatTurnLease,
 } from "./chat.service";
 
 export const chatRouter = Router();
@@ -121,13 +133,90 @@ chatRouter.get("/:chatId", requireAuth, asyncRoute(async (req, res) => {
     const messages = await getChatMessages(db, chatId);
     // access_role/is_owner mirror the project and review detail responses so
     // the client can render per-role affordances instead of re-deriving them.
+    // A turn still running for this chat appears as one assistant row with
+    // status "running" so the client can reattach rather than resend.
     res.json({
         chat: access.chat,
         is_owner: access.isCreator,
         access_role: access.projectRole,
-        messages,
+        messages: withRunningTurnMessage(messages, access.chat),
     });
 }));
+
+// POST /chat/:chatId/turns/:assistantMessageId/cancel — stop a running turn.
+// The only path that ends generation early: a closed socket no longer does.
+chatRouter.post(
+    "/:chatId/turns/:assistantMessageId/cancel",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId, assistantMessageId } = req.params;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+
+        const local = cancelRunningTurn(assistantMessageId);
+        const remote = await requestChatTurnCancel(db, {
+            chatId,
+            assistantMessageId,
+        });
+        res.status(202).json({ cancelled: local || remote.requested });
+    }),
+);
+
+// GET /chat/:chatId/turns/:assistantMessageId/stream — reattach to a turn
+// this server is running: replay what has streamed so far, then tail it.
+// 202 means the turn is not attachable here (finished, or running on another
+// instance); the client should poll GET /chat/:chatId instead.
+chatRouter.get(
+    "/:chatId/turns/:assistantMessageId/stream",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId, assistantMessageId } = req.params;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+
+        const turn = getRunningTurn(assistantMessageId);
+        if (!turn || turn.chatId !== chatId || turn.overflowed) {
+            const active = activeTurnFromChatRow(access.chat);
+            const running =
+                (!!turn && !turn.finished) ||
+                active?.assistantMessageId === assistantMessageId;
+            return void res.status(202).json({
+                status: running ? "running" : "finished",
+            });
+        }
+
+        const stream = openAssistantSse(res);
+        for (const line of turn.frames) stream.write(line);
+        if (turn.finished) {
+            stream.finish();
+            return;
+        }
+        await new Promise<void>((resolve) => {
+            const unsubscribe = subscribeToTurn(turn, {
+                onFrame: (line) => {
+                    stream.write(line);
+                },
+                onEnd: () => {
+                    unsubscribe();
+                    stream.finish();
+                    resolve();
+                },
+            });
+            stream.signal.addEventListener("abort", () => {
+                unsubscribe();
+                resolve();
+            });
+        });
+    }),
+);
 
 // GET /chat/:chatId/people
 // The chat's creator + every direct grantee, resolved to
@@ -496,6 +585,10 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         apiMessages,
         workflowStore,
         legalResearchUs,
+        legalResearchAu,
+        legalResearchAuEnergy,
+        legalResearchAuVic,
+        legalResearchAuCases,
         apiKeys,
         titleModel,
         selectedModel,
@@ -505,6 +598,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     let chatTitle = prep.prepared.chatTitle;
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
     let memoryTurnScheduled = false;
+    let turnLease: ChatTurnLease | null = null;
 
     devLog("[chat/stream] starting LLM stream", {
         apiMessageCount: apiMessages.length,
@@ -513,6 +607,22 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     });
 
     try {
+        // One turn per chat. A second request while a turn is running would
+        // otherwise cancel it and run blind to its edits.
+        const turnMessageId =
+            assistantMessageId ?? askInputsResponse?.assistant_message_id ?? null;
+        if (turnMessageId) {
+            const claim = await claimChatTurn(db, {
+                chatId,
+                assistantMessageId: turnMessageId,
+            });
+            if (!claim.ok) {
+                await discardChatInputMessage(db, { chatId, inputMessageId });
+                return void res.status(409).json(turnInProgressBody(claim.active));
+            }
+            turnLease = claim.lease;
+        }
+
         // Make the advertised identity durable before the response becomes an
         // SSE stream. If this reservation fails, return a normal HTTP error
         // while headers are still mutable; clients must never receive an ID
@@ -537,8 +647,20 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             }
         }
 
-        const stream = openAssistantSse(res);
-        const write = stream.write;
+        // The socket is one viewer of the turn, not its owner. Generation
+        // ends only through the cancel endpoint, the heartbeat noticing a
+        // cancel or a lost lease, or the turn finishing; a user who navigates
+        // away reattaches to the recorded frames.
+        const stream = openAssistantSse(res, { abortOnClose: false });
+        const turn = bindChatTurnStream({
+            db,
+            lease: turnLease,
+            userId,
+            fallbackSignal: stream.signal,
+            write: (line) => stream.write(line),
+        });
+        const turnSignal = turn.signal;
+        const write = turn.write;
         const updateReservedAssistantMessage =
             createReservedAssistantMessageUpdater({
                 db,
@@ -585,7 +707,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                           });
                           if (!saved.ok) throw saved.error;
                           chatTitle = title;
-                          if (!stream.signal.aborted) {
+                          if (!turnSignal.aborted) {
                               write(
                                   `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                               );
@@ -608,11 +730,15 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 write,
                 allowDocumentMutation,
                 workflowStore,
-                includeResearchTools: legalResearchUs,
+                includeUsResearchTools: legalResearchUs,
+                includeAuResearchTools: legalResearchAu,
+                includeAuEnergyResearchTools: legalResearchAuEnergy,
+                includeAuVicResearchTools: legalResearchAuVic,
+                includeAuCasesResearchTools: legalResearchAuCases,
                 model: selectedModel,
                 reasoning: selectedReasoningLevel,
                 apiKeys,
-                signal: stream.signal,
+                signal: turnSignal,
                 projectId: resolvedProjectId,
                 includeMemory: true,
                 memoryProjectId: canReadProjectMemory
@@ -640,14 +766,27 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 !events?.some((event) => event.type === "ask_inputs") &&
                 (!events || events.every((event) => !("error" in event)))
             ) {
-                write(
-                    `data: ${JSON.stringify({
-                        type: "error",
-                        message:
-                            "The model returned an empty response. Try again, or pick a different model.",
-                        safe_to_display: true,
-                    })}\n\n`,
-                );
+                const emptyEvent = {
+                    type: "error" as const,
+                    message:
+                        "The model returned an empty response. Try again, or pick a different model.",
+                    safe_to_display: true,
+                };
+                // Fill the reserved row so the history does not keep an
+                // unanswered question that reloads as still running.
+                const emptySaveError = askInputsResponse
+                    ? null
+                    : await updateReservedAssistantMessage(
+                          [...stripTransientAssistantEvents(events ?? []), emptyEvent],
+                          null,
+                      );
+                if (emptySaveError) {
+                    console.error(
+                        "[chat/stream] failed to save empty response",
+                        emptySaveError,
+                    );
+                }
+                write(`data: ${JSON.stringify(emptyEvent)}\n\n`);
                 write("data: [DONE]\n\n");
                 return;
             }
@@ -691,7 +830,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 const title = lastUser.content.slice(0, 120);
                 await updateChatTitle(db, { chatId, title });
                 chatTitle = title;
-                if (shouldGenerateTitle && !stream.signal.aborted) {
+                if (shouldGenerateTitle && !turnSignal.aborted) {
                     write(
                         `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                     );
@@ -705,7 +844,9 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 completedTurnPersisted &&
                 !persistedEvents.some(
                     (event) =>
-                        event.type === "ask_inputs" || event.type === "error",
+                        event.type === "ask_inputs" ||
+                        event.type === "plan" ||
+                        event.type === "error",
                 )
             ) {
                 const completedTurnId =
@@ -743,7 +884,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             write("data: [DONE]\n\n");
         } catch (err) {
             if (isAbortError(err)) {
-                devLog("[chat/stream] client aborted stream", { chatId });
+                devLog("[chat/stream] turn cancelled", { chatId });
                 void enqueueChatTurnAudit(
                     db,
                     {
@@ -788,7 +929,13 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                             saveError,
                         );
                     }
+                    // A viewer that reattached after the cancel was requested
+                    // needs the same closing frames the transcript will show.
+                    for (const event of partial.events.slice(-2)) {
+                        write(`data: ${JSON.stringify(event)}\n\n`);
+                    }
                 }
+                write("data: [DONE]\n\n");
                 return;
             }
             console.error("[chat/stream] error:", err);
@@ -834,9 +981,11 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 /* ignore */
             }
         } finally {
+            turn.finish();
             stream.finish();
         }
     } finally {
+        if (turnLease) await releaseChatTurn(db, turnLease);
         if (memoryTurn && !memoryTurnScheduled) {
             try {
                 await releaseMemoryConversationTurn({
