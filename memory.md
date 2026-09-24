@@ -11,8 +11,9 @@ READY on https://libris-colleague.vercel.app. No migrations.
 
 A later Brookmost turn still died with "Sorry, something went wrong"
 after the model started `create_plan` and the arguments JSON was cut off
-(`AI_InvalidToolInputError`). A cut-off tool call now retries once with
-less thinking and a short-plan nudge, instead of failing the turn.
+(`AI_InvalidToolInputError`). A cut-off tool call now retries with
+less thinking and a short-plan nudge. Live on Railway `544d524b`, SHA
+`3dc13fcf`. Frontend unchanged.
 
 ## 2026-09-22 — Matters correspondence columns now sort
 
