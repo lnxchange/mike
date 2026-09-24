@@ -9,6 +9,11 @@ Continue. The next message does only one or two pending items. Live:
 `fdd28228`, Railway `d234de4d` SUCCESS, Vercel `dpl_4SVHb6Z9W7BhbSCmJnmSSbBPg5Gm`
 READY on https://libris-colleague.vercel.app. No migrations.
 
+A later Brookmost turn still died with "Sorry, something went wrong"
+after the model started `create_plan` and the arguments JSON was cut off
+(`AI_InvalidToolInputError`). A cut-off tool call now retries once with
+less thinking and a short-plan nudge, instead of failing the turn.
+
 ## 2026-09-22 — Matters correspondence columns now sort
 
 Arrived, From, To and Subject on the document table have the same header
@@ -487,3 +492,5 @@ Live as of 23 September 2026. Colleague commit `9bc3276c` is on https://libris-c
 The Pull from Zoho wait state was static text. While the request is in flight the modal now shows a sliding progress bar and a spinner on "Creating the matter" and "Pulling documents from SharePoint".
 
 Outlook drafts were missing the signature because Graph `uniqueBody` drops a signature that is on every message, and a reply patch replaced the body Outlook had just signed. Signature lookup now reads the full sent body, ignores the quoted thread, and if that still fails copies the signature already on the reply draft. Filer signature injection was not changed.
+
+Live as commit `4313c542` on https://libris-colleague.vercel.app (Vercel `dpl_8FUDhgxpbXQ8mY1c3ejZp5qqmNLj`, READY) and Railway `mike` deployment `1726410d` (SUCCESS).

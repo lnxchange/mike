@@ -31,6 +31,38 @@ export const MAX_REASONING_OVERRUN_RETRIES = 2;
 
 export const REASONING_OVERRUN_NUDGE = `Your previous attempt ran out of output room while thinking and produced nothing the user can see. Do not re-plan or re-read. Take the next concrete action now: either call one tool, or write the user-facing answer from what is already in this conversation.`;
 
+export function isTruncatedToolInputError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? `${error.name} ${error.message}`
+      : typeof error === "string"
+        ? error
+        : "";
+  return /Invalid input for tool|JSON parsing failed|malformed JSON arguments/i.test(
+    message,
+  );
+}
+
+export function truncatedToolName(error: unknown): string | null {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  const match =
+    /Invalid input for tool ([A-Za-z0-9_]+)/.exec(message) ??
+    /malformed JSON arguments for tool "([^"]+)"/.exec(message);
+  return match?.[1] ?? null;
+}
+
+export function truncatedToolNudge(toolName: string | null): string {
+  if (toolName === "create_plan" || toolName === "update_plan") {
+    return `Your previous ${toolName} call was cut off before its arguments finished. Call ${toolName} now. Use a short title and at most 8 items. Each item must be one short sentence. Do not think at length first.`;
+  }
+  return `Your previous tool call was cut off before its arguments finished. Call one tool again with short arguments, or write the user-facing answer from what is already in this conversation. Do not think at length first.`;
+}
+
 const REASONING_STEP_DOWN: Partial<Record<ReasoningLevel, ReasoningLevel>> = {
   max: "xhigh",
   xhigh: "high",
@@ -72,13 +104,14 @@ type ModelMessageLike = AiSdk.ModelMessage;
 export function messagesForOverrunRetry(
   original: ModelMessageLike[],
   responseMessages: ModelMessageLike[],
+  nudge: string = REASONING_OVERRUN_NUDGE,
 ): ModelMessageLike[] {
   const kept = responseMessages.filter((message) => {
     if (message.role !== "assistant") return true;
     if (typeof message.content === "string") return message.content.trim() !== "";
     return Array.isArray(message.content) && message.content.length > 0;
   });
-  return [...original, ...kept, { role: "user", content: REASONING_OVERRUN_NUDGE }];
+  return [...original, ...kept, { role: "user", content: nudge }];
 }
 
 /** Ensure a proxy-closed final SSE event is still visible to SDK parsers. */
@@ -422,6 +455,8 @@ export async function streamAiSdk(
           }),
       });
 
+      let truncatedTool: string | null | undefined;
+      try {
       for await (const part of result.stream) {
         switch (part.type) {
           case "start-step":
@@ -479,15 +514,28 @@ export async function streamAiSdk(
             break;
           }
           case "tool-error":
-            throw new Error(errorMessage(part.error, config.label));
-          case "error":
-            throw new Error(errorMessage(part.error, config.label));
+          case "error": {
+            const streamError =
+              part.error instanceof Error
+                ? part.error
+                : new Error(errorMessage(part.error, config.label));
+            if (isTruncatedToolInputError(streamError)) {
+              throw Object.assign(streamError, {
+                truncatedToolInput: true,
+              });
+            }
+            throw streamError;
+          }
           case "abort": {
             const error = new Error(part.reason || "Stream aborted.");
             error.name = "AbortError";
             throw error;
           }
         }
+      }
+      } catch (error) {
+        if (!isTruncatedToolInputError(error)) throw error;
+        truncatedTool = truncatedToolName(error);
       }
 
       for (const id of openReasoningBlocks) {
@@ -496,15 +544,37 @@ export async function streamAiSdk(
       }
 
       remainingSteps = Math.max(1, remainingSteps - stepsThisRun);
+      const toolInputCutOff = truncatedTool !== undefined;
       const canRetry =
-        isReasoningOverrunStep(lastFinishedStep) &&
+        (isReasoningOverrunStep(lastFinishedStep) || toolInputCutOff) &&
         overrunRetries < MAX_REASONING_OVERRUN_RETRIES &&
         !params.abortSignal?.aborted;
-      if (!canRetry) break;
+      if (!canRetry) {
+        if (toolInputCutOff) {
+          throw new Error(
+            errorMessage(
+              new Error(
+                `Invalid input for tool ${truncatedTool ?? "tool"}: JSON parsing failed`,
+              ),
+              config.label,
+            ),
+          );
+        }
+        break;
+      }
 
       overrunRetries += 1;
-      const responseMessages = (await result.responseMessages) as ModelMessageLike[];
-      messages = messagesForOverrunRetry(messages, responseMessages);
+      let responseMessages: ModelMessageLike[] = [];
+      try {
+        responseMessages = (await result.responseMessages) as ModelMessageLike[];
+      } catch {
+        responseMessages = [];
+      }
+      messages = messagesForOverrunRetry(
+        messages,
+        responseMessages,
+        toolInputCutOff ? truncatedToolNudge(truncatedTool) : REASONING_OVERRUN_NUDGE,
+      );
       reasoning = lowerReasoningLevel(reasoning);
       console.warn("[llm-stream] reasoning overrun, retrying with less thinking", {
         provider: config.provider,
@@ -512,6 +582,7 @@ export async function streamAiSdk(
         attempt: overrunRetries,
         reasoning,
         remainingSteps,
+        truncatedTool: toolInputCutOff ? truncatedTool : undefined,
       });
     }
 

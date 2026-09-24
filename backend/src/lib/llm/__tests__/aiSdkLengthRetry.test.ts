@@ -195,6 +195,47 @@ describe("streamAiSdk reasoning overrun recovery", () => {
     expect(streamText).toHaveBeenCalledTimes(1);
   });
 
+  it("retries a create_plan call whose JSON was cut off", async () => {
+    let index = 0;
+    const runs: Run[] = [
+      {
+        parts: [
+          { type: "start-step" },
+          { type: "text-delta", text: "Here is the plan." },
+        ],
+      },
+      answerRun,
+    ];
+    streamText.mockImplementation(() => {
+      const run = runs[index] ?? runs[runs.length - 1]!;
+      index += 1;
+      return {
+        stream: (async function* () {
+          for (const part of run.parts) yield part;
+          if (index === 1) {
+            throw new Error(
+              'AI_InvalidToolInputError: Invalid input for tool create_plan: AI_JSONParseError: JSON parsing failed: Text: {"title": "Update the agreement", "items": ',
+            );
+          }
+        })(),
+        responseMessages: Promise.resolve([
+          { role: "assistant", content: "Here is the plan." },
+        ]),
+      };
+    });
+
+    const { result } = await run("high");
+
+    expect(result.fullText).toBe("Here is the plan.Here is the answer.");
+    expect(streamText).toHaveBeenCalledTimes(2);
+    const second = streamText.mock.calls[1]![0] as Record<string, unknown>;
+    expect(second.reasoning).toBe("medium");
+    const messages = second.messages as Array<{ role: string; content: unknown }>;
+    expect(messages.at(-1)?.role).toBe("user");
+    expect(String(messages.at(-1)?.content)).toContain("create_plan");
+    expect(String(messages.at(-1)?.content)).toContain("one short sentence");
+  });
+
   it("does not retry a normal stop", async () => {
     scriptRuns([answerRun, overrunRun]);
     const { result } = await run("high");

@@ -289,7 +289,8 @@ export const TOOLS = [
             type: "array",
             minItems: 2,
             maxItems: 12,
-            description: "Ordered remaining steps. Keep each item to one action.",
+            description:
+              "Ordered remaining steps. At most 8. Each content is one short sentence.",
             items: {
               type: "object",
               properties: {
