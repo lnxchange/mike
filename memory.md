@@ -1,5 +1,11 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-10-02 — Today's assistant work is live
+
+Pushed `664683d5` on `cursor/setup-supabase-vercel-oss-cad9` (`93882e5e` plus the frontend type fix). Stacked redlines keep the other side's author. Review comments, plan-first turns, Microsoft reconnect, and the chat selection blur fix are in the same cut. No migrations.
+
+Railway `mike` `0b85d895` SUCCESS on SHA `93882e5e`. https://mike-production-68f2.up.railway.app `/health` 200. Vercel `dpl_9ZorwDPVFNsfbT4rX3bJixEL59kv` READY on SHA `664683d5`, aliased to https://libris-colleague.vercel.app. The first Vercel build of `93882e5e` failed typecheck on the selection test; `664683d5` fixes that. Word add-in changes are in the same commits and load with the add-in, not via Vercel.
+
 ## 2026-09-22 — Agent now plans first instead of finishing a job in one turn
 
 The New job request run read emails, copied a memo, then said "How can I
