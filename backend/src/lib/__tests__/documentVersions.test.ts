@@ -23,6 +23,14 @@ function makeDb(tables: Record<string, Row[]>) {
                     return query;
                 },
                 in: (column: string, values: unknown[]) => {
+                    if (values.length > 100) {
+                        query._error = {
+                            message: "URI too long",
+                            code: "PGRST100",
+                        };
+                        rows = [];
+                        return query;
+                    }
                     rows = rows.filter((row) => values.includes(row[column]));
                     return query;
                 },
@@ -38,9 +46,16 @@ function makeDb(tables: Record<string, Row[]>) {
                 },
                 single: async () => ({ data: rows[0] ?? null, error: null }),
                 then: (
-                    resolve: (value: { data: Row[]; error: null }) => unknown,
+                    resolve: (value: {
+                        data: Row[] | null;
+                        error: { message: string; code?: string } | null;
+                    }) => unknown,
                     reject?: (reason: unknown) => unknown,
-                ) => Promise.resolve({ data: rows, error: null }).then(resolve, reject),
+                ) =>
+                    Promise.resolve({
+                        data: query._error ? null : rows,
+                        error: query._error ?? null,
+                    }).then(resolve, reject),
             };
             return query;
         },
@@ -183,8 +198,8 @@ describe("attachActiveVersionPaths", () => {
         await expect(attachActiveVersionPaths(db, docs)).resolves.toBe(docs);
     });
 
-    it("nulls all fields when no document has a current version", async () => {
-        const db = makeDb({ document_versions: [FULL_VERSION] });
+    it("nulls all fields when no live version exists for the document", async () => {
+        const db = makeDb({ document_versions: [] });
         const [doc] = await attachActiveVersionPaths<TestDoc>(db, [
             { id: "doc-1", current_version_id: null },
         ]);
@@ -197,6 +212,59 @@ describe("attachActiveVersionPaths", () => {
             size_bytes: null,
             page_count: null,
         });
+    });
+
+    it("falls back to the latest live version when current_version_id is missing", async () => {
+        const db = makeDb({
+            document_versions: [
+                {
+                    ...FULL_VERSION,
+                    id: "ver-old",
+                    version_number: 1,
+                    created_at: "2026-01-01T00:00:00Z",
+                    filename: "old.pdf",
+                },
+                {
+                    ...FULL_VERSION,
+                    id: "ver-live",
+                    version_number: 2,
+                    created_at: "2026-02-01T00:00:00Z",
+                    filename: "latest.pdf",
+                    size_bytes: 2048,
+                },
+            ],
+        });
+        const [doc] = await attachActiveVersionPaths<TestDoc>(db, [
+            { id: "doc-1", current_version_id: "ver-gone" },
+        ]);
+        expect(doc).toMatchObject({
+            filename: "latest.pdf",
+            storage_path: FULL_VERSION.storage_path,
+            file_type: "application/pdf",
+            size_bytes: 2048,
+            active_version_number: 2,
+        });
+    });
+
+    it("chunks version id lookups so a list of more than 100 docs still attaches", async () => {
+        const versions = Array.from({ length: 101 }, (_, index) => ({
+            ...FULL_VERSION,
+            id: `ver-${index}`,
+            document_id: `doc-${index}`,
+            filename: `file-${index}.pdf`,
+            version_number: index + 1,
+        }));
+        const db = makeDb({ document_versions: versions });
+        const docs = versions.map((version) => ({
+            id: version.document_id,
+            current_version_id: version.id,
+        }));
+        const attached = await attachActiveVersionPaths<TestDoc>(db, docs);
+        expect(attached).toHaveLength(101);
+        expect(attached[0].filename).toBe("file-0.pdf");
+        expect(attached[99].filename).toBe("file-99.pdf");
+        expect(attached[100].filename).toBe("file-100.pdf");
+        expect(attached[100].active_version_number).toBe(101);
     });
 
     it("merges active-version metadata onto each row", async () => {

@@ -30,6 +30,12 @@ import {
     parseOptionalDisplayedDoc,
     parseOptionalModel,
     parseOptionalReasoning,
+    bindChatTurnStream,
+    claimChatTurn,
+    discardChatInputMessage,
+    releaseChatTurn,
+    turnInProgressBody,
+    type ChatTurnLease,
 } from "../chat/chat.service";
 import { generateAssistantChatTitle } from "../chat/chat.service";
 import { titleModelForChat } from "../../lib/modelSelection";
@@ -135,6 +141,10 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         apiMessages,
         workflowStore,
         legalResearchUs,
+        legalResearchAu,
+        legalResearchAuEnergy,
+        legalResearchAuVic,
+        legalResearchAuCases,
         apiKeys,
         titleModel,
         selectedModel,
@@ -146,13 +156,39 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     let chatTitle = prep.prepared.chatTitle;
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
     let memoryTurnScheduled = false;
+    let turnLease: ChatTurnLease | null = null;
 
     try {
-        // The same SSE setup the chat and word-chat routes use: headers,
-        // flush, an abort controller wired to the client hanging up, and a
-        // write that drops a line raised after the response has ended.
-        const stream = openAssistantSse(res);
-        const write = stream.write;
+        // One turn per chat. A second request while a turn is running would
+        // otherwise cancel it and run blind to its edits.
+        const turnMessageId =
+            assistantMessageId ?? askInputsResponse?.assistant_message_id ?? null;
+        if (turnMessageId) {
+            const claim = await claimChatTurn(db, {
+                chatId,
+                assistantMessageId: turnMessageId,
+            });
+            if (!claim.ok) {
+                await discardChatInputMessage(db, { chatId, inputMessageId });
+                return void res.status(409).json(turnInProgressBody(claim.active));
+            }
+            turnLease = claim.lease;
+        }
+
+        // The socket is one viewer of the turn, not its owner: a closed
+        // connection does not stop generation. Cancel comes through the
+        // chat cancel endpoint or the heartbeat; frames are recorded so a
+        // returning client can reattach.
+        const stream = openAssistantSse(res, { abortOnClose: false });
+        const turn = bindChatTurnStream({
+            db,
+            lease: turnLease,
+            userId,
+            fallbackSignal: stream.signal,
+            write: (line) => stream.write(line),
+        });
+        const turnSignal = turn.signal;
+        const write = turn.write;
 
         try {
             write(
@@ -191,7 +227,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                           });
                           if (!saved.ok) throw saved.error;
                           chatTitle = title;
-                          if (!stream.signal.aborted) {
+                          if (!turnSignal.aborted) {
                               write(
                                   `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                               );
@@ -218,11 +254,15 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 // workflow and research tools) and lose only the writers.
                 allowDocumentMutation,
                 workflowStore,
-                includeResearchTools: legalResearchUs,
+                includeUsResearchTools: legalResearchUs,
+                includeAuResearchTools: legalResearchAu,
+                includeAuEnergyResearchTools: legalResearchAuEnergy,
+                includeAuVicResearchTools: legalResearchAuVic,
+                includeAuCasesResearchTools: legalResearchAuCases,
                 model: selectedModel,
                 reasoning: selectedReasoningLevel,
                 apiKeys,
-                signal: stream.signal,
+                signal: turnSignal,
                 projectId,
                 includeMemory: true,
                 memoryProjectId: projectId,
@@ -274,7 +314,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 const title = lastUser.content.slice(0, 120);
                 await updateChatTitle(db, { chatId, title });
                 chatTitle = title;
-                if (shouldGenerateTitle && !stream.signal.aborted) {
+                if (shouldGenerateTitle && !turnSignal.aborted) {
                     write(
                         `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                     );
@@ -288,7 +328,9 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 completedTurnPersisted &&
                 !persistedEvents.some(
                     (event) =>
-                        event.type === "ask_inputs" || event.type === "error",
+                        event.type === "ask_inputs" ||
+                        event.type === "plan" ||
+                        event.type === "error",
                 )
             ) {
                 const completedTurnId =
@@ -325,9 +367,22 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             write("data: [DONE]\n\n");
         } catch (err) {
             if (isAbortError(err)) {
-                console.log("[project-chat/stream] client aborted stream", {
+                console.log("[project-chat/stream] turn cancelled", {
                     chatId,
                 });
+                void enqueueChatTurnAudit(
+                    db,
+                    {
+                        userId,
+                        userEmail,
+                        chatId,
+                        projectId,
+                        title: chatTitle,
+                        model: selectedModel,
+                        status: "cancelled",
+                    },
+                    null,
+                );
                 if (err instanceof AssistantStreamError) {
                     const partial = buildCancelledAssistantMessage({
                         fullText: err.fullText,
@@ -362,7 +417,11 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                             saveError,
                         );
                     }
+                    for (const event of partial.events.slice(-2)) {
+                        write(`data: ${JSON.stringify(event)}\n\n`);
+                    }
                 }
+                write("data: [DONE]\n\n");
                 return;
             }
             console.error("[project-chat/stream] error:", err);
@@ -414,9 +473,11 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 /* ignore */
             }
         } finally {
+            turn.finish();
             stream.finish();
         }
     } finally {
+        if (turnLease) await releaseChatTurn(db, turnLease);
         if (memoryTurn && !memoryTurnScheduled) {
             try {
                 await releaseMemoryConversationTurn({

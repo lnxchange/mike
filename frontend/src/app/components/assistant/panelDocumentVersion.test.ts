@@ -66,4 +66,20 @@ describe("resolvePanelDocumentVersion", () => {
             version_number: 2,
         });
     });
+
+    it("does not look up versions for Federal Register titles", async () => {
+        const loadVersions = vi.fn();
+        const legislation: PanelDocument = {
+            document_id: "legislation:C2004A03348",
+            title: "Competition and Consumer Act 2010",
+            type: "legislation",
+            metadata: [],
+            quotes: [],
+        };
+
+        await expect(
+            resolvePanelDocumentVersion(legislation, loadVersions),
+        ).resolves.toBe(legislation);
+        expect(loadVersions).not.toHaveBeenCalled();
+    });
 });

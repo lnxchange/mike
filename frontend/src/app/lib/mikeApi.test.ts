@@ -87,6 +87,7 @@ import {
     deleteOrg,
     declineOrgInvitation,
     getOrg,
+    getOrgMemory,
     getProjectAccess,
     grantProjectAccess,
     grantChatAccess,
@@ -104,6 +105,7 @@ import {
     revokeTabularReviewAccess,
     updateOrgMember,
     updateOrg,
+    updateOrgMemory,
     listDocumentVersions,
     listLibraryDocumentIds,
     listMcpConnectors,
@@ -147,6 +149,7 @@ import {
     searchProjectDirectory,
     searchLibraryDocuments,
     setMcpToolEnabled,
+    setOrgMemoryEnabled,
     setProjectMemoryEnabled,
     setUserMemoryEnabled,
     shareWorkflow,
@@ -1773,12 +1776,25 @@ describe("query and payload defaults", () => {
         expect(JSON.parse(lastFetchCall().init.body as string)).toEqual({
             name: "Precedents",
             parent_folder_id: "parent-1",
+            org_id: null,
         });
 
         await createLibraryFolder("files", "Root folder");
         expect(JSON.parse(lastFetchCall().init.body as string)).toEqual({
             name: "Root folder",
             parent_folder_id: null,
+            org_id: null,
+        });
+
+        await createLibraryFolder(
+            "files",
+            "Firm precedents",
+            "source:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        );
+        expect(JSON.parse(lastFetchCall().init.body as string)).toEqual({
+            name: "Firm precedents",
+            parent_folder_id: null,
+            org_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         });
     });
 
@@ -1814,6 +1830,7 @@ describe("query and payload defaults", () => {
         expect(JSON.parse(call.init.body as string)).toEqual({
             segments: ["Executed", "2026"],
             base_folder_id: "parent-1",
+            org_id: null,
             conflict_resolution: "reuse",
         });
     });
@@ -1961,6 +1978,25 @@ describe("thin endpoint wrappers", () => {
             name: "setProjectMemoryEnabled",
             call: () => setProjectMemoryEnabled("project/1", false),
             url: "/projects/project%2F1/memory/settings",
+            method: "PATCH",
+            body: { enabled: false },
+        },
+        {
+            name: "getOrgMemory",
+            call: () => getOrgMemory("org/1"),
+            url: "/orgs/org%2F1/memory",
+        },
+        {
+            name: "updateOrgMemory",
+            call: () => updateOrgMemory("org/1", "# House", 2),
+            url: "/orgs/org%2F1/memory",
+            method: "PUT",
+            body: { content: "# House", expected_revision: 2 },
+        },
+        {
+            name: "setOrgMemoryEnabled",
+            call: () => setOrgMemoryEnabled("org/1", false),
+            url: "/orgs/org%2F1/memory/settings",
             method: "PATCH",
             body: { enabled: false },
         },

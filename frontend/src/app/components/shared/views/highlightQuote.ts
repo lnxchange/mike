@@ -1,8 +1,24 @@
 let pdfjsLib: typeof import("pdfjs-dist") | null = null;
 
+export function pdfjsCdnAssetUrl(version: string, subpath: string): string {
+    return `https://unpkg.com/pdfjs-dist@${version}/${subpath}`;
+}
+
+export function pdfjsStandardFontDataUrl(version: string): string {
+    return pdfjsCdnAssetUrl(version, "standard_fonts/");
+}
+
+export function pdfjsWasmUrl(version: string): string {
+    return pdfjsCdnAssetUrl(version, "wasm/");
+}
+
 export async function getPdfJs() {
     if (pdfjsLib) return pdfjsLib;
     pdfjsLib = await import("pdfjs-dist");
+    // Bundle the worker so production does not depend on a rewritten
+    // import.meta.url landing next to a 404. Fonts and wasm stay on the
+    // matching pdfjs-dist version (the previous URL was pinned to 4.10.38
+    // after the app moved to 6.x, which leaves scanned pages waiting).
     pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
         "pdfjs-dist/build/pdf.worker.min.mjs",
         import.meta.url,
@@ -10,8 +26,7 @@ export async function getPdfJs() {
     return pdfjsLib;
 }
 
-export const STANDARD_FONT_DATA_URL =
-    "https://unpkg.com/pdfjs-dist@4.10.38/standard_fonts/";
+export const STANDARD_FONT_DATA_URL = pdfjsStandardFontDataUrl("6.3.289");
 
 const HIGHLIGHT_CLASS = "pdf-text-highlight";
 const ORIGINAL_TEXT_ATTR = "data-original-text";

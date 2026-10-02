@@ -11,7 +11,7 @@
 // material without them agreeing to it.
 
 import { Router } from "express";
-import { requireAuth } from "../../middleware/auth";
+import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import { sendOrgFailure } from "../../lib/orgFailure";
@@ -29,6 +29,9 @@ import {
     listInvitations,
     cancelInvitation,
     resendInvitation,
+    getOrgApiKeysStatus,
+    saveOrgApiKeyForAdmin,
+    normalizeOrgApiKeyProvider,
 } from "./orgs.service";
 
 export const orgsRouter = Router();
@@ -86,6 +89,47 @@ orgsRouter.delete("/:orgId", requireAuth, asyncRoute(async (req, res) => {
     if (!result.ok) return sendOrgFailure(res, result);
     res.status(204).send();
 }));
+
+// GET /orgs/:orgId/api-keys — presence only; any member. Secrets never leave
+// the server. Invited staff inherit these keys through getUserApiKeys.
+orgsRouter.get("/:orgId/api-keys", requireAuth, asyncRoute(async (req, res) => {
+    const userId = res.locals.userId as string;
+    const db = createServerSupabase();
+    const result = await getOrgApiKeysStatus(db, {
+        userId,
+        orgId: req.params.orgId,
+    });
+    if (!result.ok) return sendOrgFailure(res, result);
+    res.json(result.status);
+}));
+
+// PUT /orgs/:orgId/api-keys/:provider — admin only. Body is `{ api_key }` or
+// `{ use_personal: true }` to copy the caller's saved personal key.
+orgsRouter.put(
+    "/:orgId/api-keys/:provider",
+    requireAuth,
+    requireMfaIfEnrolled,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const provider = normalizeOrgApiKeyProvider(req.params.provider);
+        if (!provider) {
+            return void res
+                .status(400)
+                .json({ detail: "Unsupported provider" });
+        }
+        const db = createServerSupabase();
+        const result = await saveOrgApiKeyForAdmin(db, {
+            userId,
+            orgId: req.params.orgId,
+            provider,
+            apiKey:
+                typeof req.body?.api_key === "string" ? req.body.api_key : null,
+            usePersonal: req.body?.use_personal === true,
+        });
+        if (!result.ok) return sendOrgFailure(res, result);
+        res.json(result.status);
+    }),
+);
 
 // GET /orgs/:orgId/resources — every organization-scoped project and workflow.
 // Chats and tabular reviews only inherit organization access from projects and

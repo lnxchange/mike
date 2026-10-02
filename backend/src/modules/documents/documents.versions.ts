@@ -4,6 +4,7 @@ import {
 } from "./documents.cleanupJobs";
 import { copyDocumentVersionFiles } from "./documents.copyFiles";
 import { createDocumentVersion } from "./documents.lifecycle";
+import { saveSyncedMatterVersionToSharePoint } from "../integrations/integrations.service";
 // Version lifecycle for documents: listing, creating one from another
 // document's bytes, renaming, and deleting versions.
 //
@@ -253,6 +254,13 @@ export async function createVersionFromDocument(
             detail: "Failed to record new version.",
         };
     }
+
+    await saveSyncedMatterVersionToSharePoint(db, {
+        documentId,
+        versionId: versionRow.id as string,
+        storagePath: key,
+        filename,
+    });
 
     if (deferConversion) {
         await enqueueConversion({

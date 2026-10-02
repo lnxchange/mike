@@ -15,7 +15,10 @@ vi.mock("../convert", async (importOriginal) => {
   return { ...actual, docxToPdf: mocks.docxToPdf };
 });
 
-import { loadDocumentDisplay } from "../documentDisplay";
+import {
+  loadDocumentDisplay,
+  sendDocumentDisplay,
+} from "../documentDisplay";
 
 describe("loadDocumentDisplay", () => {
   beforeEach(() => {
@@ -88,5 +91,25 @@ describe("loadDocumentDisplay", () => {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       filename: "Asset.xlsx",
     });
+  });
+});
+
+describe("sendDocumentDisplay", () => {
+  it("marks the payload uncacheable so viewers cannot receive an empty 304", () => {
+    const headers = new Map<string, string>();
+    const res = {
+      setHeader(name: string, value: string) {
+        headers.set(name.toLowerCase(), value);
+      },
+      send: vi.fn(),
+    };
+    sendDocumentDisplay(res as never, {
+      bytes: Buffer.from("%PDF-1"),
+      contentType: "application/pdf",
+      filename: "Letter.pdf",
+    });
+    expect(headers.get("cache-control")).toBe("private, no-store");
+    expect(headers.get("content-type")).toBe("application/pdf");
+    expect(res.send).toHaveBeenCalledWith(Buffer.from("%PDF-1"));
   });
 });

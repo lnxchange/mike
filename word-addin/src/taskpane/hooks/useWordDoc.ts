@@ -2193,6 +2193,61 @@ export function releaseTrackedEdits(
  * All functions return Promises and must be called in a component context
  * where Office.js has already initialised (i.e. inside Office.onReady).
  */
+function commentDate(value: Date | undefined): string {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return "";
+  return value.toISOString().slice(0, 10);
+}
+
+/**
+ * Word review comments are not part of body text. Append them so the model
+ * can read each bubble, the passage it sits on, and its replies.
+ */
+async function readWordCommentSection(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<string> {
+  const comments = body.getComments();
+  comments.load("items");
+  await context.sync();
+  if (comments.items.length === 0) return "";
+  for (const comment of comments.items) {
+    comment.load(["id", "authorName", "content", "creationDate", "resolved"]);
+    comment.replies.load("items");
+    comment.getRange().load("text");
+  }
+  await context.sync();
+  for (const comment of comments.items) {
+    comment.replies.items.forEach((reply) => {
+      reply.load(["authorName", "content", "creationDate"]);
+    });
+  }
+  await context.sync();
+  const lines = [
+    `--- COMMENTS (${comments.items.length}) ---`,
+    "Word review comments. The passage after \"on\" is the text the bubble is anchored to.",
+  ];
+  comments.items.forEach((comment, index) => {
+    const when = commentDate(comment.creationDate);
+    const anchor = (comment.getRange().text ?? "").replace(/\s+/g, " ").trim();
+    const state = comment.resolved ? " [resolved]" : "";
+    lines.push(
+      `${index + 1}. [id ${comment.id}] ${comment.authorName || "unknown author"}` +
+        `${when ? `, ${when}` : ""} on "${anchor.slice(0, 160)}"${state}: "${(comment.content ?? "").replace(/\s+/g, " ").trim()}"`,
+    );
+    comment.replies.items.forEach((reply) => {
+      const replyWhen = commentDate(reply.creationDate);
+      lines.push(
+        `   reply ${reply.authorName || "unknown author"}` +
+          `${replyWhen ? `, ${replyWhen}` : ""}: "${(reply.content ?? "").replace(/\s+/g, " ").trim()}"`,
+      );
+    });
+  });
+  lines.push(
+    "To add a review comment or reply in this document, call comment_active_document.",
+  );
+  return lines.join("\n");
+}
+
 export function useWordDoc() {
   /** Read the plain text of the entire document body. */
   /**
@@ -2209,8 +2264,9 @@ export function useWordDoc() {
       serializeWordMutation(() =>
         Word.run(async (context) => {
           const body = context.document.body;
+          let text: string;
           try {
-            return await renderBodyAsMarkdown(context, body);
+            text = await renderBodyAsMarkdown(context, body);
           } catch (error) {
             console.warn(
               "Structured document read failed; sending flat text",
@@ -2218,8 +2274,96 @@ export function useWordDoc() {
             );
             body.load("text");
             await context.sync();
-            return body.text;
+            text = body.text;
           }
+          try {
+            const comments = await readWordCommentSection(context, body);
+            return comments ? `${text}\n\n${comments}` : text;
+          } catch (error) {
+            console.warn(
+              "Comment read failed; sending the document without bubbles",
+              getErrorMessage(error),
+            );
+            return text;
+          }
+        }),
+      ),
+    [],
+  );
+
+  const commentOnActiveDocument = useCallback(
+    (
+      comments: { anchor?: string; text: string; parent_id?: string }[],
+    ): Promise<{ comments: { id: string; status: string; error?: string }[] }> =>
+      serializeWordMutation(() =>
+        Word.run(async (context) => {
+          const body = context.document.body;
+          const results: { id: string; status: string; error?: string }[] = [];
+          for (const comment of comments) {
+            try {
+              if (comment.parent_id) {
+                const existing = body.getComments();
+                existing.load("items/id");
+                await context.sync();
+                const parent = existing.items.find(
+                  (item) => item.id === comment.parent_id,
+                );
+                if (!parent) {
+                  results.push({
+                    id: "",
+                    status: "not-found",
+                    error: `No comment with id "${comment.parent_id}".`,
+                  });
+                  continue;
+                }
+                const reply = parent.reply(comment.text);
+                reply.load("id");
+                await context.sync();
+                results.push({ id: reply.id, status: "replied" });
+                continue;
+              }
+              const anchor = comment.anchor ?? "";
+              const matches = body.search(anchor, { matchCase: true });
+              matches.load("items");
+              await context.sync();
+              if (matches.items.length === 0) {
+                results.push({
+                  id: "",
+                  status: "not-found",
+                  error: "The anchor does not appear in the document.",
+                });
+                continue;
+              }
+              if (matches.items.length > 1) {
+                results.push({
+                  id: "",
+                  status: "ambiguous",
+                  error: "The anchor appears more than once. Extend it until it is unique.",
+                });
+                continue;
+              }
+              const match = matches.items[0];
+              if (!match) {
+                results.push({
+                  id: "",
+                  status: "not-found",
+                  error: "The anchor does not appear in the document.",
+                });
+                continue;
+              }
+              const created = match.insertComment(comment.text);
+              created.load("id");
+              await context.sync();
+              results.push({ id: created.id, status: "added" });
+            } catch (error) {
+              results.push({
+                id: "",
+                status: "error",
+                error: getErrorMessage(error),
+              });
+            }
+          }
+          return { comments: results };
         }),
       ),
     [],
@@ -2911,6 +3055,7 @@ export function useWordDoc() {
 
   return {
     readDocumentMarkdown,
+    commentOnActiveDocument,
     applyTrackedEdits,
     acceptPendingRevisionsForEdit,
   };

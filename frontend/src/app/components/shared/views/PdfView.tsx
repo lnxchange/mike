@@ -11,9 +11,16 @@ import {
     clearHighlights,
     getPdfJs,
     highlightQuote,
-    STANDARD_FONT_DATA_URL,
+    pdfjsStandardFontDataUrl,
+    pdfjsWasmUrl,
 } from "./highlightQuote";
 import { LIQUID_GLASS_TRANSLUCENT_CLASS } from "@/shared/ui/LiquidGlassUI";
+import {
+    DOCUMENT_LOAD_FAILED_MESSAGE,
+    DOCUMENT_LOAD_TIMEOUT_MESSAGE,
+    DOCUMENT_RENDER_TIMEOUT_MS,
+    withTimeout,
+} from "@/app/lib/documentViewerTimeout";
 
 interface Props {
     doc: { document_id: string; version_id?: string | null } | null;
@@ -116,6 +123,8 @@ export function PdfView({
     );
     const documentError =
         error ?? (pdfLoadError?.result === result ? pdfLoadError?.message : null);
+    const rendering =
+        !!result && result.type === "pdf" && numPages === 0 && !documentError;
 
     // Track container width via ResizeObserver so re-renders fire on resize
     useEffect(() => {
@@ -546,15 +555,26 @@ export function PdfView({
                 // PDF.js transfers this buffer to its worker. Keep the fetched
                 // bytes attached so another render can load the same result.
                 data: new Uint8Array(result.buffer.slice(0)),
-                standardFontDataUrl: STANDARD_FONT_DATA_URL,
+                standardFontDataUrl: pdfjsStandardFontDataUrl(lib.version),
+                wasmUrl: pdfjsWasmUrl(lib.version),
             });
-            const pdfDoc = await loadingTask.promise;
+            const pdfDoc = await withTimeout(
+                loadingTask.promise,
+                DOCUMENT_RENDER_TIMEOUT_MS,
+            );
             if (cancelled) return;
             pdfDocRef.current = pdfDoc;
             await renderPDF(pdfDoc, list);
-        })().catch(() => {
+        })().catch((error: unknown) => {
             if (!cancelled)
-                setPdfLoadError({ result, message: "Failed to load document." });
+                setPdfLoadError({
+                    result,
+                    message:
+                        error instanceof Error &&
+                        error.message === DOCUMENT_LOAD_TIMEOUT_MESSAGE
+                            ? DOCUMENT_LOAD_TIMEOUT_MESSAGE
+                            : DOCUMENT_LOAD_FAILED_MESSAGE,
+                });
         });
         return () => {
             cancelled = true;
@@ -623,9 +643,12 @@ export function PdfView({
                 ref={scrollContainerRef}
                 className="flex-1 overflow-auto px-3 pt-5 pb-3 [scrollbar-gutter:stable]"
             >
-                {loading && (
+                {(loading || rendering) && (
                     <div className="flex h-full items-center justify-center">
-                        <Loader2 className="h-7 w-7 animate-spin text-gray-400" />
+                        <Loader2
+                            className="h-7 w-7 animate-spin text-gray-400"
+                            aria-label="Loading document"
+                        />
                     </div>
                 )}
                 {documentError && (

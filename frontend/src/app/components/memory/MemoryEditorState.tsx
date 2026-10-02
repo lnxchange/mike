@@ -3,6 +3,7 @@
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import type { MemoryAutosaveStatus } from "./useMemoryAutosave";
 import type { MemoryCurrent } from "@/app/lib/mikeApi";
+import { appConfig } from "@/config";
 
 export function memoryActivityLabel(memory: MemoryCurrent) {
   if (memory.status === "scheduled") return "Memory review scheduled";
@@ -25,7 +26,8 @@ export function MemoryConflictNotice({
       role="alert"
     >
       <p className="font-medium">
-        {project ? "Project memory" : "Memory"} changed while you were editing
+        {project ? `${appConfig.terminology.project} memory` : "Memory"} changed
+        while you were editing
       </p>
       <p className="mt-1 text-xs text-amber-800">
         Reload what is saved now, or keep your draft and let it save over the

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  exaConfiguration,
+  filerConfiguration,
   uploadConversionTimeoutMs,
   uploadJobWallClockMs,
   uploadProcessingConfiguration,
@@ -163,5 +165,38 @@ describe("upload worker deadlines", () => {
     expect(uploadJobWallClockMs({ UPLOAD_JOB_WALL_CLOCK_MS: "-5" })).toBe(
       900_000,
     );
+  });
+});
+
+describe("filer (matter sync) configuration", () => {
+  it("is configured only when all three values are present, and trims the base URL", () => {
+    expect(
+      filerConfiguration({
+        FILER_BASE_URL: "https://filer.example.net/",
+        FILER_FUNCTION_KEY: "key",
+        MATTER_SYNC_ORG_ID: "org-1",
+      }),
+    ).toEqual({
+      configured: true,
+      baseUrl: "https://filer.example.net",
+      functionKey: "key",
+      matterSyncOrgId: "org-1",
+    });
+    expect(
+      filerConfiguration({
+        FILER_BASE_URL: "https://filer.example.net",
+        FILER_FUNCTION_KEY: "key",
+      }).configured,
+    ).toBe(false);
+    expect(filerConfiguration({}).configured).toBe(false);
+  });
+});
+
+describe("Exa configuration", () => {
+  it("is optional and trims the API key", () => {
+    expect(exaConfiguration({}).configured).toBe(false);
+    expect(
+      exaConfiguration({ EXA_API_KEY: "  exa-key  " }),
+    ).toEqual({ configured: true, apiKey: "exa-key" });
   });
 });

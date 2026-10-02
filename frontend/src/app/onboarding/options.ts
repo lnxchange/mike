@@ -237,16 +237,19 @@ export const PRACTICE_AREA_OPTIONS = [
 export const PRACTICE_SETTING_OPTIONS = [
     { value: "private_practice", label: "Private practice" },
     { value: "in_house", label: "In-house" },
-    { value: "not_practising", label: "Not a practising attorney" },
+    { value: "not_practising", label: "Not currently practising" },
 ] as const satisfies readonly { value: PracticeSetting; label: string }[];
 
 export type { PracticeSetting } from "@/app/lib/mikeApi";
 
 export const PROFESSIONAL_TITLE_OPTIONS = [
+    "Principal",
     "Partner",
+    "Special Counsel",
     "Senior Associate",
     "Associate",
     "Law Clerk",
+    "Paralegal",
     "Counsel",
     "General Counsel",
     "Legal Counsel",

@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "../../lib/supabase";
 import { INTERNAL_ERROR_MESSAGE } from "../../lib/httpError";
+import { withAuExecutionBlocksPrompt } from "../../lib/auExecutionBlocks";
 import {
   beginMemoryConversationTurn,
   releaseMemoryConversationTurn,
@@ -793,7 +794,10 @@ export async function prepareWordChatStream(
     );
     const wordSystemPrompt = [
       buildWordChatSystemPrompt(args.clientToolsEnabled),
-      personalisationPrompt,
+      withAuExecutionBlocksPrompt(
+        personalisationPrompt || undefined,
+        personalisation?.jurisdiction,
+      ),
     ]
       .filter(Boolean)
       .join("\n\n");

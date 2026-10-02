@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useFetchDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { API_BASE } from "@/app/lib/mikeApi";
@@ -10,6 +10,11 @@ import {
     highlightDocxQuote,
 } from "./highlightDocxQuote";
 import type { CitationQuote } from "../types";
+import {
+    DOCUMENT_LOAD_FAILED_MESSAGE,
+    DOCUMENT_RENDER_TIMEOUT_MS,
+    withTimeout,
+} from "@/app/lib/documentViewerTimeout";
 
 interface Props {
     documentId: string;
@@ -237,6 +242,10 @@ export function DocxView({
         displayUrl,
         cacheBytes,
     );
+    const [rendered, setRendered] = useState(false);
+    const [renderError, setRenderError] = useState<string | null>(null);
+    const documentError = error ?? renderError;
+    const rendering = !!bytes && !rendered && !documentError;
 
     /**
      * Highlight every quote in `list` inside the rendered DOM and scroll
@@ -349,18 +358,24 @@ export function DocxView({
         lastScrollTopRef.current = scrollEl.scrollTop;
         const thisRender = ++renderKeyRef.current;
 
+        setRendered(false);
+        setRenderError(null);
+
         (async () => {
             try {
                 const { renderAsync } = await import("docx-preview");
                 if (cancelled) return;
                 containerEl.innerHTML = "";
-                await renderAsync(bytes, containerEl, undefined, {
-                    inWrapper: true,
-                    ignoreWidth: false,
-                    ignoreHeight: false,
-                    renderChanges: true,
-                    experimental: true,
-                });
+                await withTimeout(
+                    renderAsync(bytes, containerEl, undefined, {
+                        inWrapper: true,
+                        ignoreWidth: false,
+                        ignoreHeight: false,
+                        renderChanges: true,
+                        experimental: true,
+                    }),
+                    DOCUMENT_RENDER_TIMEOUT_MS,
+                );
                 if (cancelled) return;
                 await tagWIdsOnRenderedDom(
                     containerEl,
@@ -371,6 +386,7 @@ export function DocxView({
                 // Scale to fit before scrolling so offsets are computed
                 // against the post-zoom layout.
                 applyDocxScale();
+                setRendered(true);
                 requestAnimationFrame(() => {
                     if (
                         !scrollRef.current ||
@@ -409,6 +425,9 @@ export function DocxView({
                 });
             } catch (e) {
                 console.error("docx-preview render failed", e);
+                if (!cancelled) {
+                    setRenderError(DOCUMENT_LOAD_FAILED_MESSAGE);
+                }
             }
         })();
 
@@ -483,20 +502,23 @@ export function DocxView({
                 data-document-id={documentId}
                 data-version-id={versionId ?? ""}
             >
-                {loading && !bytes && (
+                {((loading && !bytes) || rendering) && (
                     <div className="flex h-full items-center justify-center">
-                        <Loader2 className="h-7 w-7 animate-spin text-gray-400" />
+                        <Loader2
+                            className="h-7 w-7 animate-spin text-gray-400"
+                            aria-label="Loading document"
+                        />
                     </div>
                 )}
-                {error && (
+                {documentError && (
                     <div className="flex h-full items-center justify-center">
-                        <p className="text-sm text-red-500">{error}</p>
+                        <p className="text-sm text-red-500">{documentError}</p>
                     </div>
                 )}
                 <div
                     ref={containerRef}
                     className="docx-view-container"
-                    hidden={!!error}
+                    hidden={!!documentError}
                 />
             </div>
         </div>

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
+import { chunkArray } from "./arrays";
 import type { Db } from "./supabase";
+
+/** PostgREST `.in()` filters travel in the URL; 100 UUIDs stay under the gateway limit. */
+const VERSION_IN_CHUNK = 100;
 
 type Supa = Db;
 
@@ -123,89 +127,136 @@ export function downloadFilenameForVersion(
     return `${stem} [Edited V${versionNumber}]${ext}`;
 }
 
+type VersionMeta = {
+    id: string;
+    document_id?: string;
+    storage_path: string | null;
+    pdf_storage_path: string | null;
+    version_number: number | null;
+    filename: string | null;
+    source: string | null;
+    file_type: string | null;
+    size_bytes: number | null;
+    page_count: number | null;
+    content_sha256: string | null;
+    created_at?: string | null;
+};
+
+const VERSION_META_COLUMNS =
+    "id, document_id, storage_path, pdf_storage_path, version_number, filename, source, file_type, size_bytes, page_count, content_sha256, created_at";
+
+function versionMetaFromRow(r: VersionMeta): VersionMeta {
+    return {
+        id: r.id,
+        document_id: r.document_id,
+        storage_path: r.storage_path ?? null,
+        pdf_storage_path: r.pdf_storage_path ?? null,
+        version_number: r.version_number ?? null,
+        filename: r.filename ?? null,
+        source: r.source ?? null,
+        file_type: r.file_type ?? null,
+        size_bytes: r.size_bytes ?? null,
+        page_count: r.page_count ?? null,
+        content_sha256: r.content_sha256 ?? null,
+        created_at: r.created_at ?? null,
+    };
+}
+
+function applyVersionMeta<T extends VersionPathRow>(
+    doc: T,
+    version: VersionMeta | null | undefined,
+): void {
+    doc.storage_path = version?.storage_path ?? null;
+    doc.pdf_storage_path = version?.pdf_storage_path ?? null;
+    doc.active_version_number = version?.version_number ?? null;
+    doc.filename = version?.filename?.trim() || "Untitled document";
+    doc.source = version?.source ?? null;
+    doc.file_type = version?.file_type ?? null;
+    doc.size_bytes = version?.size_bytes ?? null;
+    doc.page_count = version?.page_count ?? null;
+    doc.content_sha256 = version?.content_sha256 ?? null;
+}
+
+/** Prefer the newer created_at; break ties on version_number. */
+function isNewerVersion(candidate: VersionMeta, current: VersionMeta): boolean {
+    const candidateCreated = candidate.created_at ?? "";
+    const currentCreated = current.created_at ?? "";
+    if (candidateCreated !== currentCreated) {
+        return candidateCreated > currentCreated;
+    }
+    return (candidate.version_number ?? 0) > (current.version_number ?? 0);
+}
+
+async function loadVersionsByColumn(
+    db: Supa,
+    column: "id" | "document_id",
+    ids: string[],
+): Promise<VersionMeta[]> {
+    const loaded: VersionMeta[] = [];
+    for (const chunk of chunkArray(ids, VERSION_IN_CHUNK)) {
+        const { data: rows, error } = await db
+            .from("document_versions")
+            .select(VERSION_META_COLUMNS)
+            .in(column, chunk)
+            .is("deleted_at", null);
+        if (error) throw error;
+        for (const row of (rows ?? []) as VersionMeta[]) {
+            loaded.push(versionMetaFromRow(row));
+        }
+    }
+    return loaded;
+}
+
 /**
  * For a list of documents, look up the active version for each and merge
- * `storage_path` + `pdf_storage_path` onto the row. One round-trip total
- * regardless of list size. Documents with no current_version_id retain
- * null paths.
+ * `storage_path` + `pdf_storage_path` onto the row. Current-version ids are
+ * loaded in chunks of 100 so a large matter does not blow the PostgREST
+ * filter. When `current_version_id` is missing or its row is gone, fall back
+ * to the latest non-deleted version for that document.
  */
 export async function attachActiveVersionPaths<T extends VersionPathRow>(
     db: Supa,
     docs: T[],
 ): Promise<T[]> {
     if (docs.length === 0) return docs;
-    const versionIds = docs
-        .map((d) => d.current_version_id)
-        .filter((id): id is string => typeof id === "string");
-    if (versionIds.length === 0) {
-        for (const d of docs) {
-            d.filename = "Untitled document";
-            d.storage_path = null;
-            d.pdf_storage_path = null;
-            d.source = null;
-            d.file_type = null;
-            d.size_bytes = null;
-            d.page_count = null;
-            d.content_sha256 = null;
+    const versionIds = [
+        ...new Set(
+            docs
+                .map((d) => d.current_version_id)
+                .filter((id): id is string => typeof id === "string"),
+        ),
+    ];
+    const byId = new Map<string, VersionMeta>();
+    if (versionIds.length > 0) {
+        for (const row of await loadVersionsByColumn(db, "id", versionIds)) {
+            byId.set(row.id, row);
         }
-        return docs;
     }
-    const { data: rows } = await db
-        .from("document_versions")
-        .select(
-            "id, storage_path, pdf_storage_path, version_number, filename, source, file_type, size_bytes, page_count, content_sha256",
-        )
-        .in("id", versionIds)
-        .is("deleted_at", null);
-    const byId = new Map<
-        string,
-        {
-            storage_path: string | null;
-            pdf_storage_path: string | null;
-            version_number: number | null;
-            filename: string | null;
-            source: string | null;
-            file_type: string | null;
-            size_bytes: number | null;
-            page_count: number | null;
-            content_sha256: string | null;
+
+    const missingDocs = docs.filter(
+        (d) => !d.current_version_id || !byId.has(d.current_version_id),
+    );
+    const fallbackByDoc = new Map<string, VersionMeta>();
+    if (missingDocs.length > 0) {
+        const documentIds = [...new Set(missingDocs.map((d) => d.id))];
+        for (const row of await loadVersionsByColumn(
+            db,
+            "document_id",
+            documentIds,
+        )) {
+            if (!row.document_id) continue;
+            const prev = fallbackByDoc.get(row.document_id);
+            if (!prev || isNewerVersion(row, prev)) {
+                fallbackByDoc.set(row.document_id, row);
+            }
         }
-    >();
-    for (const r of (rows ?? []) as {
-        id: string;
-        storage_path: string | null;
-        pdf_storage_path: string | null;
-        version_number: number | null;
-        filename: string | null;
-        source: string | null;
-        file_type: string | null;
-        size_bytes: number | null;
-        page_count: number | null;
-        content_sha256: string | null;
-    }[]) {
-        byId.set(r.id, {
-            storage_path: r.storage_path ?? null,
-            pdf_storage_path: r.pdf_storage_path ?? null,
-            version_number: r.version_number ?? null,
-            filename: r.filename ?? null,
-            source: r.source ?? null,
-            file_type: r.file_type ?? null,
-            size_bytes: r.size_bytes ?? null,
-            page_count: r.page_count ?? null,
-            content_sha256: r.content_sha256 ?? null,
-        });
     }
+
     for (const d of docs) {
-        const v = d.current_version_id ? byId.get(d.current_version_id) : null;
-        d.storage_path = v?.storage_path ?? null;
-        d.pdf_storage_path = v?.pdf_storage_path ?? null;
-        d.active_version_number = v?.version_number ?? null;
-        d.filename = v?.filename?.trim() || "Untitled document";
-        d.source = v?.source ?? null;
-        d.file_type = v?.file_type ?? null;
-        d.size_bytes = v?.size_bytes ?? null;
-        d.page_count = v?.page_count ?? null;
-        d.content_sha256 = v?.content_sha256 ?? null;
+        const current = d.current_version_id
+            ? byId.get(d.current_version_id)
+            : undefined;
+        applyVersionMeta(d, current ?? fallbackByDoc.get(d.id));
     }
     return docs;
 }

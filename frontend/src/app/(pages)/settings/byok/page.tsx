@@ -58,6 +58,11 @@ export default function ByokPage() {
               <ApiKeyField
                 label={field.label}
                 placeholder={field.placeholder}
+                description={
+                  profile?.apiKeys[field.provider].source === "org"
+                    ? "Your organisation provides this key. Saving a personal key here overrides it."
+                    : undefined
+                }
                 hasSavedKey={profile?.apiKeys[field.provider].source === "user"}
                 onSave={(value) =>
                   updateApiKey(field.provider, value.trim() || null)

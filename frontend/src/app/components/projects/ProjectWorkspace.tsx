@@ -21,10 +21,29 @@ import {
     getProjectPeople,
     grantProjectAccess,
     listProjectChats,
+    pullZohoMatter,
     revokeProjectAccess,
     updateProject,
     type ProjectGrant,
 } from "@/app/lib/mikeApi";
+import {
+    clearJustPulledMatter,
+    describeMatterSync,
+    isMatterSyncUnsettled,
+    matterSyncOpenFiles,
+    matterSyncTotals,
+    readJustPulledMatter,
+    sharepointFolderUrl,
+    type MatterSyncFile,
+    zohoMatterUrl,
+} from "@/app/lib/matterSync";
+import { tabPillButtonUIClassName } from "@/shared/ui/TabPillButtonUI.styles";
+import {
+    useMatterDeltaCheck,
+    useMatterSyncStatus,
+} from "@/app/hooks/useMatterSyncStatus";
+import { userFacingApiError } from "@/app/lib/userFacingError";
+import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import type {
     Chat,
     ColumnConfig,
@@ -53,6 +72,10 @@ import {
     ProjectPageHeader,
     type ProjectWorkspaceSection,
 } from "./ProjectPageParts";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
+const ZOHO_PULL_ENABLED = appConfig.featureFlags.zohoMatterPull === true;
 
 /**
  * A denied action: the sentence for the popup plus which role the action is
@@ -132,6 +155,12 @@ type ProjectWorkspaceValue = {
      * closed until the server has told us it may open.
      */
     canDo: (capability: Capability) => boolean;
+    /** SharePoint copy still landing or converting. Null once the matter is settled. */
+    sharepointIngest: {
+        expected: number;
+        ready: number;
+        files: MatterSyncFile[];
+    } | null;
 };
 
 const ProjectWorkspaceContext =
@@ -246,6 +275,135 @@ export function ProjectWorkspaceProvider({
     const openProjectRoot = useCallback(() => {
         router.push(`/projects/${projectId}`);
     }, [projectId, router]);
+
+    // A matter pulled from Zoho keeps filling with documents after the page
+    // opens. Re-read the project when the filer reports more of them so the
+    // list grows without a manual reload; the same read ProjectDocumentsView
+    // uses for its own refresh.
+    const refreshProjectCollection = useCallback(async () => {
+        try {
+            const updated = await getProject(projectId);
+            setProject(updated);
+            setFolders(updated.folders ?? []);
+        } catch (error) {
+            console.error("[project workspace] failed to refresh project", error);
+        }
+    }, [projectId]);
+
+    const matterNumber = project?.cm_number?.trim() || null;
+    const matterSyncEnabled =
+        ZOHO_PULL_ENABLED && showShell && !!project && !!matterNumber;
+    const visibleDocumentCount =
+        project?.documents?.filter((d) => d.status === "ready").length ?? 0;
+    const { status: matterSyncStatus, loaded: matterSyncLoaded, refresh: refreshMatterSyncStatus } =
+        useMatterSyncStatus({
+            projectId,
+            enabled: matterSyncEnabled,
+            visibleDocumentCount,
+            onDocumentCountIncreased: () => void refreshProjectCollection(),
+        });
+    const [justPulled, setJustPulled] = useState(false);
+    useEffect(() => {
+        setJustPulled(readJustPulledMatter(projectId));
+    }, [projectId]);
+    useEffect(() => {
+        if (!justPulled || !matterSyncLoaded) return;
+        if (!isMatterSyncUnsettled(matterSyncStatus, visibleDocumentCount)) {
+            clearJustPulledMatter(projectId);
+            setJustPulled(false);
+        }
+    }, [justPulled, matterSyncLoaded, matterSyncStatus, visibleDocumentCount, projectId]);
+    const matterSyncUnsettled =
+        justPulled ||
+        isMatterSyncUnsettled(matterSyncStatus, visibleDocumentCount);
+    const sharepointIngest = useMemo(() => {
+        if (!matterSyncStatus?.found || !matterSyncUnsettled) return null;
+        const totals = matterSyncTotals(matterSyncStatus, visibleDocumentCount);
+        return {
+            expected: Math.max(totals.total, totals.ready),
+            ready: totals.ready,
+            files: matterSyncOpenFiles(matterSyncStatus),
+        };
+    }, [matterSyncStatus, matterSyncUnsettled, visibleDocumentCount]);
+
+    useEffect(() => {
+        if (!project || !matterSyncStatus?.found) return;
+        const dealId = matterSyncStatus.matterId?.trim() || null;
+        const folderUrl =
+            sharepointFolderUrl(matterSyncStatus.sharepointFolderUrl);
+        if (!dealId && !folderUrl) return;
+        const nextDeal = project.zoho_deal_id || dealId;
+        const nextUrl = project.sharepoint_folder_url || folderUrl;
+        if (
+            nextDeal === project.zoho_deal_id &&
+            nextUrl === project.sharepoint_folder_url
+        ) {
+            return;
+        }
+        setProject((prev) =>
+            prev
+                ? {
+                      ...prev,
+                      zoho_deal_id: nextDeal,
+                      sharepoint_folder_url: nextUrl,
+                  }
+                : prev,
+        );
+    }, [matterSyncStatus, project]);
+    const [syncNowPending, setSyncNowPending] = useState(false);
+    const [syncNowError, setSyncNowError] = useState<string | null>(null);
+
+    const requestSyncNow = useCallback(async () => {
+        if (!matterNumber || syncNowPending) return;
+        setSyncNowPending(true);
+        try {
+            await pullZohoMatter({ matterNumber }, { mode: "incremental" });
+            await Promise.all([
+                refreshMatterSyncStatus(),
+                refreshProjectCollection(),
+            ]);
+        } catch (error) {
+            setSyncNowError(
+                userFacingApiError(
+                    error,
+                    `The ${t.projectLower} could not be synced from SharePoint.`,
+                ),
+            );
+        } finally {
+            setSyncNowPending(false);
+        }
+    }, [
+        matterNumber,
+        refreshMatterSyncStatus,
+        refreshProjectCollection,
+        syncNowPending,
+    ]);
+
+    const matterSyncSettled =
+        matterSyncEnabled &&
+        !!matterNumber &&
+        matterSyncStatus?.found === true &&
+        !isMatterSyncUnsettled(matterSyncStatus, visibleDocumentCount) &&
+        !syncNowPending &&
+        !justPulled;
+    const checkOpenMatterDelta = useCallback(() => {
+        if (!matterNumber) return;
+        void pullZohoMatter({ matterNumber }, { mode: "incremental" })
+            .then(() =>
+                Promise.all([
+                    refreshMatterSyncStatus(),
+                    refreshProjectCollection(),
+                ]),
+            )
+            .catch(() => {
+                // The five-minute sweep still checks this folder. A missed
+                // minute must not surface as an error on an idle matter.
+            });
+    }, [matterNumber, refreshMatterSyncStatus, refreshProjectCollection]);
+    useMatterDeltaCheck({
+        enabled: matterSyncSettled,
+        onCheck: checkOpenMatterDelta,
+    });
 
     useEffect(() => {
         if (!showShell) {
@@ -433,7 +591,7 @@ export function ProjectWorkspaceProvider({
     }) {
         if (!canDo("access.manage")) {
             denyUnlessLoading({
-                action: "edit project details",
+                action: `edit ${t.projectLower} details`,
                 requiredRole: "owner",
             });
             return;
@@ -461,7 +619,7 @@ export function ProjectWorkspaceProvider({
 
     function requestProjectDelete() {
         if (!canDo("container.delete")) {
-            denyUnlessLoading("delete this project");
+            denyUnlessLoading(`delete this ${t.projectLower}`);
             return;
         }
         setDeleteProjectStatus("idle");
@@ -505,6 +663,7 @@ export function ProjectWorkspaceProvider({
             setOwnerOnlyAction,
             accessRole,
             canDo,
+            sharepointIngest,
         }),
         [
             projectId,
@@ -524,6 +683,7 @@ export function ProjectWorkspaceProvider({
             setDocumentUploadHeaderAction,
             accessRole,
             canDo,
+            sharepointIngest,
         ],
     );
 
@@ -558,9 +718,31 @@ export function ProjectWorkspaceProvider({
                     onUploadFiles={documentUploadActions.uploadFiles}
                     onUploadFolder={documentUploadActions.uploadFolder}
                     documentFolderBreadcrumbs={documentFolderBreadcrumbs}
+                    matterSync={
+                        matterSyncEnabled &&
+                        (matterSyncStatus?.found || justPulled)
+                            ? {
+                                  statusLine: matterSyncStatus?.found
+                                      ? describeMatterSync(matterSyncStatus, {
+                                            visibleDocumentCount,
+                                        })
+                                      : "Syncing from SharePoint",
+                                  onSyncNow: () => void requestSyncNow(),
+                                  syncing:
+                                      syncNowPending || matterSyncUnsettled,
+                              }
+                            : null
+                    }
                 />
 
                 {children}
+
+                <WarningPopup
+                    open={syncNowError !== null}
+                    title="Sync not started"
+                    message={syncNowError ?? ""}
+                    onClose={() => setSyncNowError(null)}
+                />
 
                 <NewTRModal
                     open={newTRModalOpen}
@@ -611,8 +793,8 @@ export function ProjectWorkspaceProvider({
 
                 <ConfirmPopup
                     open={deleteProjectConfirmOpen}
-                    title="Delete project?"
-                    message="This will permanently delete the project and its related documents, chats, and tabular reviews."
+                    title={`Delete ${t.projectLower}?`}
+                    message={`This will permanently delete the ${t.projectLower} and its related documents, chats, and tabular reviews.`}
                     confirmLabel="Delete"
                     confirmVariant="danger"
                     confirmStatus={
@@ -639,7 +821,7 @@ export function ProjectWorkspaceProvider({
                         fetchAccess={getProjectPeople}
                         currentUserEmail={user?.email ?? null}
                         breadcrumb={[
-                            "Projects",
+                            t.projects,
                             project.name +
                                 (project.cm_number
                                     ? ` (${project.cm_number})`
@@ -649,7 +831,7 @@ export function ProjectWorkspaceProvider({
                         access={{
                             grants: grants ?? [],
                             orgId: project.org_id ?? null,
-                            ownerLabel: "Project owners",
+                            ownerLabel: `${t.project} owners`,
                             canManage: canDo("access.manage"),
                             onGrant: async (email, role) => {
                                 await grantProjectAccess(
@@ -678,8 +860,10 @@ export function ProjectSectionToolbar({
     actions?: ReactNode;
     backAction?: (() => void) | null;
 }) {
-    const { activeSection, projectId } = useProjectWorkspace();
+    const { activeSection, projectId, project } = useProjectWorkspace();
     const router = useRouter();
+    const zohoUrl = zohoMatterUrl(project?.zoho_deal_id);
+    const sharepointUrl = sharepointFolderUrl(project?.sharepoint_folder_url);
 
     return (
         <TableToolbar
@@ -709,6 +893,32 @@ export function ProjectSectionToolbar({
                         Back
                     </TabPillButtonUI>
                 ) : undefined
+            }
+            afterItems={
+                backAction || (!zohoUrl && !sharepointUrl) ? undefined : (
+                    <>
+                        {zohoUrl ? (
+                            <a
+                                href={zohoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={tabPillButtonUIClassName()}
+                            >
+                                Zoho
+                            </a>
+                        ) : null}
+                        {sharepointUrl ? (
+                            <a
+                                href={sharepointUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={tabPillButtonUIClassName()}
+                            >
+                                SharePoint
+                            </a>
+                        ) : null}
+                    </>
+                )
             }
             actions={actions}
         />

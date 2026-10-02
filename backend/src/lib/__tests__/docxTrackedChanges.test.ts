@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import JSZip from "jszip";
 import {
+    acceptAllTrackedChanges,
+    applyDocxComments,
     applyTrackedEdits,
     extractDocxBodyText,
     extractTrackedChangeIds,
+    listTrackedChanges,
     resolveTrackedChange,
 } from "../docxTrackedChanges";
 
@@ -32,6 +35,17 @@ function para(text: string): string {
 async function readDocumentXml(bytes: Buffer): Promise<string> {
     const zip = await JSZip.loadAsync(bytes);
     return zip.file("word/document.xml")!.async("string");
+}
+
+/** Authors of every w:ins whose inner XML contains `needle`. */
+function insertionAuthorsCovering(xml: string, needle: string): string[] {
+    const authors: string[] = [];
+    const pattern = /<w:ins\b([^>]*)>([\s\S]*?)<\/w:ins>/g;
+    for (const match of xml.matchAll(pattern)) {
+        if (!match[2].includes(needle)) continue;
+        authors.push(/w:author="([^"]*)"/.exec(match[1])?.[1] ?? "");
+    }
+    return authors;
 }
 
 describe("extractDocxBodyText", () => {
@@ -85,6 +99,168 @@ describe("extractDocxBodyText", () => {
     });
 });
 
+const MARKED_UP_BODY =
+    `<w:p>` +
+    `<w:r><w:t xml:space="preserve">Keep </w:t></w:r>` +
+    `<w:ins w:id="1" w:author="Tan" w:date="2026-09-18T07:01:16Z"><w:r><w:t>added</w:t></w:r></w:ins>` +
+    `<w:del w:id="2" w:author="Yule" w:date="2026-09-17T03:19:35Z"><w:r><w:delText>removed</w:delText></w:r></w:del>` +
+    `<w:r><w:rPr><w:b/><w:rPrChange w:id="3" w:author="Tan"><w:rPr/></w:rPrChange></w:rPr><w:t xml:space="preserve"> bold</w:t></w:r>` +
+    `<w:commentRangeStart w:id="0"/>` +
+    `<w:r><w:t xml:space="preserve"> noted</w:t></w:r>` +
+    `<w:commentRangeEnd w:id="0"/>` +
+    `<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>` +
+    `</w:p>` +
+    `<w:p>` +
+    `<w:moveFrom w:id="4" w:author="Tan"><w:r><w:t>Moved text.</w:t></w:r></w:moveFrom>` +
+    `</w:p>` +
+    `<w:p>` +
+    `<w:moveTo w:id="5" w:author="Tan"><w:r><w:t>Moved text.</w:t></w:r></w:moveTo>` +
+    `</w:p>`;
+
+describe("listTrackedChanges", () => {
+    it("inventories pending insertions and deletions with author and date", async () => {
+        const bytes = await makeDocx(MARKED_UP_BODY);
+        const summary = await listTrackedChanges(bytes);
+        expect(summary.changes).toEqual([
+            {
+                w_id: "1",
+                kind: "ins",
+                author: "Tan",
+                date: "2026-09-18T07:01:16Z",
+                text: "added",
+            },
+            {
+                w_id: "2",
+                kind: "del",
+                author: "Yule",
+                date: "2026-09-17T03:19:35Z",
+                text: "removed",
+            },
+        ]);
+        expect(summary.propertyChanges).toBe(1);
+        expect(summary.moves).toBe(2);
+        expect(summary.comments).toBe(1);
+    });
+
+    it("reports a clean document as having nothing pending", async () => {
+        const bytes = await makeDocx(para("Nothing to see."));
+        await expect(listTrackedChanges(bytes)).resolves.toEqual({
+            changes: [],
+            propertyChanges: 0,
+            moves: 0,
+            comments: 0,
+            commentRecords: [],
+        });
+    });
+});
+
+describe("acceptAllTrackedChanges", () => {
+    it("collapses insertions, deletions, moves, property changes and comments", async () => {
+        const zip = new JSZip();
+        zip.file(
+            "word/document.xml",
+            `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                `<w:document ${W_NS}><w:body>${MARKED_UP_BODY}</w:body></w:document>`,
+        );
+        zip.file("word/comments.xml", `<w:comments ${W_NS}/>`);
+        zip.file(
+            "word/_rels/document.xml.rels",
+            `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+                `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>` +
+                `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+                `</Relationships>`,
+        );
+        zip.file(
+            "[Content_Types].xml",
+            `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+                `<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>` +
+                `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+                `</Types>`,
+        );
+        const bytes = await zip.generateAsync({ type: "nodebuffer" });
+
+        const result = await acceptAllTrackedChanges(bytes);
+
+        expect(result.accepted).toBe(4);
+        expect(result.propertyChangesAccepted).toBe(1);
+        expect(result.commentsRemoved).toBe(1);
+        const xml = await readDocumentXml(result.bytes);
+        expect(xml).not.toContain("<w:ins");
+        expect(xml).not.toContain("<w:del");
+        expect(xml).not.toContain("<w:moveFrom");
+        expect(xml).not.toContain("<w:moveTo");
+        expect(xml).not.toContain("w:rPrChange");
+        expect(xml).not.toContain("commentRange");
+        expect(xml).not.toContain("commentReference");
+        expect(xml).toMatch(/<w:b(\/>|><\/w:b>)/);
+        await expect(extractDocxBodyText(result.bytes)).resolves.toBe(
+            "Keep added bold noted\n\nMoved text.",
+        );
+        await expect(listTrackedChanges(result.bytes)).resolves.toEqual({
+            changes: [],
+            propertyChanges: 0,
+            moves: 0,
+            comments: 0,
+            commentRecords: [],
+        });
+
+        const out = await JSZip.loadAsync(result.bytes);
+        expect(out.file("word/comments.xml")).toBeNull();
+        const rels = await out.file("word/_rels/document.xml.rels")!.async("string");
+        expect(rels).not.toContain("comments.xml");
+        expect(rels).toContain("styles.xml");
+        const types = await out.file("[Content_Types].xml")!.async("string");
+        expect(types).not.toContain("/word/comments.xml");
+        expect(types).toContain("/word/document.xml");
+    });
+
+    it("joins a paragraph whose mark was deleted with the one that follows", async () => {
+        const bytes = await makeDocx(
+            `<w:p><w:pPr><w:rPr><w:del w:id="7" w:author="Tan"/></w:rPr></w:pPr>` +
+                `<w:r><w:t xml:space="preserve">First half </w:t></w:r></w:p>` +
+                `<w:p><w:r><w:t>second half.</w:t></w:r></w:p>` +
+                para("Untouched."),
+        );
+        const result = await acceptAllTrackedChanges(bytes);
+        expect(result.accepted).toBe(1);
+        await expect(extractDocxBodyText(result.bytes)).resolves.toBe(
+            "First half second half.\nUntouched.",
+        );
+    });
+
+    it("accepts changes in headers and footers too", async () => {
+        const zip = new JSZip();
+        zip.file(
+            "word/document.xml",
+            `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                `<w:document ${W_NS}><w:body>${para("Body.")}</w:body></w:document>`,
+        );
+        zip.file(
+            "word/header1.xml",
+            `<w:hdr ${W_NS}><w:p><w:ins w:id="9"><w:r><w:t>Draft</w:t></w:r></w:ins>` +
+                `<w:del w:id="10"><w:r><w:delText>Final</w:delText></w:r></w:del></w:p></w:hdr>`,
+        );
+        const result = await acceptAllTrackedChanges(
+            await zip.generateAsync({ type: "nodebuffer" }),
+        );
+        expect(result.accepted).toBe(2);
+        const out = await JSZip.loadAsync(result.bytes);
+        const header = await out.file("word/header1.xml")!.async("string");
+        expect(header).toContain("<w:t>Draft</w:t>");
+        expect(header).not.toContain("Final");
+        expect(header).not.toContain("<w:ins");
+    });
+
+    it("leaves a clean document unchanged in substance", async () => {
+        const bytes = await makeDocx(para("Already clean."));
+        const result = await acceptAllTrackedChanges(bytes);
+        expect(result.accepted).toBe(0);
+        await expect(extractDocxBodyText(result.bytes)).resolves.toBe(
+            "Already clean.",
+        );
+    });
+});
+
 describe("applyTrackedEdits", () => {
     it("emits a w:del/w:ins pair for a replacement and reports the change", async () => {
         const bytes = await makeDocx(para("The fee is ten dollars."));
@@ -130,6 +306,58 @@ describe("applyTrackedEdits", () => {
         expect(result.errors).toEqual([]);
         expect(result.changes[0].deletedText).toBe("30");
         expect(result.changes[0].insertedText).toBe("45");
+    });
+
+    it("keeps the other author's insertion when a new edit lands inside it", async () => {
+        const bytes = await makeDocx(
+            `<w:p><w:ins w:id="1" w:author="Irving, Dann" w:date="2026-09-10T00:00:00Z">` +
+                `<w:r><w:t xml:space="preserve">Party B shall pay the amount.</w:t></w:r>` +
+                `</w:ins></w:p>`,
+        );
+        const result = await applyTrackedEdits(
+            bytes,
+            [
+                {
+                    find: "the amount.",
+                    replace:
+                        "the amount, except for Party A default. [Blue NRG note: Party B should not bear this.]",
+                    context_before: "Party B shall pay ",
+                    context_after: "",
+                },
+            ],
+            { author: "Yule Guttenbeil" },
+        );
+        expect(result.errors).toEqual([]);
+        const xml = await readDocumentXml(result.bytes);
+        expect(insertionAuthorsCovering(xml, "Party B shall pay the amount")).toEqual([
+            "Irving, Dann",
+        ]);
+        expect(insertionAuthorsCovering(xml, "[Blue NRG note:")).toEqual([
+            "Yule Guttenbeil",
+        ]);
+
+        const again = await applyTrackedEdits(
+            result.bytes,
+            [
+                {
+                    find: "shall",
+                    replace: "must",
+                    context_before: "Party B ",
+                    context_after: " pay",
+                },
+            ],
+            { author: "Yule Guttenbeil" },
+        );
+        expect(again.errors).toEqual([]);
+        const xml2 = await readDocumentXml(again.bytes);
+        expect(insertionAuthorsCovering(xml2, "pay the amount")).toEqual(["Irving, Dann"]);
+        expect(insertionAuthorsCovering(xml2, "[Blue NRG note:")).toEqual([
+            "Yule Guttenbeil",
+        ]);
+        expect(insertionAuthorsCovering(xml2, "must")).toContain("Yule Guttenbeil");
+        await expect(extractDocxBodyText(again.bytes)).resolves.toBe(
+            "Party B must pay the amount, except for Party A default. [Blue NRG note: Party B should not bear this.]",
+        );
     });
 
     it("honours a custom author", async () => {
@@ -328,5 +556,125 @@ describe("extractTrackedChangeIds", () => {
         zip.file("other.txt", "not a docx");
         const bytes = await zip.generateAsync({ type: "nodebuffer" });
         await expect(extractTrackedChangeIds(bytes)).resolves.toEqual([]);
+    });
+});
+
+describe("review comments", () => {
+    const commentedBody =
+        `<w:p>` +
+        `<w:r><w:t xml:space="preserve">The supplier must </w:t></w:r>` +
+        `<w:commentRangeStart w:id="0"/>` +
+        `<w:r><w:t>maintain insurance</w:t></w:r>` +
+        `<w:commentRangeEnd w:id="0"/>` +
+        `<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>` +
+        `<w:r><w:t xml:space="preserve"> throughout the term.</w:t></w:r>` +
+        `</w:p>`;
+
+    async function commentedDocx(): Promise<Buffer> {
+        const zip = new JSZip();
+        zip.file(
+            "word/document.xml",
+            `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                `<w:document ${W_NS}><w:body>${commentedBody}</w:body></w:document>`,
+        );
+        zip.file(
+            "word/comments.xml",
+            `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                `<w:comments ${W_NS}>` +
+                `<w:comment w:id="0" w:author="Amana Zahid" w:date="2026-09-18T01:02:03Z" w:initials="AZ">` +
+                `<w:p w14:paraId="AAAA0001"><w:r><w:t>Confirm the limit is $20m.</w:t></w:r></w:p>` +
+                `</w:comment>` +
+                `<w:comment w:id="1" w:author="Yule Guttenbeil" w:date="2026-09-18T04:05:06Z" w:initials="YG">` +
+                `<w:p w14:paraId="BBBB0002"><w:r><w:t>It is $20 million.</w:t></w:r></w:p>` +
+                `</w:comment>` +
+                `</w:comments>`,
+        );
+        zip.file(
+            "word/commentsExtended.xml",
+            `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                `<w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml">` +
+                `<w15:commentEx w15:paraId="AAAA0001" w15:done="0"/>` +
+                `<w15:commentEx w15:paraId="BBBB0002" w15:paraIdParent="AAAA0001" w15:done="0"/>` +
+                `</w15:commentsEx>`,
+        );
+        return zip.generateAsync({ type: "nodebuffer" });
+    }
+
+    it("reads comment bubble text, author, date, anchor and replies", async () => {
+        const summary = await listTrackedChanges(await commentedDocx());
+        expect(summary.comments).toBe(1);
+        expect(summary.commentRecords).toEqual([
+            {
+                id: "0",
+                author: "Amana Zahid",
+                date: "2026-09-18T01:02:03Z",
+                initials: "AZ",
+                text: "Confirm the limit is $20m.",
+                anchor: "maintain insurance",
+                parentId: null,
+                resolved: false,
+            },
+            {
+                id: "1",
+                author: "Yule Guttenbeil",
+                date: "2026-09-18T04:05:06Z",
+                initials: "YG",
+                text: "It is $20 million.",
+                anchor: null,
+                parentId: "0",
+                resolved: false,
+            },
+        ]);
+    });
+
+    it("writes a new bubble and a reply that round-trip through the reader", async () => {
+        const written = await applyDocxComments(
+            await commentedDocx(),
+            [
+                {
+                    anchor: "throughout the term",
+                    context_before: "insurance ",
+                    context_after: ".",
+                    text: "State whether the obligation survives termination.",
+                },
+                {
+                    parent_id: "0",
+                    anchor: "",
+                    text: "Agreed, at twenty million.",
+                },
+            ],
+            { author: "Mike" },
+        );
+        expect(written.errors).toEqual([]);
+        expect(written.comments.map((comment) => comment.text)).toEqual([
+            "State whether the obligation survives termination.",
+            "Agreed, at twenty million.",
+        ]);
+
+        const summary = await listTrackedChanges(written.bytes);
+        const added = summary.commentRecords.find((comment) =>
+            comment.text.startsWith("State whether"),
+        );
+        const reply = summary.commentRecords.find((comment) =>
+            comment.text.startsWith("Agreed"),
+        );
+        expect(added).toMatchObject({
+            author: "Mike",
+            anchor: "throughout the term",
+            parentId: null,
+        });
+        expect(reply).toMatchObject({
+            author: "Mike",
+            parentId: "0",
+        });
+        await expect(extractDocxBodyText(written.bytes)).resolves.toBe(
+            "The supplier must maintain insurance throughout the term.",
+        );
+
+        const zip = await JSZip.loadAsync(written.bytes);
+        const rels = await zip.file("word/_rels/document.xml.rels")!.async("string");
+        expect(rels).toContain("comments.xml");
+        const types = await zip.file("[Content_Types].xml")!.async("string");
+        expect(types).toContain("/word/comments.xml");
     });
 });

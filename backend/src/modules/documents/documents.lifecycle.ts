@@ -104,3 +104,24 @@ export async function updateDocumentVersion(
     await completeInlineDocumentCleanup(db, keys);
   return result;
 }
+
+/** The SharePoint item a saved version now mirrors in the DR folder. */
+export async function recordSharePointVersion(
+  db: Db,
+  args: {
+    documentId: string;
+    versionId: string;
+    itemId: string;
+    ctag: string | null;
+  },
+) {
+  return db
+    .from("document_versions")
+    .update({
+      external_provider: "sharepoint",
+      external_item_id: args.itemId,
+      external_ctag: args.ctag,
+    })
+    .eq("id", args.versionId)
+    .eq("document_id", args.documentId);
+}

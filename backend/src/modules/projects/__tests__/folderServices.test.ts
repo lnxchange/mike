@@ -20,6 +20,17 @@ beforeEach(() => {
   mocks.cleanup.mockResolvedValue(undefined);
 });
 const actor = { userId: "actor", projectId: "p", folderId: "root" };
+const libraryActor = {
+  userId: "actor",
+  sources: [
+    {
+      id: null,
+      label: "Personal",
+      access_role: "owner" as const,
+      org_role: null,
+    },
+  ],
+};
 
 describe("folder callers retain their scope and failure policies", () => {
   it("keeps project permissions ahead of all folder operations", async () => {
@@ -55,33 +66,48 @@ describe("folder callers retain their scope and failure policies", () => {
     const fake = scriptedDb([
       {
         table: "library_folders",
-        data: { id: "root", parent_folder_id: null },
+        data: {
+          id: "root",
+          parent_folder_id: null,
+          user_id: "actor",
+          org_id: null,
+        },
       },
       { table: "library_folders", data: null },
     ]);
     expect(
-      await updateLibraryFolder(fake.db, "actor", "template", "root", {
+      await updateLibraryFolder(fake.db, libraryActor, "template", "root", {
         parent_folder_id: "foreign",
       }),
     ).toMatchObject({ ok: false, status: 404 });
-    for (const call of fake.calls)
-      expect(call.filters).toEqual(
-        expect.arrayContaining([
-          ["eq", "user_id", "actor"],
-          ["eq", "library_kind", "template"],
-        ]),
-      );
+    expect(fake.calls[0].filters).toEqual(
+      expect.arrayContaining([
+        ["eq", "id", "root"],
+        ["eq", "library_kind", "template"],
+      ]),
+    );
+    expect(fake.calls[1].filters).toEqual(
+      expect.arrayContaining([
+        ["eq", "id", "foreign"],
+        ["eq", "library_kind", "template"],
+      ]),
+    );
     fake.done();
   });
   it("preserves the library cycle error", async () => {
     const fake = scriptedDb([
       {
         table: "library_folders",
-        data: { id: "root", parent_folder_id: null },
+        data: {
+          id: "root",
+          parent_folder_id: null,
+          user_id: "actor",
+          org_id: null,
+        },
       },
     ]);
     expect(
-      await updateLibraryFolder(fake.db, "actor", "file", "root", {
+      await updateLibraryFolder(fake.db, libraryActor, "file", "root", {
         parent_folder_id: "root",
       }),
     ).toMatchObject({
@@ -112,6 +138,19 @@ describe("folder callers retain their scope and failure policies", () => {
       const library = kind === "library";
       const table = library ? "library_folders" : "project_subfolders";
       const fake = scriptedDb([
+        ...(library
+          ? [
+              {
+                table,
+                data: {
+                  id: "root",
+                  parent_folder_id: null,
+                  user_id: "actor",
+                  org_id: null,
+                },
+              },
+            ]
+          : []),
         {
           table,
           data: [
@@ -129,10 +168,17 @@ describe("folder callers retain their scope and failure policies", () => {
         },
       ]);
       const result = library
-        ? await deleteLibraryFolder(fake.db, "actor", "file", "root")
+        ? await deleteLibraryFolder(fake.db, libraryActor, "file", "root")
         : await deleteProjectFolder(fake.db, actor);
       expect(result.ok).toBe(false);
-      expect(fake.calls[1].filters).toContainEqual([
+      const folderIdFilter = fake.calls.find((call) =>
+        call.filters.some(
+          ([op, column]) =>
+            op === "in" &&
+            column === (library ? "library_folder_id" : "folder_id"),
+        ),
+      );
+      expect(folderIdFilter?.filters).toContainEqual([
         "in",
         library ? "library_folder_id" : "folder_id",
         ["root", "child"],

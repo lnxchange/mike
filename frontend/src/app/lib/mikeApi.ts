@@ -5,6 +5,11 @@
 
 import { isPanelDocument } from "@/app/components/shared/types";
 import { authenticatedFetch } from "@/app/lib/authEvents";
+import type {
+    MatterPullResult,
+    MatterSyncStatusResult,
+    ZohoMatterSearchHit,
+} from "@/app/lib/matterSync";
 import {
     UploadBatchError,
     createControlRequestRetryPolicy,
@@ -76,6 +81,9 @@ interface ServerMessage {
     workflow?: { id: string; title: string } | null;
     citations?: Citation[] | null;
     created_at: string;
+    /** "running" on the one assistant row the server is still writing. */
+    status?: "running";
+    started_at?: string | null;
 }
 interface ServerChatDetailOut {
     chat: Chat;
@@ -519,6 +527,48 @@ export async function setProjectMemoryEnabled(
     );
 }
 
+export async function getOrgMemory(
+    orgId: string,
+    signal?: AbortSignal,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        `/orgs/${encodeURIComponent(orgId)}/memory`,
+        { signal },
+    );
+}
+
+export async function updateOrgMemory(
+    orgId: string,
+    content: string,
+    expectedRevision: number,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        `/orgs/${encodeURIComponent(orgId)}/memory`,
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                content,
+                expected_revision: expectedRevision,
+            }),
+        },
+    );
+}
+
+export async function setOrgMemoryEnabled(
+    orgId: string,
+    enabled: boolean,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        `/orgs/${encodeURIComponent(orgId)}/memory/settings`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+        },
+    );
+}
+
 export async function exportAccountData(): Promise<{
     blob: Blob;
     filename: string | null;
@@ -598,10 +648,13 @@ export type PracticeSetting =
     "private_practice" | "in_house" | "not_practising";
 
 export type ProfessionalTitle =
+    | "Principal"
     | "Partner"
+    | "Special Counsel"
     | "Senior Associate"
     | "Associate"
     | "Law Clerk"
+    | "Paralegal"
     | "Counsel"
     | "General Counsel"
     | "Legal Counsel"
@@ -634,6 +687,10 @@ export interface UserProfile {
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    legalResearchAu: boolean;
+    legalResearchAuEnergy: boolean;
+    legalResearchAuVic: boolean;
+    legalResearchAuCases: boolean;
     quickActionsVisible: boolean;
     darkMode: boolean;
     projectMemoryDefault: boolean;
@@ -749,6 +806,10 @@ export async function updateUserProfile(payload: {
     lastSelectedChatModel?: string | null;
     lastSelectedReasoningLevel?: NonNullable<Message["reasoning"]>;
     legalResearchUs?: boolean;
+    legalResearchAu?: boolean;
+    legalResearchAuEnergy?: boolean;
+    legalResearchAuVic?: boolean;
+    legalResearchAuCases?: boolean;
     quickActionsVisible?: boolean;
     darkMode?: boolean;
     projectMemoryDefault?: boolean;
@@ -797,7 +858,7 @@ export type ApiKeyProvider =
     | "vercel"
     | "opencode-go"
     | "courtlistener";
-type ApiKeySource = "user" | "env" | null;
+export type ApiKeySource = "user" | "org" | "env" | null;
 export type ApiKeyState = Record<
     ApiKeyProvider,
     {
@@ -883,6 +944,34 @@ export async function saveApiKey(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: apiKey }),
     });
+}
+
+export async function getOrgApiKeyStatus(
+    orgId: string,
+): Promise<ApiKeyStatus> {
+    return apiRequest<ApiKeyStatus>(
+        `/orgs/${encodeURIComponent(orgId)}/api-keys`,
+    );
+}
+
+export async function saveOrgApiKey(
+    orgId: string,
+    provider: ApiKeyProvider,
+    apiKey: string | null,
+    options?: { usePersonal?: boolean },
+): Promise<ApiKeyStatus> {
+    return apiRequest<ApiKeyStatus>(
+        `/orgs/${encodeURIComponent(orgId)}/api-keys/${encodeURIComponent(provider)}`,
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+                options?.usePersonal
+                    ? { use_personal: true }
+                    : { api_key: apiKey },
+            ),
+        },
+    );
 }
 
 interface McpToolSummary {
@@ -1028,6 +1117,8 @@ export async function updateProject(
         name?: string;
         cm_number?: string;
         practice?: string | null;
+        client_name?: string | null;
+        description?: string | null;
     },
 ): Promise<Project> {
     return apiRequest<Project>(`/projects/${projectId}`, {
@@ -1155,6 +1246,42 @@ export async function revokeProjectAccess(
     await apiRequest(
         `/projects/${projectId}/access/${encodeURIComponent(email)}`,
         { method: "DELETE" },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Zoho matter pull and SharePoint sync (integrations module)
+// ---------------------------------------------------------------------------
+
+export async function searchZohoMatters(
+    q: string,
+): Promise<ZohoMatterSearchHit[]> {
+    const result = await apiRequest<{ matters: ZohoMatterSearchHit[] }>(
+        `/integrations/matters/search?q=${encodeURIComponent(q)}`,
+    );
+    return result.matters;
+}
+
+/**
+ * Enrol a matter and run the filer's first pass. Pass the Zoho matter id from
+ * a search hit, or the matter number a project already carries for "Sync now".
+ */
+export async function pullZohoMatter(
+    target: { matterId: string } | { matterNumber: string },
+    options?: { mode?: "incremental" | "full" },
+): Promise<MatterPullResult> {
+    return apiRequest<MatterPullResult>("/integrations/matters/pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...target, ...(options ?? {}) }),
+    });
+}
+
+export async function getMatterSyncStatus(
+    projectId: string,
+): Promise<MatterSyncStatusResult> {
+    return apiRequest<MatterSyncStatusResult>(
+        `/integrations/matters/status/${projectId}`,
     );
 }
 
@@ -1487,10 +1614,19 @@ export async function renameProjectDocument(
 
 export type LibraryKind = "files" | "templates";
 
+export interface LibrarySource {
+    id: string | null;
+    key: string;
+    label: string;
+    access_role: ProjectRole;
+    folder_id: string;
+}
+
 export interface LibraryCollection {
     documents: Document[];
     folders: LibraryFolder[];
     documentsHasMore: boolean;
+    sources?: LibrarySource[];
 }
 
 interface LibraryPagination {
@@ -1501,7 +1637,17 @@ interface LibraryPagination {
 interface LibrarySearchParams extends LibraryPagination {
     search?: string;
     fileType?: string;
-    sortKey?: "name" | "type" | "size" | "version" | "created" | "updated";
+    sortKey?:
+        | "name"
+        | "type"
+        | "size"
+        | "version"
+        | "created"
+        | "updated"
+        | "arrived"
+        | "from"
+        | "to"
+        | "subject";
     sortDirection?: "asc" | "desc";
     signal?: AbortSignal;
 }
@@ -1509,6 +1655,7 @@ interface LibrarySearchParams extends LibraryPagination {
 interface LibrarySearchResults {
     documents: Document[];
     documentsHasMore: boolean;
+    sources?: LibrarySource[];
 }
 
 function libraryPaginationQuery(pagination?: LibraryPagination): string {
@@ -1559,6 +1706,7 @@ export async function getLibraryLevels(
     levels: { parentId: string | null; limit: number }[],
 ): Promise<{
     levels: Array<LibraryCollection & { parentId: string | null }>;
+    sources?: LibrarySource[];
 }> {
     return apiRequest(`/library/${kind}/levels`, {
         method: "POST",
@@ -1587,8 +1735,8 @@ export async function searchLibraryDocuments(
 
 export async function getLibraryFilterOptions(
     kind: LibraryKind,
-): Promise<{ fileTypes: string[] }> {
-    return apiRequest<{ fileTypes: string[] }>(
+): Promise<{ fileTypes: string[]; sources?: LibrarySource[] }> {
+    return apiRequest<{ fileTypes: string[]; sources?: LibrarySource[] }>(
         `/library/${kind}/filter-options`,
     );
 }
@@ -1625,25 +1773,45 @@ export async function uploadLibraryDocument(
     kind: LibraryKind,
     file: File,
     folderId?: string | null,
-    options?: UploadRequestOptions<Document>,
+    options?: UploadRequestOptions<Document> & { orgId?: string | null },
 ): Promise<Document> {
     return firstUploadResult(
         await uploadLibraryDocuments(kind, [{ file, folderId }], options),
     );
 }
 
+function libraryUploadOrgId(
+    folderId: string | null | undefined,
+    orgId?: string | null,
+): string | null {
+    if (orgId) return orgId;
+    if (folderId?.startsWith("source:") && folderId !== "source:personal") {
+        return folderId.slice("source:".length);
+    }
+    return null;
+}
+
+function libraryUploadFolderId(folderId: string | null | undefined): string | null {
+    if (!folderId || folderId.startsWith("source:")) return null;
+    return folderId;
+}
+
 export async function uploadLibraryDocuments(
     kind: LibraryKind,
     files: UploadSessionInput[],
-    options?: UploadRequestOptions<Document>,
+    options?: UploadRequestOptions<Document> & { orgId?: string | null },
 ): Promise<UploadOutcome<Document>[]> {
     return uploadFilesWithSession<Document>({
         purpose: "document_create",
         destination: {
             scope: "library",
             library_kind: kind === "files" ? "file" : "template",
+            org_id: libraryUploadOrgId(undefined, options?.orgId),
         },
-        files,
+        files: files.map((file) => ({
+            ...file,
+            folderId: libraryUploadFolderId(file.folderId),
+        })),
         onProgress: options?.onProgress,
         signal: options?.signal,
     });
@@ -1653,13 +1821,15 @@ export async function createLibraryFolder(
     kind: LibraryKind,
     name: string,
     parentFolderId?: string | null,
+    orgId?: string | null,
 ): Promise<LibraryFolder> {
     return apiRequest<LibraryFolder>(`/library/${kind}/folders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             name,
-            parent_folder_id: parentFolderId ?? null,
+            parent_folder_id: libraryUploadFolderId(parentFolderId),
+            org_id: libraryUploadOrgId(parentFolderId, orgId),
         }),
     });
 }
@@ -1669,6 +1839,7 @@ export async function resolveLibraryFolderPath(
     segments: string[],
     baseFolderId: string | null,
     conflictResolution: FolderConflictResolution = "error",
+    orgId?: string | null,
 ): Promise<FolderPathResolution<LibraryFolder>> {
     return apiRequest<FolderPathResolution<LibraryFolder>>(
         `/library/${kind}/folder-paths/resolve`,
@@ -1677,7 +1848,8 @@ export async function resolveLibraryFolderPath(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 segments,
-                base_folder_id: baseFolderId,
+                base_folder_id: libraryUploadFolderId(baseFolderId),
+                org_id: libraryUploadOrgId(baseFolderId, orgId),
                 conflict_resolution: conflictResolution,
             }),
         },
@@ -2045,6 +2217,9 @@ export async function getChat(chatId: string): Promise<ChatDetailOut> {
                     .join("") ?? "",
             citations: m.citations ?? undefined,
             events,
+            ...(m.status === "running"
+                ? { status: "running" as const, started_at: m.started_at ?? null }
+                : {}),
         };
     });
     return {
@@ -2201,6 +2376,37 @@ export async function streamChat(payload: {
         body: JSON.stringify(body),
         signal,
     });
+}
+
+/**
+ * Reattach to a turn the server is still running: replays the frames streamed
+ * so far, then tails the rest. A 202 body `{ status: "running" | "finished" }`
+ * means nothing to attach to here; poll `getChat` instead.
+ */
+export async function streamChatTurn(payload: {
+    chatId: string;
+    assistantMessageId: string;
+    signal?: AbortSignal;
+}): Promise<Response> {
+    return apiFetch(
+        `${API_BASE}/chat/${payload.chatId}/turns/${payload.assistantMessageId}/stream`,
+        {
+            method: "GET",
+            headers: { Accept: "text/event-stream" },
+            signal: payload.signal,
+        },
+    );
+}
+
+/** Ask the server to stop a running turn. The stream ends with the cancel frames. */
+export async function cancelChatTurn(payload: {
+    chatId: string;
+    assistantMessageId: string;
+}): Promise<{ cancelled: boolean }> {
+    return apiRequest<{ cancelled: boolean }>(
+        `/chat/${payload.chatId}/turns/${payload.assistantMessageId}/cancel`,
+        { method: "POST", keepalive: true },
+    );
 }
 
 type StreamChatMessage = {

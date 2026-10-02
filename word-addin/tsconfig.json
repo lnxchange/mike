@@ -73,6 +73,9 @@
       "@mike/google-icon-ui": [
         "../frontend/src/shared/ui/GoogleIconUI.tsx"
       ],
+      "@mike/microsoft-icon-ui": [
+        "../frontend/src/shared/ui/MicrosoftIconUI.tsx"
+      ],
       "@mike/auth-styles-ui": [
         "../frontend/src/shared/ui/AuthStylesUI.ts"
       ],

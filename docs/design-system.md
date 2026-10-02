@@ -99,6 +99,12 @@ the meaning ("this is the destructive action") rather than a specific color.
 `-500`, `-800` and `-900` are *not* overridden, so the scale is discontinuous —
 stay on the overridden steps for brand blue.
 
+The overridden steps resolve through `--brand-accent`, `--brand-accent-strong`
+and `--brand-accent-tint-{5,10,30}` on `:root`, so a deployment profile can
+re-accent the app from its theme stylesheet (see `config/README.md`, "Theme")
+without touching component classes. Keep using the `blue-*` utilities in
+components; do not reference the `--brand-accent*` variables directly.
+
 ### Dark mode
 
 `@custom-variant dark (&:is(.dark *))` — class-based, not
@@ -123,6 +129,12 @@ and exposed as CSS variables on `<body>`:
 | --- | --- | --- | --- |
 | Inter | `--font-inter` → `--font-sans` | `font-sans` (body default) | All UI text. |
 | EB Garamond | `--font-eb-garamond` → `--font-serif` | `font-serif` | Display headings, legal document body copy, tracked-change cards. |
+| (display) | `--font-display-face`, falling back to `--font-eb-garamond` → `--font-display` | `font-display` | The wordmark (`SiteLogo`), page titles (`PageHeader`), and empty-state headings. Identical to `font-serif` unless a deployment profile supplies a dedicated display face. |
+
+The `libris-colleague` profile remaps `--font-inter` and `--font-serif` to
+Source Sans Pro, sets `--font-display-face` to Grenze, and restyles
+display-size `font-serif` headings (`text-lg` and up) as Grenze Semibold so
+the product matches Libris Back Office without forking every heading class.
 
 The Word add-in supplies the same two variables from
 `word-addin/src/taskpane/styles.css` (fonts loaded via `<link>` in
@@ -131,9 +143,11 @@ The Word add-in supplies the same two variables from
 De facto type scale in the app chrome, most to least common: `text-xs` (dense
 table and control text — the default for most chrome), `text-sm` (body copy,
 normal-size buttons), `text-[10px]` (badges, superscript citations),
-`text-2xl font-serif` (display headings and empty states). There is no separate
-heading component; use `EmptyState` for empty-state headings and `PageHeader`
-for page titles so the display style stays in one place.
+`text-2xl font-display` (page titles and empty states; older `text-2xl
+font-serif` headings still exist and resolve to the display face on the
+Libris profile). There is no separate heading component; use `EmptyState`
+for empty-state headings and `PageHeader` for page titles so the display
+style stays in one place.
 
 ## Spacing and radius
 

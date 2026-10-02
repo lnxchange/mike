@@ -6,7 +6,11 @@ import {
     attachActiveVersionPaths,
     loadActiveVersion,
 } from "../../lib/documentVersions";
-import { checkProjectAccess, ensureDocAccess } from "../../lib/access";
+import {
+    checkProjectAccess,
+    ensureDocAccess,
+    getOrgRole,
+} from "../../lib/access";
 import { mapWithConcurrency } from "../../lib/concurrency";
 import { zipExportLimitDetail } from "../../lib/zipExport";
 import {
@@ -179,9 +183,8 @@ export async function resolveZipExportDocuments(
                 .in("id", folderIds),
             db
                 .from("library_folders")
-                .select("id, user_id, library_kind, parent_folder_id")
-                .in("id", folderIds)
-                .eq("user_id", userId),
+                .select("id, user_id, org_id, library_kind, parent_folder_id")
+                .in("id", folderIds),
         ]);
         if (projectRootsResult.error)
             return {
@@ -221,10 +224,29 @@ export async function resolveZipExportDocuments(
         const accessibleProjectRoots = projectRoots.filter((folder) =>
             accessibleProjectIds.includes(folder.project_id as string),
         );
-        const libraryRoots = libraryRootsResult.data ?? [];
+        const libraryRootCandidates = libraryRootsResult.data ?? [];
+        const libraryRoots = (
+            await Promise.all(
+                libraryRootCandidates.map(async (folder) => {
+                    const orgId = (folder.org_id as string | null | undefined) ?? null;
+                    if (orgId) {
+                        const role = await getOrgRole(userId, orgId, db);
+                        return role ? folder : null;
+                    }
+                    return folder.user_id === userId ? folder : null;
+                }),
+            )
+        ).filter((folder): folder is NonNullable<typeof folder> => !!folder);
         const libraryKinds = [
             ...new Set(
                 libraryRoots.map((folder) => folder.library_kind as string),
+            ),
+        ];
+        const libraryOrgIds = [
+            ...new Set(
+                libraryRoots
+                    .map((folder) => folder.org_id as string | null | undefined)
+                    .filter((id): id is string => !!id),
             ),
         ];
 
@@ -236,11 +258,26 @@ export async function resolveZipExportDocuments(
                       .in("project_id", accessibleProjectIds)
                 : Promise.resolve({ data: [], error: null }),
             libraryKinds.length > 0
-                ? db
-                      .from("library_folders")
-                      .select("id, user_id, library_kind, parent_folder_id")
-                      .eq("user_id", userId)
-                      .in("library_kind", libraryKinds)
+                ? Promise.all([
+                      db
+                          .from("library_folders")
+                          .select("id, user_id, org_id, library_kind, parent_folder_id")
+                          .eq("user_id", userId)
+                          .is("org_id", null)
+                          .in("library_kind", libraryKinds),
+                      libraryOrgIds.length > 0
+                          ? db
+                                .from("library_folders")
+                                .select(
+                                    "id, user_id, org_id, library_kind, parent_folder_id",
+                                )
+                                .in("org_id", libraryOrgIds)
+                                .in("library_kind", libraryKinds)
+                          : Promise.resolve({ data: [], error: null }),
+                  ]).then(([personal, org]) => ({
+                      data: [...(personal.data ?? []), ...(org.data ?? [])],
+                      error: personal.error ?? org.error,
+                  }))
                 : Promise.resolve({ data: [], error: null }),
         ]);
         if (projectFoldersResult.error)

@@ -3,23 +3,34 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LoginPage from "./page";
 
-const { login, startGoogleOAuth, refreshSession, replace, push } = vi.hoisted(
-    () => ({
-        login: vi.fn(),
-        startGoogleOAuth: vi.fn(),
-        refreshSession: vi.fn(),
-        replace: vi.fn(),
-        push: vi.fn(),
-    }),
-);
+const {
+    login,
+    startGoogleOAuth,
+    refreshSession,
+    replace,
+    push,
+    getAuthConfig,
+    searchParams,
+} = vi.hoisted(() => ({
+    login: vi.fn(),
+    startGoogleOAuth: vi.fn(),
+    refreshSession: vi.fn(),
+    replace: vi.fn(),
+    push: vi.fn(),
+    getAuthConfig: vi.fn(),
+    searchParams: new URLSearchParams(),
+}));
 
 vi.mock("next/navigation", () => ({
     useRouter: () => ({ replace, push }),
+    useSearchParams: () => searchParams,
 }));
 
 vi.mock("@/app/lib/authApi", () => ({
     login,
     startGoogleOAuth,
+    getAuthConfig,
+    startMicrosoftOAuth: vi.fn(),
 }));
 
 vi.mock("@/app/contexts/AuthContext", () => ({
@@ -38,10 +49,21 @@ describe("LoginPage", () => {
     beforeEach(() => {
         login.mockReset();
         startGoogleOAuth.mockReset();
+        getAuthConfig.mockReset();
+        getAuthConfig.mockResolvedValue({ microsoftEnabled: false });
         refreshSession.mockReset();
         refreshSession.mockResolvedValue(null);
         replace.mockReset();
         push.mockReset();
+        searchParams.forEach((_, key) => searchParams.delete(key));
+    });
+
+    it("sends a Site URL OAuth code to the callback page", () => {
+        searchParams.set("code", "oauth-code");
+        render(<LoginPage />);
+        expect(replace).toHaveBeenCalledWith(
+            "/auth/callback?code=oauth-code",
+        );
     });
 
     it("allows an existing account to submit a password shorter than the new minimum", async () => {

@@ -1,6 +1,7 @@
 import { type DocIndex, type DocStore, resolveDoc } from "./types";
 import {
   normalizeCaseDocument,
+  normalizeLegislationDocument,
   sourceDocumentType,
   type SourceDocumentQuote,
 } from "../../../lib/sourceDocuments";
@@ -41,7 +42,21 @@ type ParsedCaseCitation = {
   }[];
 };
 
-type ParsedCitation = ParsedDocumentCitation | ParsedCaseCitation;
+type ParsedLegislationCitation = {
+  kind: "legislation";
+  ref: number;
+  title_id: string;
+  as_at: string | null;
+  quotes: {
+    section: string | null;
+    quote: string;
+  }[];
+};
+
+type ParsedCitation =
+  | ParsedDocumentCitation
+  | ParsedCaseCitation
+  | ParsedLegislationCitation;
 
 function normalizeCitation(raw: unknown): ParsedCitation | null {
   if (!raw || typeof raw !== "object") return null;
@@ -76,6 +91,38 @@ function normalizeCitation(raw: unknown): ParsedCitation | null {
       quotes.push({ opinionId: null, type: null, author: null, quote });
     }
     return { kind: "case", ref, cluster_id: Math.floor(rawClusterId), quotes };
+  }
+
+  const titleId =
+    typeof c.title_id === "string"
+      ? c.title_id.trim()
+      : typeof c.titleId === "string"
+        ? c.titleId.trim()
+        : "";
+  if (titleId) {
+    const quotes = normalizeLegislationCitationQuotes(c);
+    if (!quotes.length) {
+      if (typeof quote !== "string" || !quote) return null;
+      quotes.push({
+        section:
+          typeof c.section === "string" && c.section.trim()
+            ? c.section.trim()
+            : null,
+        quote,
+      });
+    }
+    return {
+      kind: "legislation",
+      ref,
+      title_id: titleId,
+      as_at:
+        typeof c.as_at === "string"
+          ? c.as_at
+          : typeof c.asAt === "string"
+            ? c.asAt
+            : null,
+      quotes,
+    };
   }
 
   if (typeof c.doc_id !== "string") return null;
@@ -144,6 +191,28 @@ function normalizeDocumentCitationQuotes(
       };
     })
     .filter((quote): quote is DocumentQuote => !!quote);
+}
+
+function normalizeLegislationCitationQuotes(c: Record<string, unknown>) {
+  if (!Array.isArray(c.quotes)) return [];
+  return c.quotes
+    .slice(0, 3)
+    .map((raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+      const row = raw as Record<string, unknown>;
+      const text = typeof row.quote === "string" ? row.quote : row.text;
+      if (typeof text !== "string" || !text.trim()) return null;
+      return {
+        section:
+          typeof row.section === "string" && row.section.trim()
+            ? row.section.trim()
+            : null,
+        quote: text,
+      };
+    })
+    .filter(
+      (quote): quote is { section: string | null; quote: string } => !!quote,
+    );
 }
 
 function normalizeCaseCitationQuotes(c: Record<string, unknown>) {
@@ -275,12 +344,49 @@ type CasesByClusterId = Map<number, {
   dateFiled: string | null;
 }>;
 
+type LegislationByCacheKey = Map<string, {
+  titleId: string;
+  name: string | null;
+  asAt: string | null;
+  compilationNumber: string | null;
+  url: string;
+}>;
+
 export function createCitation(
   citation: ParsedCitation,
   docIndex: DocIndex,
   casesByClusterId?: CasesByClusterId,
   docStore?: DocStore,
+  legislationByCacheKey?: LegislationByCacheKey,
 ) {
+  if (citation.kind === "legislation") {
+    const key = `${citation.title_id.trim().toUpperCase()}:${citation.as_at ?? "latest"}`;
+    const record =
+      legislationByCacheKey?.get(key) ??
+      legislationByCacheKey?.get(
+        `${citation.title_id.trim().toUpperCase()}:latest`,
+      );
+    const document = normalizeLegislationDocument({
+      titleId: citation.title_id,
+      name: record?.name,
+      asAt: citation.as_at ?? record?.asAt,
+      compilationNumber: record?.compilationNumber,
+      url: record?.url,
+      quotes: citation.quotes,
+    });
+    return {
+      type: "citation_data",
+      kind: "legislation",
+      ref: citation.ref,
+      document,
+      title_id: citation.title_id,
+      name: record?.name ?? null,
+      as_at: citation.as_at ?? record?.asAt ?? null,
+      url: record?.url ?? null,
+      quotes: citation.quotes,
+    };
+  }
+
   if (citation.kind === "case") {
     const caseRecord = casesByClusterId?.get(citation.cluster_id);
     const document = normalizeCaseDocument({

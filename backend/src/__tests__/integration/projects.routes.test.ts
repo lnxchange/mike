@@ -219,6 +219,9 @@ describe("projects.routes", () => {
                         org_id: "org-1",
                         access_scope: "organization",
                         organization_name: "Elite Law LLP",
+                        cm_number: "242814",
+                        client_name: "Blue NRG Pty Ltd",
+                        description: "ACCC - s155 Notice and Enforcement",
                     },
                 ],
                 error: null,
@@ -236,6 +239,9 @@ describe("projects.routes", () => {
                     org_id: "org-1",
                     access_scope: "organization",
                     organization_name: "Elite Law LLP",
+                    cm_number: "242814",
+                    client_name: "Blue NRG Pty Ltd",
+                    description: "ACCC - s155 Notice and Enforcement",
                     memory_enabled: true,
                 },
             ]);
@@ -545,9 +551,21 @@ describe("projects.routes", () => {
             id: "d1",
             filename: "Agreement.docx",
             folder_id: null,
+            org_id: null,
+            source_label: "Personal",
+            access_role: "owner",
           },
         ],
         documentsHasMore: true,
+        sources: [
+          {
+            id: null,
+            key: "personal",
+            label: "Personal",
+            access_role: "owner",
+            folder_id: "source:personal",
+          },
+        ],
       });
       expect(captured.name).toBe("search_library_documents");
       expect(captured.args).toEqual({
@@ -558,6 +576,28 @@ describe("projects.routes", () => {
         p_search_term: "Agreement",
         p_file_type: "docx",
         p_sort_key: "name",
+        p_sort_direction: "asc",
+        p_org_ids: [],
+      });
+    });
+
+    it("passes correspondence sort keys through to library search", async () => {
+      const captured = captureRpcArgs();
+      supabaseState.rpc = {
+        data: [{ id: "d1", filename: "Notice.eml" }],
+        error: null,
+      };
+
+      const res = await request(app)
+        .get(
+          "/library/files?view=search&limit=10&sort_key=from&sort_direction=asc",
+        )
+        .set(...AUTH);
+
+      expect(res.status).toBe(200);
+      expect(captured.name).toBe("search_library_documents");
+      expect(captured.args).toMatchObject({
+        p_sort_key: "from",
         p_sort_direction: "asc",
       });
     });
@@ -582,11 +622,23 @@ describe("projects.routes", () => {
         .set(...AUTH);
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ fileTypes: ["docx", "pdf"] });
+      expect(res.body).toEqual({
+        fileTypes: ["docx", "pdf"],
+        sources: [
+          {
+            id: null,
+            key: "personal",
+            label: "Personal",
+            access_role: "owner",
+            folder_id: "source:personal",
+          },
+        ],
+      });
       expect(captured.name).toBe("get_library_filter_options");
       expect(captured.args).toEqual({
         p_user_id: "u1",
         p_library_kind: "file",
+        p_org_ids: [],
       });
     });
   });
@@ -799,6 +851,8 @@ describe("projects.routes", () => {
                 .send({
                     name: "  Gamma  ",
                     practice: "  litigation  ",
+                    client_name: "  Blue NRG Pty Ltd  ",
+                    description: "  ACCC - s155 Notice and Enforcement  ",
                 });
 
             expect(res.status).toBe(201);
@@ -818,7 +872,55 @@ describe("projects.routes", () => {
                 p_practice: "litigation",
                 p_org_id: null,
                 p_memory_enabled: true,
+                p_client_name: "Blue NRG Pty Ltd",
+                p_description: "ACCC - s155 Notice and Enforcement",
+                p_zoho_deal_id: null,
+                p_sharepoint_folder_url: null,
             });
+        });
+
+        it("creates the project with Zoho and SharePoint links", async () => {
+            supabaseState.rpc = {
+                data: { id: "p13", name: "Linked", user_id: "u1" },
+                error: null,
+            };
+
+            const res = await request(app)
+                .post("/projects")
+                .set(...AUTH)
+                .send({
+                    name: "Linked",
+                    zoho_deal_id: "  deal-1  ",
+                    sharepoint_folder_url:
+                        " https://attunelegal.sharepoint.com/sites/x ",
+                });
+
+            expect(res.status).toBe(201);
+            const db = vi.mocked(createServerSupabase).mock.results.at(-1)
+                ?.value as ReturnType<typeof mockSupabase>;
+            expect(db.rpc).toHaveBeenCalledWith(
+                "create_project_with_memory",
+                expect.objectContaining({
+                    p_zoho_deal_id: "deal-1",
+                    p_sharepoint_folder_url:
+                        "https://attunelegal.sharepoint.com/sites/x",
+                }),
+            );
+        });
+
+        it("rejects a SharePoint value that is not an http(s) URL", async () => {
+            const res = await request(app)
+                .post("/projects")
+                .set(...AUTH)
+                .send({
+                    name: "Linked",
+                    sharepoint_folder_url: "javascript:alert(1)",
+                });
+
+            expect(res.status).toBe(400);
+            expect(res.body.detail).toBe(
+                "sharepoint_folder_url must be an http(s) URL.",
+            );
         });
 
         it("applies the creator's saved project-memory default", async () => {
@@ -1277,6 +1379,18 @@ describe("projects.routes", () => {
             expect(res.status).toBe(400);
             expect(res.body.detail).toBe(
                 "shared_with is no longer supported; use the project access endpoints.",
+            );
+        });
+
+        it("rejects a SharePoint value that is not an http(s) URL", async () => {
+            const res = await request(app)
+                .patch("/projects/p1")
+                .set(...AUTH)
+                .send({ sharepoint_folder_url: "javascript:alert(1)" });
+
+            expect(res.status).toBe(400);
+            expect(res.body.detail).toBe(
+                "sharepoint_folder_url must be an http(s) URL.",
             );
         });
 

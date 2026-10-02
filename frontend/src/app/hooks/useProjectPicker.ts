@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Project } from "@/app/components/shared/types";
 import { listProjects } from "@/app/lib/mikeApi";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { appConfig } from "@/config";
 
 export function useProjectPicker() {
     const [open, setOpen] = useState(false);
@@ -36,7 +37,7 @@ export function useProjectPicker() {
             setError(
                 userFacingApiError(
                     error,
-                    "Projects could not be loaded. Please try again.",
+                    `${appConfig.terminology.projects} could not be loaded. Please try again.`,
                 ),
             );
         } finally {

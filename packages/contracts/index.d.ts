@@ -115,6 +115,21 @@ export type AskInputsEvent = {
   items: AskInputItem[];
 };
 
+export type PlanItemStatus = "pending" | "in_progress" | "completed";
+
+export type PlanItem = {
+  id: string;
+  content: string;
+  status: PlanItemStatus;
+};
+
+export type PlanEvent = {
+  type: "plan";
+  event_id: string;
+  title: string;
+  items: PlanItem[];
+};
+
 export type AskInputResponseItem =
   | {
       id: string;
@@ -233,6 +248,160 @@ export type CaseCitationEvent = {
   document: SourceDocument;
 };
 
+export type AuLegislationToolEvent =
+  | {
+      type: "au_search_legislation";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_legislation";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_get_legislation_as_at";
+      title_id: string;
+      date: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_legislation_versions";
+      title_id: string;
+      version_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_legislation";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      searches?: {
+        title_id: string | null;
+        query: string;
+        total_matches: number;
+        name?: string | null;
+        error?: string;
+      }[];
+      error?: string;
+    };
+
+export type AuVicLegislationToolEvent =
+  | {
+      type: "au_search_vic_legislation";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_vic_legislation";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_get_vic_legislation_as_at";
+      title_id: string;
+      date: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_vic_legislation_versions";
+      title_id: string;
+      version_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_vic_legislation";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      error?: string;
+    };
+
+export type AuCaseLawToolEvent =
+  | {
+      type: "au_search_case_law";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_case";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_case";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      error?: string;
+    };
+
+export type AuEnergyToolEvent =
+  | {
+      type: "au_search_energy";
+      query: string;
+      result_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_get_energy";
+      title_id: string;
+      name?: string | null;
+      section?: string | null;
+      as_at?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_get_energy_as_at";
+      title_id: string;
+      date: string;
+      name?: string | null;
+      section?: string | null;
+      error?: string;
+    }
+  | {
+      type: "au_energy_versions";
+      title_id: string;
+      version_count: number;
+      error?: string;
+    }
+  | {
+      type: "au_find_in_energy";
+      title_id: string | null;
+      query: string;
+      total_matches: number;
+      name?: string | null;
+      error?: string;
+    };
+
+export type LegislationCitationEvent = {
+  type: "legislation_citation";
+  title_id: string;
+  name: string | null;
+  as_at: string | null;
+  compilation_number: string | null;
+  url: string;
+  document: SourceDocument;
+};
+
 export type McpToolEvent = {
   type: "mcp_tool_call";
   connector_id: string;
@@ -246,6 +415,7 @@ export type McpToolEvent = {
 export type AssistantEvent =
   | { type: "reasoning"; text: string }
   | AskInputsEvent
+  | PlanEvent
   | {
       type: "ask_inputs_response";
       assistant_message_id: string;
@@ -262,6 +432,22 @@ export type AssistantEvent =
       document_id?: string;
       version_id?: string | null;
       version_number?: number | null;
+      /** Pending redline found in a Word file at read time. */
+      tracked_change_count?: number;
+    }
+  | {
+      /** A clean copy of a marked-up Word file: all changes accepted, comments removed. */
+      type: "doc_finalized";
+      /** The clean copy's filename. */
+      filename: string;
+      document_id: string;
+      version_id: string;
+      version_number: number | null;
+      source_document_id: string;
+      source_filename: string;
+      download_url: string;
+      accepted: number;
+      comments_removed: number;
     }
   | {
       type: "doc_find";
@@ -304,8 +490,16 @@ export type AssistantEvent =
       annotations: EditAnnotation[];
     }
   | CaseCitationEvent
+  | LegislationCitationEvent
   | CourtlistenerToolEvent
+  | AuLegislationToolEvent
+  | AuEnergyToolEvent
+  | AuVicLegislationToolEvent
+  | AuCaseLawToolEvent
   | McpToolEvent
+  | OutlookDraftPreviewEvent
+  | OutlookDraftCreatedEvent
+  | OutlookAuthRequiredEvent
   | {
       type: "case_opinions";
       cluster_id: number;
@@ -330,6 +524,35 @@ export type AssistantEvent =
       reason: string | null;
     }
   | { type: "error"; message: string; safe_to_display?: boolean };
+
+export type OutlookThreadStatus =
+  | "matched"
+  | "ambiguous"
+  | "not_found"
+  | "new";
+
+export type OutlookDraftPreviewEvent = {
+  type: "outlook_draft_preview";
+  subject: string;
+  to: string[];
+  cc?: string[];
+  html_body: string;
+  attachment_names: string[];
+};
+
+export type OutlookDraftCreatedEvent = {
+  type: "outlook_draft_created";
+  web_link: string;
+  subject: string;
+  to: string[];
+  attachment_names: string[];
+  threaded: boolean;
+  thread_status?: OutlookThreadStatus;
+};
+
+export type OutlookAuthRequiredEvent = {
+  type: "outlook_auth_required";
+};
 
 export type WordEditApplyMode = "direct" | "approval";
 

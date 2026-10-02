@@ -56,6 +56,6 @@ export { createDocumentVersion, type NewDocumentVersion, type DocumentVersionRec
 export { handleDocumentCleanup } from "./documents.cleanupJobs";
 export { copyDocumentVersionFiles } from "./documents.copyFiles";
 export { captureInlineDocumentCleanup, completeInlineDocumentCleanup } from "./documents.cleanupJobs";
-export { createDocumentVersions, activateDocumentVersion, updateDocumentVersion, type DocumentVersionPatch } from "./documents.lifecycle";
+export { createDocumentVersions, activateDocumentVersion, updateDocumentVersion, recordSharePointVersion, type DocumentVersionPatch } from "./documents.lifecycle";
 
 export { runConversionJob, setDocumentTerminalStatus } from "./documents.conversion";

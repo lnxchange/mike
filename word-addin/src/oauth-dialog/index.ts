@@ -9,6 +9,7 @@ const API_BASE = (process.env.REACT_APP_API_BASE_URL || "/api").replace(
   "",
 );
 const REQUEST_STORAGE_KEY = "mike-word-google-oauth-request";
+const PROVIDER_STORAGE_KEY = "mike-word-oauth-provider";
 
 function setStatus(message: string): void {
   const element = document.getElementById("status");
@@ -50,6 +51,7 @@ function clearTemporaryAuthStorage(): void {
     storage.removeItem("mike-word-google-oauth-code-verifier");
   }
   window.sessionStorage.removeItem(REQUEST_STORAGE_KEY);
+  window.sessionStorage.removeItem(PROVIDER_STORAGE_KEY);
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -66,6 +68,10 @@ async function runGoogleOAuth(): Promise<void> {
   const requestedId = currentUrl.searchParams.get("requestId");
   if (requestedId) {
     window.sessionStorage.setItem(REQUEST_STORAGE_KEY, requestedId);
+  }
+  const requestedProvider = currentUrl.searchParams.get("provider");
+  if (requestedProvider === "azure" || requestedProvider === "google") {
+    window.sessionStorage.setItem(PROVIDER_STORAGE_KEY, requestedProvider);
   }
   const requestId =
     requestedId ?? window.sessionStorage.getItem(REQUEST_STORAGE_KEY) ?? "";
@@ -129,7 +135,10 @@ async function runGoogleOAuth(): Promise<void> {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      provider: "google",
+      provider:
+        window.sessionStorage.getItem(PROVIDER_STORAGE_KEY) === "azure"
+          ? "azure"
+          : "google",
       callbackPath: "/oauth-dialog.html",
       next: "/assistant",
     }),

@@ -129,6 +129,7 @@ documentsRouter.get("/:documentId/file", requireAuth, asyncRoute(async (req, res
 
     res.setHeader("Content-Type", contentTypeForDocumentType(result.fileType));
     res.setHeader("Content-Length", result.size);
+    res.setHeader("Cache-Control", "private, no-store");
     res.setHeader(
         "Content-Disposition",
         buildContentDisposition("inline", result.filename),

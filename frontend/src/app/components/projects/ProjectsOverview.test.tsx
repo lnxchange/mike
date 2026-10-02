@@ -175,6 +175,9 @@ describe("ProjectsOverview tabs", () => {
         render(<ProjectsOverview />);
 
         expect(screen.getByText("Access")).toBeInTheDocument();
+        expect(screen.getByText("CM number")).toBeInTheDocument();
+        expect(screen.queryByText("Client")).not.toBeInTheDocument();
+        expect(screen.queryByText("Description")).not.toBeInTheDocument();
         expect(screen.getAllByText("Private")).toHaveLength(2);
         expect(screen.getByText("3 users")).toBeInTheDocument();
         expect(screen.getByText("Elite Law LLP")).toBeInTheDocument();

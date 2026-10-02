@@ -8,7 +8,12 @@ import {
 
 type CollectionScope =
   | { kind: "project"; projectId: string }
-  | { kind: "library"; userId: string; libraryKind: "file" | "template" };
+  | {
+      kind: "library";
+      userId: string;
+      libraryKind: "file" | "template";
+      writableOrgIds?: string[];
+    };
 
 /**
  * Project callers authorize docs.organize and select ids within that project.
@@ -23,30 +28,44 @@ export async function deleteCollectionDocuments(
   if (!documentIds.length) return ok({ deletedIds: [] });
   let eligibleIds = documentIds;
   if (scope.kind === "library") {
-    let query = db
-      .from("documents")
-      .select("id")
-      .eq("user_id", scope.userId)
-      .is("project_id", null);
-    query =
+    const applyKind = (query: any) =>
       scope.libraryKind === "file"
         ? query.or("library_kind.eq.file,library_kind.is.null")
         : query.eq("library_kind", scope.libraryKind);
-    const { data, error } = await query.in("id", documentIds);
-    if (error) return internalFailure(error);
-    eligibleIds = (data ?? []).map((doc) => doc.id as string);
+    const personal = applyKind(
+      db
+        .from("documents")
+        .select("id")
+        .eq("user_id", scope.userId)
+        .is("project_id", null)
+        .is("org_id", null),
+    ).in("id", documentIds);
+    const orgIds = scope.writableOrgIds ?? [];
+    const org =
+      orgIds.length > 0
+        ? applyKind(
+            db
+              .from("documents")
+              .select("id")
+              .is("project_id", null)
+              .in("org_id", orgIds),
+          ).in("id", documentIds)
+        : Promise.resolve({ data: [], error: null });
+    const [personalResult, orgResult] = await Promise.all([personal, org]);
+    if (personalResult.error) return internalFailure(personalResult.error);
+    if (orgResult.error) return internalFailure(orgResult.error);
+    eligibleIds = [
+      ...new Set(
+        [...(personalResult.data ?? []), ...(orgResult.data ?? [])].map(
+          (doc) => doc.id as string,
+        ),
+      ),
+    ];
     if (!eligibleIds.length) return ok({ deletedIds: [] });
   }
   const keys = await captureInlineDocumentCleanup(db, { documentIds: eligibleIds });
   let query = db.from("documents").delete();
   if (scope.kind === "project") query = query.eq("project_id", scope.projectId);
-  else {
-    query = query.eq("user_id", scope.userId).is("project_id", null);
-    query =
-      scope.libraryKind === "file"
-        ? query.or("library_kind.eq.file,library_kind.is.null")
-        : query.eq("library_kind", scope.libraryKind);
-  }
   const { error } = await query.in("id", eligibleIds);
   if (error) return internalFailure(error);
   await completeInlineDocumentCleanup(db, keys);

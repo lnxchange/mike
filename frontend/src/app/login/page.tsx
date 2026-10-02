@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { login } from "@/app/lib/authApi";
 import { Input } from "@/app/components/ui/input";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
@@ -16,8 +16,10 @@ import {
 import { AuthDivider } from "@/app/components/auth/AuthDivider";
 import { SsoAuthButton } from "@/app/components/auth/SsoAuthButton";
 import { GoogleAuthButton } from "@/app/components/auth/GoogleAuthButton";
+import { MicrosoftAuthButton } from "@/app/components/auth/MicrosoftAuthButton";
 import { FieldLabel } from "@/app/components/ui/form-field";
 import { knownErrorCodeMessage } from "@/app/lib/userFacingError";
+import { authCallbackPathFromSearch } from "@/app/lib/authRedirects";
 
 const LOGIN_ERROR_MESSAGES = {
     invalid_credentials: "The email or password is incorrect.",
@@ -26,6 +28,7 @@ const LOGIN_ERROR_MESSAGES = {
 
 export default function LoginPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const {
         isAuthenticated,
         authLoading,
@@ -39,10 +42,15 @@ export default function LoginPage() {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        const handoff = authCallbackPathFromSearch(searchParams);
+        if (handoff) {
+            router.replace(handoff);
+            return;
+        }
         if (!authLoading && isAuthenticated) {
             router.replace("/onboarding/profile");
         }
-    }, [authLoading, isAuthenticated, router]);
+    }, [authLoading, isAuthenticated, router, searchParams]);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -142,6 +150,11 @@ export default function LoginPage() {
                         </div>
                         <AuthDivider />
                         <GoogleAuthButton
+                            onError={setError}
+                            disabled={loading}
+                            onLoadingChange={setLoading}
+                        />
+                        <MicrosoftAuthButton
                             onError={setError}
                             disabled={loading}
                             onLoadingChange={setLoading}

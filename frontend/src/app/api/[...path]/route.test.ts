@@ -26,6 +26,7 @@ describe("same-origin API gateway", () => {
     it("forwards cookies, origin, query parameters, and encoded path segments", async () => {
         const upstreamHeaders = new Headers({
             "content-type": "application/json",
+            etag: 'W/"json-1"',
         });
         upstreamHeaders.append(
             "set-cookie",
@@ -47,6 +48,8 @@ describe("same-origin API gateway", () => {
                 headers: {
                     cookie: "__Host-mike-session=incoming",
                     origin: "https://app.example.test",
+                    "if-none-match": "W/\"stale-doc\"",
+                    "if-modified-since": "Wed, 21 Oct 2015 07:28:00 GMT",
                 },
             },
         );
@@ -66,6 +69,7 @@ describe("same-origin API gateway", () => {
         );
         expect(forwardedHeaders.get("origin")).toBe("https://app.example.test");
         expect(forwardedHeaders.get("host")).toBeNull();
+        expect(forwardedHeaders.get("if-none-match")).toBeNull();
         expect(forwardedHeaders.get("x-forwarded-host")).toBe(
             "app.example.test",
         );
@@ -75,6 +79,43 @@ describe("same-origin API gateway", () => {
         expect(response.headers.get("set-cookie")).toContain(
             "__Host-mike-session.1=two",
         );
+        expect(response.headers.get("cache-control")).toBe("private, no-store");
+        expect(response.headers.get("etag")).toBeNull();
+    });
+
+    it("does not forward a 304 empty body for a cached document GET", async () => {
+        fetchMock.mockResolvedValue(
+            new Response(Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d]), {
+                status: 200,
+                headers: {
+                    "content-type": "application/pdf",
+                    etag: 'W/"pdf-1"',
+                    "cache-control": "public, max-age=0, must-revalidate",
+                },
+            }),
+        );
+        const request = new NextRequest(
+            "https://app.example.test/api/single-documents/doc-1/display",
+            {
+                headers: {
+                    cookie: "__Host-mike-session=incoming",
+                    "if-none-match": 'W/"pdf-1"',
+                },
+            },
+        );
+
+        const response = await GET(
+            request,
+            context(["single-documents", "doc-1", "display"]),
+        );
+
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(new Headers(init.headers).get("if-none-match")).toBeNull();
+        expect(response.status).toBe(200);
+        expect(response.headers.get("etag")).toBeNull();
+        expect(response.headers.get("cache-control")).toBe("private, no-store");
+        const body = new Uint8Array(await response.arrayBuffer());
+        expect(Array.from(body.slice(0, 5))).toEqual([0x25, 0x50, 0x44, 0x46, 0x2d]);
     });
 
     it("streams request and SSE response bodies without buffering", async () => {

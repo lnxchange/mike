@@ -17,6 +17,7 @@ import {
   setProjectMemoryEnabled,
   uploadProjectDocuments,
 } from "@/app/lib/mikeApi";
+import { takePendingProjectUploads } from "@/app/lib/pendingProjectUploads";
 import { NewProjectModal } from "./NewProjectModal";
 
 const { useUserProfile } = vi.hoisted(() => ({
@@ -471,56 +472,32 @@ describe("NewProjectModal sharing", () => {
     );
   });
 
-  it("persists a changed memory opt-out before continuing after a partial upload", async () => {
+  it("hands chosen files to the project page instead of uploading from the dialog", async () => {
     const user = userEvent.setup({ delay: null });
     const onCreated = renderModal();
-    vi.mocked(uploadProjectDocuments).mockResolvedValue([
-      {
-        clientId: "one",
-        filename: "saved.pdf",
-        status: "completed",
-        result: { id: "doc-1", filename: "saved.pdf" } as never,
-        errorCode: null,
-      },
-      {
-        clientId: "two",
-        filename: "failed.pdf",
-        status: "error",
-        result: null,
-        errorCode: "processing_failed",
-      },
-    ]);
 
     await user.type(screen.getByPlaceholderText("Add project name"), "P");
     const fileInput =
       document.querySelector<HTMLInputElement>('input[type="file"]');
     expect(fileInput).not.toBeNull();
+    expect(fileInput!.accept).toContain(".pdf");
+    const saved = new File(["saved"], "saved.pdf");
+    const deed = new File(["deed"], "deed.docx");
     fireEvent.change(fileInput!, {
       target: {
-        files: [
-          new File(["saved"], "saved.pdf"),
-          new File(["failed"], "failed.pdf"),
-        ],
+        // The PNG is refused at selection time; it must never reach the
+        // upload, where it would fail every file in its batch.
+        files: [saved, new File(["png"], "chart.png"), deed],
       },
     });
+    expect(
+      await screen.findByText("Some files were skipped"),
+    ).toBeInTheDocument();
     await submit(user);
-    await screen.findByRole("button", { name: "Continue" });
 
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await user.click(
-      screen.getByRole("switch", { name: "Enable project memory" }),
-    );
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() =>
-      expect(setProjectMemoryEnabled).toHaveBeenCalledWith("p1", false),
-    );
-    expect(onCreated).toHaveBeenCalledWith(
-      expect.objectContaining({ memory_enabled: false }),
-    );
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+    expect(uploadProjectDocuments).not.toHaveBeenCalled();
+    expect(takePendingProjectUploads("p1")).toEqual([saved, deed]);
   });
 
     it("shows direct sharing only on step two with Owner, Editor and Viewer", async () => {

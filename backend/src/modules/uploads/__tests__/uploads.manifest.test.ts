@@ -144,6 +144,119 @@ describe("parseUploadSessionRequest", () => {
     ).toThrow("Unrecognized key");
   });
 
+  describe("external reference block", () => {
+    const external = {
+      provider: "sharepoint",
+      drive_id: " b!drive ",
+      item_id: "01ITEM",
+      ctag: "\"c:{guid},1\"",
+      web_url: "https://contoso.sharepoint.com/sites/x/doc.pdf",
+    };
+
+    it("is optional and absent as a null client_meta for ordinary uploads", () => {
+      const result = parseUploadSessionRequest(
+        documentRequest(1),
+        USER_ID,
+        SESSION_ID,
+      );
+      expect(result.files[0].client_meta).toBeNull();
+    });
+
+    it("is trimmed and carried through as client_meta.external", () => {
+      const result = parseUploadSessionRequest(
+        {
+          ...documentRequest(1),
+          files: [{ ...documentRequest(1).files[0], external }],
+        },
+        USER_ID,
+        SESSION_ID,
+      );
+      expect(result.files[0].client_meta).toEqual({
+        external: { ...external, drive_id: "b!drive" },
+      });
+    });
+
+    it("accepts the block on a version-create manifest", () => {
+      const result = parseUploadSessionRequest(
+        {
+          purpose: "document_version_create",
+          destination: {
+            document_id: "33333333-3333-4333-8333-333333333333",
+          },
+          files: [{ ...documentRequest(1).files[0], external }],
+        },
+        USER_ID,
+        SESSION_ID,
+      );
+      expect(result.files[0].client_meta?.external?.item_id).toBe("01ITEM");
+    });
+
+    it("carries optional email list fields next to the external block", () => {
+      const result = parseUploadSessionRequest(
+        {
+          ...documentRequest(1),
+          files: [
+            {
+              ...documentRequest(1).files[0],
+              email: {
+                subject: " s155 notice ",
+                from: "accc@example.gov.au",
+                to: "yule@attune.legal",
+                received_at: "2026-03-01T03:00:00.000Z",
+              },
+            },
+          ],
+        },
+        USER_ID,
+        SESSION_ID,
+      );
+      expect(result.files[0].client_meta).toEqual({
+        email: {
+          subject: "s155 notice",
+          from: "accc@example.gov.au",
+          to: "yule@attune.legal",
+          received_at: "2026-03-01T03:00:00.000Z",
+        },
+      });
+    });
+
+    it("rejects a non-ISO received_at", () => {
+      expect(() =>
+        parseUploadSessionRequest(
+          {
+            ...documentRequest(1),
+            files: [
+              {
+                ...documentRequest(1).files[0],
+                email: { received_at: "yesterday" },
+              },
+            ],
+          },
+          USER_ID,
+          SESSION_ID,
+        ),
+      ).toThrow(UploadSessionValidationError);
+    });
+
+    it("rejects unknown providers, missing keys, oversized values and extra keys", () => {
+      const withExternal = (value: Record<string, unknown>) => ({
+        ...documentRequest(1),
+        files: [{ ...documentRequest(1).files[0], external: value }],
+      });
+      for (const bad of [
+        { ...external, provider: "onedrive" },
+        { provider: "sharepoint", drive_id: "d", item_id: "i" },
+        { ...external, ctag: "x".repeat(513) },
+        { ...external, extra: true },
+        { ...external, web_url: "" },
+      ]) {
+        expect(() =>
+          parseUploadSessionRequest(withExternal(bad), USER_ID, SESSION_ID),
+        ).toThrow(UploadSessionValidationError);
+      }
+    });
+  });
+
   it("rejects path separators and control characters in display filenames", () => {
     for (const filename of ["folder/contract.pdf", "folder\\contract.pdf", "bad\u0000name.pdf"]) {
       expect(() =>

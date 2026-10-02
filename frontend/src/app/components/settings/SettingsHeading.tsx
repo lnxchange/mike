@@ -12,7 +12,7 @@ export function SettingsHeading({
   return (
     <h2
       id={id}
-      className={`font-serif text-2xl font-medium ${
+      className={`font-display text-2xl font-semibold ${
         tone === "danger" ? "text-red-600" : "text-gray-900"
       }`}
     >

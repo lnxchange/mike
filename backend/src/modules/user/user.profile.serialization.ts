@@ -6,6 +6,14 @@ import { UserProfileRow, MONTHLY_CREDIT_LIMIT } from "./user.profile.storage";
 
 import { ROUTER_PROFILE_FIELDS } from "./user.profile.routerPreferences";
 
+export function resolveLegalResearchAu(
+    legalResearchAu: boolean | null | undefined,
+    jurisdiction: string | null | undefined,
+): boolean {
+    if (typeof legalResearchAu === "boolean") return legalResearchAu;
+    return jurisdiction === "Australia";
+}
+
 export function serializeProfile(
     routerModels: RouterModelSelections,
     row: UserProfileRow,
@@ -55,6 +63,22 @@ export function serializeProfile(
             "high",
         mfaOnLogin: row.mfa_on_login === true,
         legalResearchUs: row.legal_research_us !== false,
+        legalResearchAu: resolveLegalResearchAu(
+            row.legal_research_au,
+            row.jurisdiction,
+        ),
+        legalResearchAuEnergy: resolveLegalResearchAu(
+            row.legal_research_au_energy,
+            row.jurisdiction,
+        ),
+        legalResearchAuVic: resolveLegalResearchAu(
+            row.legal_research_au_vic,
+            row.jurisdiction,
+        ),
+        legalResearchAuCases: resolveLegalResearchAu(
+            row.legal_research_au_cases,
+            row.jurisdiction,
+        ),
         quickActionsVisible: row.quick_actions_visible !== false,
         darkMode: row.dark_mode === true,
         projectMemoryDefault: row.project_memory_default !== false,

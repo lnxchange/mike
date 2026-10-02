@@ -138,6 +138,20 @@ export async function docxToPdf(buffer: Buffer): Promise<Buffer> {
 }
 
 /**
+ * Convert an HTML document to PDF through LibreOffice's Writer/Web import.
+ * Used for on-demand email previews when a stored rendition is missing.
+ */
+export async function htmlToPdf(html: string): Promise<Buffer> {
+  if (resolveSofficeBinaryPaths().length === 0) {
+    throw new Error(
+      "LibreOffice/soffice binary was not found. Ensure Railway uses backend/nixpacks.toml or set SOFFICE_BINARY_PATH/LIBREOFFICE_BINARY_PATH.",
+    );
+  }
+  const convert = await getConvert();
+  return convert(Buffer.from(html, "utf8"), ".pdf", undefined);
+}
+
+/**
  * Convert an Office document from disk and leave the generated PDF on disk.
  * This is the upload-worker path: it avoids loading either the source file or
  * converted PDF into the Node.js process.

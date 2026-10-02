@@ -145,7 +145,7 @@ describe("runLLMStream client-tool dispatch", () => {
     const names = params.tools.map((tool) => tool.function.name);
     expect(names).toContain("apply_word_edits");
     expect(names).toContain("read_document");
-    expect(params.maxIterations).toBe(10);
+    expect(params.maxIterations).toBe(16);
   });
 
   it("honours an explicit iteration budget", async () => {

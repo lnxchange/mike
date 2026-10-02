@@ -13,6 +13,7 @@
 //   document.precompute_text — extract a legacy Office file's text once, so
 //                      read_document stops paying for LibreOffice per call
 //   memory.consolidate — curate scoped Markdown after chat inactivity
+//   memory.matter_brief — email-only project status into memory.md
 import { chatTurnAuditEvents, insertAuditEvent, type ChatTurnAuditBase } from "../../lib/audit";
 import { type Db, type DbJob } from "../../lib/dbq/types";
 

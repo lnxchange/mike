@@ -26,6 +26,9 @@ import {
   updateUserMemory,
 } from "@/app/lib/mikeApi";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 type ConfirmAction = "disable";
 
@@ -154,8 +157,8 @@ export function UserMemoryPage() {
               <div className="space-y-1">
                 <SettingsLabel>App-wide memory</SettingsLabel>
                 <SettingsDescription>
-                  Let Mike curate useful details after saved conversations and
-                  use them in future answers.
+                  Let {appConfig.branding.appName} curate useful details after
+                  saved conversations and use them in future answers.
                 </SettingsDescription>
               </div>
               <div className="flex items-center gap-3">
@@ -286,10 +289,13 @@ function ProjectMemoryDefaultRow() {
   return (
     <SettingsRow>
       <div className="space-y-1">
-        <SettingsLabel>Project memory for new projects</SettingsLabel>
+        <SettingsLabel>
+          {t.project} memory for new {t.projectsLower}
+        </SettingsLabel>
         <SettingsDescription>
-          Choose whether memory is enabled by default for projects you create.
-          Project owners can still change it for each project.
+          Choose whether memory is enabled by default for {t.projectsLower} you
+          create. {t.project} owners can still change it for each{" "}
+          {t.projectLower}.
         </SettingsDescription>
         {error ? (
           <p className="text-xs text-red-600" role="alert">
@@ -301,7 +307,7 @@ function ProjectMemoryDefaultRow() {
         checked={profile?.projectMemoryDefault !== false}
         disabled={!profile || saving}
         aria-busy={saving}
-        aria-label="Project memory for new projects"
+        aria-label={`${t.project} memory for new ${t.projectsLower}`}
         onCheckedChange={(enabled) => void handleToggle(enabled)}
       />
     </SettingsRow>

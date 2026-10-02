@@ -141,7 +141,7 @@ export function useWordAssistantChat({
   const sessionGenerationRef = useRef(0);
   const sendSequenceRef = useRef(0);
   const sendingRef = useRef(false);
-  const { readDocumentMarkdown } = useWordDoc();
+  const { readDocumentMarkdown, commentOnActiveDocument } = useWordDoc();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -414,6 +414,35 @@ export function useWordAssistantChat({
             }
             if (call.name === "read_active_document") {
               await respond({ document: await readDocumentMarkdown() });
+              return;
+            }
+            if (call.name === "comment_active_document") {
+              const raw = Array.isArray(call.input.comments)
+                ? call.input.comments
+                : [];
+              const comments = raw.flatMap((row) => {
+                if (!row || typeof row !== "object") return [];
+                const item = row as {
+                  anchor?: unknown;
+                  text?: unknown;
+                  parent_id?: unknown;
+                };
+                if (typeof item.text !== "string" || !item.text.trim()) return [];
+                return [
+                  {
+                    text: item.text,
+                    ...(typeof item.anchor === "string" ? { anchor: item.anchor } : {}),
+                    ...(typeof item.parent_id === "string"
+                      ? { parent_id: item.parent_id }
+                      : {}),
+                  },
+                ];
+              });
+              if (comments.length === 0) {
+                await respond({ error: "No valid comments in tool input." });
+                return;
+              }
+              await respond(await commentOnActiveDocument(comments));
               return;
             }
             if (call.name === "apply_word_edits") {
@@ -784,6 +813,7 @@ export function useWordAssistantChat({
       onChatIdChange,
       onChatStarted,
       readDocumentMarkdown,
+      commentOnActiveDocument,
       wordChatOwnerId,
       wordChatStorage,
       wordDocumentId,

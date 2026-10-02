@@ -14,6 +14,7 @@
 import { z } from "zod";
 import type { Session, SupabaseClient, User } from "@supabase/supabase-js";
 import { consumeAuthHandoff, issueAuthHandoff } from "../../lib/authHandoff";
+import { MICROSOFT_GRAPH_SCOPES } from "../../lib/microsoftOAuth";
 
 // ---------------------------------------------------------------------------
 // Request payload schemas
@@ -118,6 +119,34 @@ export function startGoogleOAuth(client: SupabaseClient, redirectTo: string) {
   return client.auth.signInWithOAuth({
     provider: "google",
     options: { redirectTo, skipBrowserRedirect: true },
+  });
+}
+
+export function startMicrosoftOAuth(
+  client: SupabaseClient,
+  redirectTo: string,
+) {
+  return client.auth.signInWithOAuth({
+    provider: "azure",
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+      scopes: MICROSOFT_GRAPH_SCOPES,
+    },
+  });
+}
+
+export function linkMicrosoftIdentity(
+  client: SupabaseClient,
+  redirectTo: string,
+) {
+  return client.auth.linkIdentity({
+    provider: "azure",
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+      scopes: MICROSOFT_GRAPH_SCOPES,
+    },
   });
 }
 

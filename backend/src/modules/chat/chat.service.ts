@@ -20,6 +20,34 @@ export {
 } from "./chat.sharing";
 export { updateChatSettings } from "./chat.settings";
 export { updateChatTitle, generateChatTitle } from "./chat.titles";
+export {
+  activeTurnFromChatRow,
+  bindChatTurnStream,
+  claimChatTurn,
+  discardChatInputMessage,
+  heartbeatChatTurn,
+  releaseChatTurn,
+  requestChatTurnCancel,
+  startChatTurnHeartbeat,
+  turnInProgressBody,
+  withRunningTurnMessage,
+  CHAT_TURN_HEARTBEAT_MS,
+  CHAT_TURN_STALE_AFTER_SECONDS,
+  type ActiveChatTurn,
+  type ChatTurnLease,
+  type ChatTurnRow,
+  type ClaimChatTurnResult,
+  type RunningAssistantMessage,
+} from "./chat.turns";
+export {
+  cancelRunningTurn,
+  finishRunningTurn,
+  getRunningTurn,
+  recordTurnFrame,
+  startRunningTurn,
+  subscribeToTurn,
+  type RunningTurn,
+} from "./chat.turnRegistry";
 export { type PreparedChatStream, prepareChatStream } from "./chat.prepare";
 export {
   devLog,
