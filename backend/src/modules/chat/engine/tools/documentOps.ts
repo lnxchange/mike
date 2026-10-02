@@ -17,9 +17,11 @@ import {
 } from "../../../../lib/docxStyles";
 import {
   acceptAllTrackedChanges,
+  applyDocxComments,
   applyTrackedEdits,
   extractDocxBodyText,
   listTrackedChanges,
+  type CommentInput,
   type EditInput,
   type TrackedMarkupSummary,
 } from "../../../../lib/docxTrackedChanges";
@@ -1218,6 +1220,11 @@ export async function loadCurrentVersionBytes(
   return { bytes: Buffer.from(raw), storage_path: active.storage_path };
 }
 
+function clipCommentText(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
 /** Pending changes listed per read; the rest is summarised as a count. */
 export const TRACKED_CHANGES_LIST_LIMIT = 60;
 
@@ -1235,13 +1242,15 @@ export function formatTrackedChangesSection(
   summary: TrackedMarkupSummary,
 ): string {
   const pending = pendingTrackedChangeCount(summary);
-  if (pending === 0 && summary.comments === 0) {
+  const commentRecords = summary.commentRecords ?? [];
+  const commentCount = Math.max(summary.comments, commentRecords.length);
+  if (pending === 0 && commentCount === 0) {
     return "\n\n--- TRACKED CHANGES: none. This document carries no redline or comments. ---";
   }
   const lines: string[] = [
     "",
     "",
-    `--- TRACKED CHANGES (${pending} pending${summary.comments ? `, ${summary.comments} comment${summary.comments === 1 ? "" : "s"}` : ""}) ---`,
+    `--- TRACKED CHANGES (${pending} pending${commentCount ? `, ${commentCount} comment${commentCount === 1 ? "" : "s"}` : ""}) ---`,
     "The body text above is the accepted view: pending insertions appear as body text and pending deletions are omitted. The redline still in the file, in document order:",
   ];
   const shown = summary.changes.slice(0, TRACKED_CHANGES_LIST_LIMIT);
@@ -1253,7 +1262,41 @@ export function formatTrackedChangesSection(
     lines.push(`${index + 1}. [${change.kind}] ${who}${when}: "${clipped}"`);
   });
   if (summary.changes.length > shown.length) {
-    lines.push(`… and ${summary.changes.length - shown.length} more insertions/deletions.`);
+    const hidden = summary.changes.slice(shown.length);
+    const shownAuthors = new Set(
+      shown.map((change) => change.author ?? "unknown author"),
+    );
+    const counts = new Map<string, number>();
+    for (const change of hidden) {
+      const who = change.author ?? "unknown author";
+      counts.set(who, (counts.get(who) ?? 0) + 1);
+    }
+    const tally = [...counts.entries()]
+      .map(([who, count]) => `${who} (${count})`)
+      .join(", ");
+    lines.push(
+      `… and ${hidden.length} more insertions/deletions. Authors in that remainder: ${tally}.`,
+    );
+    // The first page of a long redline is usually the other side's early
+    // clauses. Changes by an author who does not appear there (this user's
+    // own round, sitting further down) would otherwise be invisible.
+    const unseen = hidden.filter(
+      (change) => !shownAuthors.has(change.author ?? "unknown author"),
+    );
+    const extra = unseen.slice(0, 12);
+    if (extra.length) {
+      lines.push("Changes by authors not in the list above:");
+      extra.forEach((change, index) => {
+        const who = change.author ?? "unknown author";
+        const when = change.date ? `, ${change.date.slice(0, 10)}` : "";
+        const text = change.text.replace(/\s+/g, " ").trim();
+        const clipped = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+        lines.push(`${shown.length + index + 1}. [${change.kind}] ${who}${when}: "${clipped}"`);
+      });
+      if (unseen.length > extra.length) {
+        lines.push(`… and ${unseen.length - extra.length} more from those authors.`);
+      }
+    }
   }
   const extras: string[] = [];
   if (summary.propertyChanges) {
@@ -1262,8 +1305,28 @@ export function formatTrackedChangesSection(
     );
   }
   if (summary.moves) extras.push(`${summary.moves} moved block${summary.moves === 1 ? "" : "s"}`);
-  if (summary.comments) extras.push(`${summary.comments} comment${summary.comments === 1 ? "" : "s"}`);
+  if (commentRecords.length === 0 && summary.comments) {
+    extras.push(`${summary.comments} comment${summary.comments === 1 ? "" : "s"}`);
+  }
   if (extras.length) lines.push(`Also present: ${extras.join(", ")}.`);
+  if (commentRecords.length) {
+    lines.push("Review comments (the text inside each Word comment bubble):");
+    commentRecords.forEach((comment, index) => {
+      const who = comment.author ?? "unknown author";
+      const when = comment.date ? `, ${comment.date.slice(0, 10)}` : "";
+      const anchor = comment.anchor
+        ? ` on "${clipCommentText(comment.anchor, 120)}"`
+        : "";
+      const reply = comment.parentId ? ` reply to comment ${comment.parentId}` : "";
+      const state = comment.resolved ? " [resolved]" : "";
+      lines.push(
+        `${index + 1}. [id ${comment.id}] ${who}${when}${reply}${anchor}${state}: "${clipCommentText(comment.text, 500)}"`,
+      );
+    });
+    lines.push(
+      "To add a review comment or reply in the document, call comment_document. A reply uses parent_id set to the comment id above and does not repeat the anchor.",
+    );
+  }
   lines.push(
     "To produce a clean copy with all of this accepted and comments removed, call finalize_document. To produce a markup that shows only your own changes, call finalize_document first and then edit_document on the clean copy.",
   );
@@ -1452,6 +1515,7 @@ export async function runEditDocument(params: {
       version_number: number;
       storage_path: string;
       download_url: string;
+      author: string;
       annotations: EditAnnotation[];
       errors: { index: number; reason: string }[];
     }
@@ -1631,8 +1695,162 @@ export async function runEditDocument(params: {
     version_number: nextVersionNumber,
     storage_path: newPath,
     download_url: permalink,
+    author,
     annotations,
     errors,
+  };
+}
+
+export type DocCommentedResult = {
+  filename: string;
+  document_id: string;
+  version_id: string;
+  version_number: number;
+  storage_path: string;
+  download_url: string;
+  comments: { id: string; anchor: string; text: string; parent_id: string | null }[];
+  errors: { index: number; reason: string }[];
+};
+
+/**
+ * Write Word review comments into the active .docx version and save that as
+ * the new active version. The bubbles are real comment markup, so they show
+ * in Word's review pane.
+ */
+export async function runCommentDocument(params: {
+  documentId: string;
+  filename: string;
+  userId: string;
+  comments: CommentInput[];
+  db: Db;
+  reuseVersion?: {
+    versionId: string;
+    versionNumber: number;
+    storagePath: string;
+  };
+}): Promise<
+  | ({ ok: true } & DocCommentedResult)
+  | { ok: false; error: string }
+> {
+  const { documentId, filename, userId, comments, db, reuseVersion } = params;
+  const current = await loadCurrentVersionBytes(documentId, db);
+  if (!current) return { ok: false, error: "Could not load document bytes." };
+
+  const { data: authorProfile } = await db
+    .from("user_profiles")
+    .select("display_name, email")
+    .eq("user_id", userId)
+    .maybeSingle();
+  const author = profileAttributionName(authorProfile, "Mike");
+
+  let written: Awaited<ReturnType<typeof applyDocxComments>>;
+  try {
+    written = await applyDocxComments(current.bytes, comments, { author });
+  } catch (err) {
+    devLog("[comment_document] write failed", err);
+    return { ok: false, error: "The comments could not be written into the document." };
+  }
+  if (written.comments.length === 0) {
+    return {
+      ok: false,
+      error: written.errors[0]?.reason ?? "No comments could be added.",
+    };
+  }
+
+  const editedBytes = written.bytes;
+  const ab = editedBytes.buffer.slice(
+    editedBytes.byteOffset,
+    editedBytes.byteOffset + editedBytes.byteLength,
+  ) as ArrayBuffer;
+
+  let versionRowId: string;
+  let newPath: string;
+  let nextVersionNumber: number;
+  let versionFilename = filename;
+
+  if (reuseVersion) {
+    newPath = reuseVersion.storagePath;
+    versionRowId = reuseVersion.versionId;
+    nextVersionNumber = reuseVersion.versionNumber;
+    const clear = await updateDocumentVersion(db, documentId, versionRowId, {
+      content_sha256: null,
+    });
+    if (clear.error || !clear.data) {
+      return { ok: false, error: "Document version is unavailable." };
+    }
+    await uploadFile(
+      newPath,
+      ab,
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    const updated = await updateDocumentVersion(db, documentId, versionRowId, {
+      file_type: "docx",
+      size_bytes: editedBytes.byteLength,
+      page_count: null,
+      content_sha256: contentSha256(editedBytes),
+      pdf_storage_path: null,
+    });
+    if (updated.error || !updated.data) {
+      return { ok: false, error: "Failed to update document version." };
+    }
+  } else {
+    const versionId = crypto.randomUUID().replace(/-/g, "");
+    newPath = `documents/${userId}/${documentId}/edits/${versionId}.docx`;
+    await uploadFile(
+      newPath,
+      ab,
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    const { data: prevRow } = await db
+      .from("document_versions")
+      .select("filename")
+      .eq("document_id", documentId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    versionFilename =
+      (prevRow?.filename as string | null)?.trim() || filename || "Untitled document";
+    const { data: versionRow, error: verErr } = await createDocumentVersion(
+      db,
+      {
+        document_id: documentId,
+        storage_path: newPath,
+        source: "assistant_edit",
+        filename: versionFilename,
+        file_type: "docx",
+        size_bytes: editedBytes.byteLength,
+        page_count: null,
+        content_sha256: contentSha256(editedBytes),
+      },
+      { activate: false },
+    );
+    if (verErr || !versionRow) {
+      return { ok: false, error: "Failed to record document version." };
+    }
+    versionRowId = versionRow.id as string;
+    nextVersionNumber = versionRow.version_number;
+  }
+
+  const activation = await activateDocumentVersion(db, documentId, versionRowId);
+  if (activation.error || !activation.activated) {
+    return { ok: false, error: "Failed to activate document version." };
+  }
+
+  return {
+    ok: true,
+    filename: versionFilename,
+    document_id: documentId,
+    version_id: versionRowId,
+    version_number: nextVersionNumber,
+    storage_path: newPath,
+    download_url: buildDownloadUrl(newPath, versionFilename),
+    comments: written.comments.map((comment) => ({
+      id: comment.id,
+      anchor: comment.anchor,
+      text: comment.text,
+      parent_id: comment.parentId,
+    })),
+    errors: written.errors,
   };
 }
 

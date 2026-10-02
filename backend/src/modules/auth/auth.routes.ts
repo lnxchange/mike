@@ -42,7 +42,6 @@ import {
   friendlyNameSchema,
   handoffSchema,
   issueWordHandoff,
-  linkMicrosoftIdentity,
   listMfaFactors,
   mfaAssuranceLevel,
   passwordSchema,
@@ -296,10 +295,10 @@ authRouter.post("/oauth", asyncRoute(async (req, res) => {
           return;
         }
       }
-      const { data, error } =
-        req.body?.intent === "link"
-          ? await linkMicrosoftIdentity(client, redirectTo)
-          : await startMicrosoftOAuth(client, redirectTo);
+      // Reconnect uses the same Azure sign-in as login. linkIdentity
+      // requires manual linking, which hosted projects leave disabled, so
+      // that call 404s before Microsoft opens.
+      const { data, error } = await startMicrosoftOAuth(client, redirectTo);
       if (error || !data.url) return authError(res, error);
       setOAuthProviderCookie(req, res, "azure");
       res.json({ url: data.url });

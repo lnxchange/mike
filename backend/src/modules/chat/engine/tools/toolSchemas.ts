@@ -16,6 +16,7 @@
  */
 export const DOCUMENT_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "edit_document",
+  "comment_document",
   "replicate_document",
   "finalize_document",
   "generate_docx",
@@ -29,7 +30,9 @@ function toolName(tool: unknown): string | null {
   return typeof fn?.name === "string" ? fn.name : null;
 }
 
-export function isDocumentMutatingTool(name: string | null | undefined): boolean {
+export function isDocumentMutatingTool(
+  name: string | null | undefined,
+): boolean {
   return !!name && DOCUMENT_MUTATING_TOOL_NAMES.has(name);
 }
 
@@ -277,7 +280,7 @@ export const TOOLS = [
     function: {
       name: "create_plan",
       description:
-        "Record the remaining work as a short ordered plan, then stop this response. Use this for a selected workflow or any job with more than two distinct steps. Read only enough to name the steps. After this call, do not draft, copy, edit, or generate documents in the same response.",
+        "Record the remaining work as a short ordered plan, then stop this response. Use this on a review, a selected workflow, a chat that already has documents, or any request that is not a short question. Read only enough to name the steps. Each item is one short sentence naming a part of the response, including what you still need to read. After this call, do not review, explain, draft, copy, edit, or generate documents in the same response.",
       parameters: {
         type: "object",
         properties: {
@@ -635,7 +638,7 @@ export const TOOLS = [
     function: {
       name: "edit_document",
       description:
-        "Propose edits to a user-attached .docx as tracked changes. Each edit is a precise, minimal substitution of specific words/characters, NOT a whole-line or paragraph replacement. Use read_document first unless this same document/version has already been read in the current response. Anchor each edit with short before/after context so it can be located unambiguously. Returns per-edit annotations the UI will render as Accept/Reject cards and a download link to the edited document.",
+        "Propose edits to a user-attached .docx as tracked changes attributed to the signed-in user's display name. Each edit is a precise, minimal substitution of specific words/characters, NOT a whole-line or paragraph replacement. Use read_document first unless this same document/version has already been read in the current response. Anchor each edit with short before/after context so it can be located unambiguously. An edit inside an existing tracked insertion keeps that author's markup on the unchanged text and adds only the new change under the signed-in user. Returns per-edit annotations the UI will render as Accept/Reject cards, the author name Word will show, and a download link to the edited document.",
       parameters: {
         type: "object",
         properties: {
@@ -679,6 +682,57 @@ export const TOOLS = [
           },
         },
         required: ["doc_id", "edits"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "comment_document",
+      description:
+        "Add Word review comments (comment bubbles) to a .docx, or reply to an existing comment. Each new comment is anchored to an exact passage and shows in Word's review pane. Use read_document first: its TRACKED CHANGES section lists each open comment with its id, author, date, anchor, and bubble text. To reply, set parent_id to that id and omit the anchor. Do not use this to change clause wording; use edit_document for tracked changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          doc_id: {
+            type: "string",
+            description: "Document slug (e.g. 'doc-0').",
+          },
+          comments: {
+            type: "array",
+            description: "Comments to add. At most 20.",
+            items: {
+              type: "object",
+              properties: {
+                anchor: {
+                  type: "string",
+                  description:
+                    "Exact passage the bubble sits on, copied from the document body, within a single paragraph. Omit when parent_id is set.",
+                },
+                context_before: {
+                  type: "string",
+                  description:
+                    "~40 characters immediately before the anchor, to disambiguate.",
+                },
+                context_after: {
+                  type: "string",
+                  description: "~40 characters immediately after the anchor.",
+                },
+                text: {
+                  type: "string",
+                  description: "The comment bubble text.",
+                },
+                parent_id: {
+                  type: "string",
+                  description:
+                    "Id of an existing comment to reply to, from the read_document comment list. A reply does not need an anchor.",
+                },
+              },
+              required: ["text"],
+            },
+          },
+        },
+        required: ["doc_id", "comments"],
       },
     },
   },

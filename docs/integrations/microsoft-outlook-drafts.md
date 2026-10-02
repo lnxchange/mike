@@ -94,7 +94,7 @@ Mirror Google. Do not invent a second OAuth stack.
 
 - [`backend/src/modules/auth/auth.service.ts`](../../backend/src/modules/auth/auth.service.ts): `startMicrosoftOAuth` via `signInWithOAuth({ provider: "azure", options: { redirectTo, skipBrowserRedirect: true, scopes: "openid profile email offline_access User.Read Mail.ReadWrite" } })`.
 - [`backend/src/modules/auth/auth.routes.ts`](../../backend/src/modules/auth/auth.routes.ts): accept `provider: "azure"` on `POST /oauth`. Reject when `MICROSOFT_OAUTH_ENABLED` is not true. After `exchangeCodeForSession`, persist `session.provider_token` and `session.provider_refresh_token` (available only at exchange).
-- Logged-in reconnect: `POST /auth/oauth` with `{ provider: "azure", intent: "link" }` using `linkIdentity` so existing sessions can add Microsoft without signing out.
+- Logged-in reconnect uses the same Azure sign-in as login (`POST /auth/oauth` with `provider: "azure"`). Do not use `linkIdentity`: hosted projects leave manual linking disabled, and that call stops before Microsoft. Automatic linking on the same verified email attaches the identity, and the callback stores the Graph grant.
 - [`frontend/src/app/lib/authApi.ts`](../../frontend/src/app/lib/authApi.ts), new `MicrosoftAuthButton` beside [`GoogleAuthButton.tsx`](../../frontend/src/app/components/auth/GoogleAuthButton.tsx), login and signup pages, Word add-in dialog (same handoff ticket path as Google).
 - Shared Microsoft mark next to [`frontend/src/shared/ui/GoogleIconUI.tsx`](../../frontend/src/shared/ui/GoogleIconUI.tsx).
 - Settings → Security: Connected / Connect / Disconnect Microsoft. Disconnect deletes the vault row and unlinks the Azure identity. Password and MFA stay as they are.

@@ -9,9 +9,10 @@
  * Only text inside `<w:p><w:r><w:t>` is considered. Headers, footers,
  * comments, footnotes are left alone. Pre-existing tracked changes in the
  * paragraph are presented to the matcher in *accepted view*: w:ins runs are
- * treated as normal text, w:del wrappers are invisible. When a new edit's
- * range lands on runs inside a pre-existing w:ins, the wrapper is dropped
- * (accepting that insertion) before the new change is emitted.
+ * treated as normal text, w:del wrappers are invisible. A new edit that
+ * lands inside a pre-existing w:ins keeps that insertion's author on every
+ * character it does not itself change, and records only the new insertion
+ * or deletion under the current author.
  */
 
 import JSZip from "jszip";
@@ -184,9 +185,18 @@ function cloneNode<T>(n: T): T {
 // Paragraph flattening
 // ---------------------------------------------------------------------------
 
+/** Author metadata copied off a pre-existing w:ins so a later edit can keep it. */
+interface ExistingInsertion {
+    id: string;
+    author: string;
+    date: string;
+}
+
 interface RunSlot {
     childIndex: number;         // index in paragraph.children
     rPr: XNode | null;          // reference (not cloned)
+    /** Set when this run was read from inside a w:ins. Shared by every run of that wrapper. */
+    insertion: ExistingInsertion | null;
     /**
      * Per-w:t info. Slots preserve the relative order of the run's textual
      * children. Non-textual run children (w:tab, w:br, ...) are ignored for
@@ -211,7 +221,7 @@ function flattenParagraph(paraChildren: XNode[]): Flattened {
     const charTextNodeArr: number[] = [];
     const charOffsetArr: number[] = [];
 
-    const processRun = (rEl: XNode, topChildIdx: number) => {
+    const processRun = (rEl: XNode, topChildIdx: number, insertion: ExistingInsertion | null) => {
         const rKids = elChildren(rEl);
         let rPr: XNode | null = null;
         const textNodes: RunSlot["textNodes"] = [];
@@ -239,20 +249,27 @@ function flattenParagraph(paraChildren: XNode[]): Flattened {
             }
             // other run children (w:tab, w:br, w:sym, …) are left alone
         }
-        runs.push({ childIndex: topChildIdx, rPr, textNodes });
+        runs.push({ childIndex: topChildIdx, rPr, textNodes, insertion });
     };
 
     for (let ci = 0; ci < paraChildren.length; ci++) {
         const child = paraChildren[ci];
         const name = elName(child);
         if (name === "w:r") {
-            processRun(child, ci);
+            processRun(child, ci, null);
         } else if (name === "w:ins") {
             // Accepted view: include inner runs as if bare. childIndex points
-            // at the w:ins wrapper so reconstruction can drop the wrapper
-            // whole when a new edit touches any of these runs.
+            // at the w:ins wrapper so reconstruction can drop that wrapper
+            // and re-emit it, still under the original author, around any
+            // characters this edit does not itself change.
+            const attrs = elAttrs(child);
+            const insertion: ExistingInsertion = {
+                id: attrs["@_w:id"] ?? "",
+                author: attrs["@_w:author"] ?? "",
+                date: attrs["@_w:date"] ?? "",
+            };
             for (const inner of elChildren(child)) {
-                if (elName(inner) === "w:r") processRun(inner, ci);
+                if (elName(inner) === "w:r") processRun(inner, ci, insertion);
             }
         }
         // w:del: skip entirely — accepted view excludes deleted text.
@@ -385,26 +402,41 @@ function reconstructParagraph(
         return flat.runs[flat.charRun[pos]].rPr;
     };
 
-    // Emit a "normal" run fragment covering [a, b) of paraText, grouping
-    // consecutive chars that belong to the same source text node.
+    // Emit [a, b) of paraText. Characters that already belonged to a tracked
+    // insertion stay inside that insertion, under its original author, so a
+    // new edit stacked on someone else's redline does not accept their
+    // markup or turn an earlier note into plain body text.
     const emitNormal = (a: number, b: number) => {
         if (a >= b) return;
         let i = a;
         while (i < b) {
-            const runIdx = flat.charRun[i];
-            const tnIdx = flat.charTextNode[i];
-            let j = i + 1;
-            while (
-                j < b &&
-                flat.charRun[j] === runIdx &&
-                flat.charTextNode[j] === tnIdx
-            ) {
-                j++;
+            const insertion = flat.runs[flat.charRun[i]].insertion;
+            const fragments: XNode[] = [];
+            let j = i;
+            while (j < b && flat.runs[flat.charRun[j]].insertion === insertion) {
+                const runIdx = flat.charRun[j];
+                const tnIdx = flat.charTextNode[j];
+                let k = j + 1;
+                while (
+                    k < b &&
+                    flat.charRun[k] === runIdx &&
+                    flat.charTextNode[k] === tnIdx
+                ) {
+                    k++;
+                }
+                const slot = flat.runs[runIdx];
+                fragments.push(buildRun(slot.rPr, flat.paraText.slice(j, k), "w:t"));
+                j = k;
             }
-            const slot = flat.runs[runIdx];
-            const rPr = slot.rPr;
-            const slice = flat.paraText.slice(i, j);
-            newRunGroup.push(buildRun(rPr, slice, "w:t"));
+            if (insertion) {
+                const attrs: Record<string, string> = {};
+                if (insertion.id) attrs["w:id"] = insertion.id;
+                if (insertion.author) attrs["w:author"] = insertion.author;
+                if (insertion.date) attrs["w:date"] = insertion.date;
+                newRunGroup.push(makeEl("w:ins", fragments, attrs));
+            } else {
+                for (const fragment of fragments) newRunGroup.push(fragment);
+            }
             i = j;
         }
     };
@@ -779,6 +811,21 @@ export interface TrackedChangeSummary {
     text: string;
 }
 
+/** One Word review comment, including replies. */
+export interface DocxCommentRecord {
+    id: string;
+    author: string | null;
+    date: string | null;
+    initials: string | null;
+    /** The comment bubble's own text. */
+    text: string;
+    /** Passage the bubble is anchored to. Null for a reply with no range of its own. */
+    anchor: string | null;
+    /** Parent comment id when this bubble is a reply. */
+    parentId: string | null;
+    resolved: boolean;
+}
+
 export interface TrackedMarkupSummary {
     /** Insertions and deletions in reading order, document body first. */
     changes: TrackedChangeSummary[];
@@ -788,6 +835,8 @@ export interface TrackedMarkupSummary {
     moves: number;
     /** Comment anchors in the body. */
     comments: number;
+    /** Review-comment bubbles, thread order (a reply follows its parent). */
+    commentRecords: DocxCommentRecord[];
 }
 
 /** Text of every w:t / w:delText below a node, in order. */
@@ -855,12 +904,15 @@ export async function listTrackedChanges(
         propertyChanges: 0,
         moves: 0,
         comments: 0,
+        commentRecords: [],
     };
     const parser = createParser();
+    const anchors = new Map<string, string>();
     for (const partName of storyPartNames(zip)) {
         const file = getZipEntry(zip, partName);
         if (!file) continue;
         const tree = parser.parse(await file.async("string")) as XNode[];
+        const open = new Map<string, string>();
         const visit = (n: unknown, inRunProps: boolean) => {
             const name = elName(n);
             if (!name) return;
@@ -879,13 +931,165 @@ export async function listTrackedChanges(
                 summary.moves += 1;
             } else if (name === "w:commentRangeStart") {
                 summary.comments += 1;
+                const id = String(elAttrs(n)["@_w:id"] ?? "");
+                if (id) open.set(id, "");
+            } else if (name === "w:commentRangeEnd") {
+                const id = String(elAttrs(n)["@_w:id"] ?? "");
+                const text = open.get(id);
+                if (id && text !== undefined && !anchors.has(id)) {
+                    anchors.set(id, text.replace(/\s+/g, " ").trim());
+                }
+                open.delete(id);
+            } else if (
+                (name === "w:t" || name === "w:delText") &&
+                open.size > 0
+            ) {
+                const bit = getTextContent(n as XNode);
+                if (bit) {
+                    for (const [id, soFar] of open) open.set(id, soFar + bit);
+                }
             }
             const nextInRunProps = inRunProps || name === "w:rPr";
             for (const c of elChildren(n as XNode)) visit(c, nextInRunProps);
         };
         for (const top of tree) visit(top, false);
     }
+    summary.commentRecords = await readCommentRecords(zip, parser, anchors);
     return summary;
+}
+
+const COMMENTS_REL_TYPE =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const COMMENTS_CONTENT_TYPE =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml";
+const COMMENTS_EX_REL_TYPE =
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended";
+const COMMENTS_EX_CONTENT_TYPE =
+    "application/vnd.FAKESECRET_e2f3g4h5i6j7k8l9m0n1+xml";
+
+function attrOf(node: XNode, ...keys: string[]): string | null {
+    const attrs = elAttrs(node);
+    for (const key of keys) {
+        const value = attrs[key];
+        if (value != null && String(value) !== "") return String(value);
+    }
+    return null;
+}
+
+function commentBodyText(comment: XNode): string {
+    const lines: string[] = [];
+    const visit = (n: XNode) => {
+        const name = elName(n);
+        if (!name) return;
+        if (name === "w:p") {
+            lines.push(collectRunText(n).replace(/\s+/g, " ").trim());
+            return;
+        }
+        for (const c of elChildren(n)) visit(c);
+    };
+    for (const c of elChildren(comment)) visit(c);
+    return lines.filter(Boolean).join("\n");
+}
+
+function firstParagraphParaId(comment: XNode): string | null {
+    for (const c of elChildren(comment)) {
+        if (elName(c) !== "w:p") continue;
+        return attrOf(c, "@_w14:paraId", "@_w:paraId");
+    }
+    return null;
+}
+
+/**
+ * Read word/comments.xml (and commentsExtended.xml for replies and resolved
+ * state) into records the model can act on. Anchors come from the story
+ * parts' comment ranges.
+ */
+async function readCommentRecords(
+    zip: JSZip,
+    parser: XMLParser,
+    anchors: Map<string, string>,
+): Promise<DocxCommentRecord[]> {
+    const file = getZipEntry(zip, "word/comments.xml");
+    if (!file) return [];
+    const tree = parser.parse(await file.async("string")) as XNode[];
+    const commentsRoot = tree.find((n) => elName(n) === "w:comments");
+    if (!commentsRoot) return [];
+
+    const paraIdToCommentId = new Map<string, string>();
+    const drafts: {
+        id: string;
+        author: string | null;
+        date: string | null;
+        initials: string | null;
+        text: string;
+        anchor: string | null;
+        paraId: string | null;
+    }[] = [];
+    for (const node of elChildren(commentsRoot)) {
+        if (elName(node) !== "w:comment") continue;
+        const id = attrOf(node, "@_w:id");
+        if (!id) continue;
+        const paraId = firstParagraphParaId(node);
+        if (paraId) paraIdToCommentId.set(paraId.toUpperCase(), id);
+        drafts.push({
+            id,
+            author: attrOf(node, "@_w:author"),
+            date: attrOf(node, "@_w:date"),
+            initials: attrOf(node, "@_w:initials"),
+            text: commentBodyText(node),
+            anchor: anchors.get(id) ?? null,
+            paraId,
+        });
+    }
+
+    const parentByPara = new Map<string, string>();
+    const doneParas = new Set<string>();
+    const extended = getZipEntry(zip, "word/commentsExtended.xml");
+    if (extended) {
+        const exTree = parser.parse(await extended.async("string")) as XNode[];
+        const visitEx = (n: XNode) => {
+            const name = elName(n);
+            if (!name) return;
+            if (name === "w15:commentEx" || name.endsWith(":commentEx")) {
+                const paraId = attrOf(n, "@_w15:paraId", "@_w:paraId");
+                const parent = attrOf(n, "@_w15:paraIdParent", "@_w:paraIdParent");
+                const done = attrOf(n, "@_w15:done", "@_w:done");
+                if (paraId && parent) parentByPara.set(paraId.toUpperCase(), parent.toUpperCase());
+                if (paraId && done === "1") doneParas.add(paraId.toUpperCase());
+            }
+            for (const c of elChildren(n)) visitEx(c);
+        };
+        for (const top of exTree) visitEx(top);
+    }
+
+    const records: DocxCommentRecord[] = drafts.map((draft) => {
+        const key = draft.paraId?.toUpperCase() ?? "";
+        const parentPara = key ? parentByPara.get(key) : undefined;
+        return {
+            id: draft.id,
+            author: draft.author,
+            date: draft.date,
+            initials: draft.initials,
+            text: draft.text,
+            anchor: draft.anchor,
+            parentId: parentPara ? (paraIdToCommentId.get(parentPara) ?? null) : null,
+            resolved: key ? doneParas.has(key) : false,
+        };
+    });
+
+    const byId = new Map(records.map((r) => [r.id, r]));
+    const threaded: DocxCommentRecord[] = [];
+    const placed = new Set<string>();
+    const place = (record: DocxCommentRecord) => {
+        if (placed.has(record.id)) return;
+        if (record.parentId && byId.has(record.parentId)) {
+            place(byId.get(record.parentId)!);
+        }
+        placed.add(record.id);
+        threaded.push(record);
+    };
+    for (const record of records) place(record);
+    return threaded;
 }
 
 export interface AcceptAllResult {
@@ -1441,6 +1645,530 @@ export async function resolveTrackedChange(
         compression: "DEFLATE",
     });
     return { bytes: out, found };
+}
+
+// ---------------------------------------------------------------------------
+// Review comments (read above; write here)
+// ---------------------------------------------------------------------------
+
+export interface CommentInput {
+    /** Exact passage the bubble should sit on. One paragraph, non-empty. */
+    anchor: string;
+    context_before?: string;
+    context_after?: string;
+    /** Bubble text. */
+    text: string;
+    /**
+     * Existing comment id to reply to. A reply is threaded in Word and does
+     * not add a second range on the passage.
+     */
+    parent_id?: string;
+}
+
+export interface AppliedComment {
+    id: string;
+    anchor: string;
+    text: string;
+    parentId: string | null;
+}
+
+export interface ApplyDocxCommentsResult {
+    bytes: Buffer;
+    comments: AppliedComment[];
+    errors: EditError[];
+}
+
+interface TextPiece {
+    parent: XNode;
+    runIndex: number;
+    text: string;
+    start: number;
+    end: number;
+}
+
+function runVisibleText(run: XNode): string {
+    let text = "";
+    for (const child of elChildren(run)) {
+        if (elName(child) === "w:t") text += getTextContent(child);
+    }
+    return text;
+}
+
+/** Accepted-view text pieces: bare runs and runs inside w:ins. w:del is skipped. */
+function collectTextPieces(parent: XNode, cursor: { n: number }, out: TextPiece[]): void {
+    const kids = elChildren(parent);
+    for (let i = 0; i < kids.length; i += 1) {
+        const name = elName(kids[i]);
+        if (name === "w:r") {
+            const text = runVisibleText(kids[i]);
+            if (!text) continue;
+            out.push({
+                parent,
+                runIndex: i,
+                text,
+                start: cursor.n,
+                end: cursor.n + text.length,
+            });
+            cursor.n += text.length;
+        } else if (name === "w:ins") {
+            collectTextPieces(kids[i], cursor, out);
+        }
+    }
+}
+
+function runProps(run: XNode): XNode | null {
+    return elChildren(run).find((child) => elName(child) === "w:rPr") ?? null;
+}
+
+function commentReferenceRun(id: string): XNode {
+    return makeEl("w:r", [
+        makeEl("w:rPr", [makeEl("w:rStyle", [], { "w:val": "CommentReference" })]),
+        makeEl("w:commentReference", [], { "w:id": id }),
+    ]);
+}
+
+function spliceChildren(parent: XNode, index: number, remove: number, insert: XNode[]): void {
+    const kids = elChildren(parent);
+    setChildren(parent, [...kids.slice(0, index), ...insert, ...kids.slice(index + remove)]);
+}
+
+/**
+ * Place comment range markers around [start, end) of the paragraph's
+ * accepted-view text. The passage text itself is unchanged.
+ */
+function insertCommentRange(
+    paragraph: XNode,
+    start: number,
+    end: number,
+    commentId: string,
+): boolean {
+    const pieces: TextPiece[] = [];
+    collectTextPieces(paragraph, { n: 0 }, pieces);
+    const startPiece = pieces.find((piece) => start >= piece.start && start < piece.end);
+    const endPiece = pieces.find((piece) => end > piece.start && end <= piece.end);
+    if (!startPiece || !endPiece) return false;
+
+    const startRun = elChildren(startPiece.parent)[startPiece.runIndex];
+    const endRun = elChildren(endPiece.parent)[endPiece.runIndex];
+    if (!startRun || !endRun) return false;
+    const startProps = runProps(startRun);
+    const endProps = runProps(endRun);
+    const startLocal = start - startPiece.start;
+    const endLocal = end - endPiece.start;
+
+    if (startPiece.parent === endPiece.parent && startPiece.runIndex === endPiece.runIndex) {
+        const text = startPiece.text;
+        const before = text.slice(0, startLocal);
+        const mid = text.slice(startLocal, endLocal);
+        const after = text.slice(endLocal);
+        const nodes: XNode[] = [];
+        if (before) nodes.push(buildRun(startProps, before, "w:t"));
+        nodes.push(makeEl("w:commentRangeStart", [], { "w:id": commentId }));
+        if (mid) nodes.push(buildRun(startProps, mid, "w:t"));
+        nodes.push(makeEl("w:commentRangeEnd", [], { "w:id": commentId }));
+        nodes.push(commentReferenceRun(commentId));
+        if (after) nodes.push(buildRun(startProps, after, "w:t"));
+        spliceChildren(startPiece.parent, startPiece.runIndex, 1, nodes);
+        return true;
+    }
+
+    // End boundary first so the start run's index stays valid when they share a parent.
+    const endText = endPiece.text;
+    const endKeep = endText.slice(0, endLocal);
+    const endRest = endText.slice(endLocal);
+    const endNodes: XNode[] = [];
+    if (endKeep) endNodes.push(buildRun(endProps, endKeep, "w:t"));
+    endNodes.push(makeEl("w:commentRangeEnd", [], { "w:id": commentId }));
+    endNodes.push(commentReferenceRun(commentId));
+    if (endRest) endNodes.push(buildRun(endProps, endRest, "w:t"));
+    spliceChildren(endPiece.parent, endPiece.runIndex, 1, endNodes);
+
+    const startText = startPiece.text;
+    const startKeep = startText.slice(0, startLocal);
+    const startRest = startText.slice(startLocal);
+    const startNodes: XNode[] = [];
+    if (startKeep) startNodes.push(buildRun(startProps, startKeep, "w:t"));
+    startNodes.push(makeEl("w:commentRangeStart", [], { "w:id": commentId }));
+    if (startRest) startNodes.push(buildRun(startProps, startRest, "w:t"));
+    spliceChildren(startPiece.parent, startPiece.runIndex, 1, startNodes);
+    return true;
+}
+
+function nextRelationshipId(relsXml: string): string {
+    let max = 0;
+    for (const match of relsXml.matchAll(/\bId="rId(\d+)"/g)) {
+        const n = parseInt(match[1], 10);
+        if (n > max) max = n;
+    }
+    return `rId${max + 1}`;
+}
+
+function ensureRelationship(relsXml: string, type: string, target: string): string {
+    if (relsXml.includes(type)) return relsXml;
+    const id = nextRelationshipId(relsXml);
+    const tag =
+        `<Relationship Id="${id}" Type="${type}" Target="${target}"/>`;
+    if (relsXml.includes("</Relationships>")) {
+        return relsXml.replace("</Relationships>", `${tag}</Relationships>`);
+    }
+    return (
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+        `${tag}</Relationships>`
+    );
+}
+
+function ensureContentType(typesXml: string, partName: string, contentType: string): string {
+    if (typesXml.includes(`PartName="${partName}"`)) return typesXml;
+    const tag = `<Override PartName="${partName}" ContentType="${contentType}"/>`;
+    if (typesXml.includes("</Types>")) {
+        return typesXml.replace("</Types>", `${tag}</Types>`);
+    }
+    return (
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+        `${tag}</Types>`
+    );
+}
+
+function maxCommentId(commentsRoot: XNode | null): number {
+    let max = -1;
+    if (!commentsRoot) return max;
+    for (const node of elChildren(commentsRoot)) {
+        if (elName(node) !== "w:comment") continue;
+        const raw = attrOf(node, "@_w:id");
+        const n = raw != null ? parseInt(raw, 10) : NaN;
+        if (Number.isFinite(n) && n > max) max = n;
+    }
+    return max;
+}
+
+function initialsFor(author: string): string {
+    const letters = author
+        .split(/\s+/)
+        .map((part) => part[0])
+        .filter(Boolean)
+        .join("")
+        .slice(0, 3)
+        .toUpperCase();
+    return letters || "M";
+}
+
+function newParaId(): string {
+    return Math.floor(Math.random() * 0xffffffff)
+        .toString(16)
+        .toUpperCase()
+        .padStart(8, "0");
+}
+
+function commentElement(
+    id: string,
+    author: string,
+    initials: string,
+    date: string,
+    text: string,
+    paraId: string,
+): XNode {
+    const paragraphs = text.split("\n").map((line) =>
+        makeEl(
+            "w:p",
+            [makeEl("w:r", [makeEl("w:t", [makeText(line)], { "xml:space": "preserve" })])],
+            { "w14:paraId": paraId },
+        ),
+    );
+    // Only the first paragraph carries the paraId Word uses to thread replies.
+    for (let i = 1; i < paragraphs.length; i += 1) {
+        delete (paragraphs[i][ATTR_KEY] as Record<string, string>)["@_w14:paraId"];
+    }
+    return makeEl("w:comment", paragraphs, {
+        "w:id": id,
+        "w:author": author,
+        "w:date": date,
+        "w:initials": initials,
+    });
+}
+
+/**
+ * Insert Word review comments into a .docx. Each new comment is a real
+ * comment bubble (range + comments part), so Word's review pane shows it.
+ * Replies thread onto an existing comment id and do not add a second range.
+ */
+export async function applyDocxComments(
+    bytes: Buffer,
+    comments: CommentInput[],
+    opts?: { author?: string },
+): Promise<ApplyDocxCommentsResult> {
+    const author = opts?.author ?? "Mike";
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    const zip = await JSZip.loadAsync(bytes);
+    const docXmlFile = getZipEntry(zip, "word/document.xml");
+    if (!docXmlFile) throw new Error("document.xml missing from docx");
+
+    const parser = createParser();
+    const builder = createBuilder();
+    const tree = parser.parse(await docXmlFile.async("string")) as XNode[];
+    const bodyChildren = findBody(tree);
+    if (!bodyChildren) throw new Error("w:body missing from document.xml");
+
+    const paragraphs: XNode[] = [];
+    const collectParagraphs = (nodes: XNode[]) => {
+        for (const n of nodes) {
+            const name = elName(n);
+            if (!name) continue;
+            if (name === "w:p") paragraphs.push(n);
+            else if (
+                name === "w:tbl" ||
+                name === "w:tr" ||
+                name === "w:tc" ||
+                name === "w:sdt" ||
+                name === "w:sdtContent"
+            ) {
+                collectParagraphs(elChildren(n));
+            }
+        }
+    };
+    collectParagraphs(bodyChildren);
+
+    const commentsFile = getZipEntry(zip, "word/comments.xml");
+    let commentsTree: XNode[] = commentsFile
+        ? (parser.parse(await commentsFile.async("string")) as XNode[])
+        : [];
+    let commentsRoot = commentsTree.find((n) => elName(n) === "w:comments") ?? null;
+    if (!commentsRoot) {
+        commentsRoot = makeEl("w:comments", [], {
+            "xmlns:w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+            "xmlns:w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+        });
+        commentsTree = [commentsRoot];
+    }
+    let nextId = maxCommentId(commentsRoot) + 1;
+
+    const existingIds = new Set(
+        elChildren(commentsRoot)
+            .filter((node) => elName(node) === "w:comment")
+            .map((node) => attrOf(node, "@_w:id"))
+            .filter((id): id is string => !!id),
+    );
+    const paraIdByCommentId = new Map<string, string>();
+    for (const node of elChildren(commentsRoot)) {
+        if (elName(node) !== "w:comment") continue;
+        const id = attrOf(node, "@_w:id");
+        const paraId = firstParagraphParaId(node);
+        if (id && paraId) paraIdByCommentId.set(id, paraId);
+    }
+
+    const extendedFile = getZipEntry(zip, "word/commentsExtended.xml");
+    let extendedXml = extendedFile
+        ? await extendedFile.async("string")
+        : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"></w15:commentsEx>`;
+
+    const applied: AppliedComment[] = [];
+    const errors: EditError[] = [];
+    const freshIds = new Set<string>();
+
+    for (let index = 0; index < comments.length; index += 1) {
+        const input = comments[index];
+        const text = (input.text ?? "").trim();
+        const anchor = input.anchor ?? "";
+        const parentId = input.parent_id?.trim() || null;
+        if (!text) {
+            errors.push({ index, reason: "Comment text is empty." });
+            continue;
+        }
+        if (parentId && !existingIds.has(parentId) && !freshIds.has(parentId)) {
+            errors.push({
+                index,
+                reason: `No comment with id "${parentId}" to reply to.`,
+            });
+            continue;
+        }
+        if (!parentId && !anchor.trim()) {
+            errors.push({
+                index,
+                reason: "A comment needs an anchor passage, or a parent_id to reply to.",
+            });
+            continue;
+        }
+        if (anchor.includes("\n")) {
+            errors.push({
+                index,
+                reason: "The anchor must be one contiguous passage within a single paragraph.",
+            });
+            continue;
+        }
+
+        const id = String(nextId);
+        const paraId = newParaId();
+        nextId += 1;
+        existingIds.add(id);
+        freshIds.add(id);
+        paraIdByCommentId.set(id, paraId);
+        setChildren(commentsRoot, [
+            ...elChildren(commentsRoot),
+            commentElement(id, author, initialsFor(author), now, text, paraId),
+        ]);
+
+        if (parentId && !paraIdByCommentId.get(parentId)) {
+            const assigned = newParaId();
+            for (const node of elChildren(commentsRoot)) {
+                if (elName(node) !== "w:comment" || attrOf(node, "@_w:id") !== parentId) continue;
+                const first = elChildren(node).find((child) => elName(child) === "w:p");
+                if (first) {
+                    const attrs = elAttrs(first);
+                    attrs["@_w14:paraId"] = assigned;
+                    first[ATTR_KEY] = attrs;
+                    paraIdByCommentId.set(parentId, assigned);
+                }
+            }
+        }
+        const parentPara = parentId ? paraIdByCommentId.get(parentId) : undefined;
+        const exTag = parentPara
+            ? `<w15:commentEx w15:paraId="${paraId}" w15:paraIdParent="${parentPara}" w15:done="0"/>`
+            : `<w15:commentEx w15:paraId="${paraId}" w15:done="0"/>`;
+        extendedXml = extendedXml.includes("</w15:commentsEx>")
+            ? extendedXml.replace("</w15:commentsEx>", `${exTag}</w15:commentsEx>`)
+            : extendedXml;
+
+        if (!parentId) {
+            const placed = placeCommentAnchor(paragraphs, anchor, input.context_before ?? "", input.context_after ?? "", id);
+            if (!placed.ok) {
+                errors.push({ index, reason: placed.reason });
+                // Roll back the comment element we just appended.
+                setChildren(
+                    commentsRoot,
+                    elChildren(commentsRoot).filter(
+                        (node) => attrOf(node, "@_w:id") !== id,
+                    ),
+                );
+                existingIds.delete(id);
+                freshIds.delete(id);
+                extendedXml = extendedXml.replace(exTag, "");
+                continue;
+            }
+        }
+
+        applied.push({
+            id,
+            anchor: parentId ? "" : anchor,
+            text,
+            parentId,
+        });
+    }
+
+    if (applied.length === 0) {
+        return { bytes, comments: [], errors };
+    }
+
+    setZipEntry(zip, "word/document.xml", ensureXmlDeclaration(builder.build(tree)));
+    let commentsXml = ensureXmlDeclaration(builder.build(commentsTree));
+    if (!commentsXml.includes("xmlns:w14=")) {
+        commentsXml = commentsXml.replace(
+            "<w:comments",
+            `<w:comments xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"`,
+        );
+    }
+    setZipEntry(zip, "word/comments.xml", commentsXml);
+    setZipEntry(zip, "word/commentsExtended.xml", extendedXml);
+
+    const relsPath = "word/_rels/document.xml.rels";
+    const relsFile = getZipEntry(zip, relsPath);
+    const relsXml = relsFile ? await relsFile.async("string") : "";
+    let nextRels = ensureRelationship(relsXml, COMMENTS_REL_TYPE, "comments.xml");
+    nextRels = ensureRelationship(nextRels, COMMENTS_EX_REL_TYPE, "commentsExtended.xml");
+    setZipEntry(zip, relsPath, nextRels);
+
+    const typesPath = "[Content_Types].xml";
+    const typesFile = getZipEntry(zip, typesPath);
+    const typesXml = typesFile ? await typesFile.async("string") : "";
+    let nextTypes = ensureContentType(typesXml, "/word/comments.xml", COMMENTS_CONTENT_TYPE);
+    nextTypes = ensureContentType(
+        nextTypes,
+        "/word/commentsExtended.xml",
+        COMMENTS_EX_CONTENT_TYPE,
+    );
+    setZipEntry(zip, typesPath, nextTypes);
+
+    const out = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    return { bytes: out, comments: applied, errors };
+}
+
+function placeCommentAnchor(
+    paragraphs: XNode[],
+    anchor: string,
+    contextBefore: string,
+    contextAfter: string,
+    commentId: string,
+): { ok: true } | { ok: false; reason: string } {
+    const findNorm = normalizeWs(anchor).norm;
+    const ctxBeforeNorm = normalizeWs(contextBefore).norm;
+    const ctxAfterNorm = normalizeWs(contextAfter).norm;
+    const paraText = (paragraph: XNode) => {
+        const pieces: TextPiece[] = [];
+        collectTextPieces(paragraph, { n: 0 }, pieces);
+        return pieces.map((piece) => piece.text).join("");
+    };
+    const norms = paragraphs.map((paragraph) => normalizeWs(paraText(paragraph)));
+
+    type Hit = { paraIdx: number; normStart: number; normEnd: number };
+    const tryStrategy = (before: string, after: string): { kind: "ok"; hits: Hit[] } | { kind: "ambiguous" } => {
+        const hits: Hit[] = [];
+        let ambiguous = false;
+        for (let i = 0; i < norms.length; i += 1) {
+            const found = findUniqueAnchor(norms[i].norm, findNorm, before, after);
+            if ("error" in found) {
+                if (found.error === "ambiguous") ambiguous = true;
+                continue;
+            }
+            hits.push({ paraIdx: i, normStart: found.start, normEnd: found.end });
+        }
+        if (ambiguous || hits.length > 1) return { kind: "ambiguous" };
+        return { kind: "ok", hits };
+    };
+
+    let selected: Hit | null = null;
+    let sawAmbiguous = false;
+    for (const attempt of [
+        { before: ctxBeforeNorm, after: ctxAfterNorm },
+        { before: ctxBeforeNorm, after: "" },
+        { before: "", after: ctxAfterNorm },
+        { before: "", after: "" },
+    ]) {
+        const result = tryStrategy(attempt.before, attempt.after);
+        if (result.kind === "ambiguous") {
+            sawAmbiguous = true;
+            continue;
+        }
+        if (result.hits.length === 1) {
+            selected = result.hits[0];
+            break;
+        }
+    }
+    if (!selected) {
+        return {
+            ok: false,
+            reason: sawAmbiguous
+                ? `Ambiguous anchor "${truncate(anchor, 80)}". Add context_before and context_after so it is unique.`
+                : `Could not locate anchor "${truncate(anchor, 80)}". Copy the passage verbatim from the document.`,
+        };
+    }
+    const range = mapNormRangeToOriginal(
+        norms[selected.paraIdx],
+        paraText(paragraphs[selected.paraIdx]).length,
+        selected.normStart,
+        selected.normEnd,
+    );
+    if (range.end <= range.start) {
+        return { ok: false, reason: "The anchor matched an empty range." };
+    }
+    const placed = insertCommentRange(
+        paragraphs[selected.paraIdx],
+        range.start,
+        range.end,
+        commentId,
+    );
+    if (!placed) return { ok: false, reason: "The anchor could not be marked in the paragraph." };
+    return { ok: true };
 }
 
 // ---------------------------------------------------------------------------

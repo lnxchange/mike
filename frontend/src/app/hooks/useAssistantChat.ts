@@ -10,6 +10,10 @@ import {
   streamProjectChat,
 } from "@/app/lib/mikeApi";
 import { assistantHistoryContent } from "@/app/lib/assistantHistoryContent";
+import {
+  CONTINUE_PLAN_MESSAGE,
+  shouldAutoContinue,
+} from "@/app/lib/autoContinuePlan";
 import { readSseFrames } from "@/app/lib/sse";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { isPanelDocument } from "@/app/components/shared/types";
@@ -20,7 +24,9 @@ import type {
 } from "@/app/components/shared/types";
 import type { OutlookThreadStatus } from "@mike/contracts";
 
-function parseOutlookThreadStatus(value: unknown): OutlookThreadStatus | undefined {
+function parseOutlookThreadStatus(
+  value: unknown,
+): OutlookThreadStatus | undefined {
   return value === "matched" ||
     value === "ambiguous" ||
     value === "not_found" ||
@@ -44,7 +50,9 @@ export const RUNNING_TURN_POLL_MS = 5_000;
 export function findRunningTurn(messages: Message[]): Message | undefined {
   return messages.find(
     (message) =>
-      message.role === "assistant" && message.status === "running" && !!message.id,
+      message.role === "assistant" &&
+      message.status === "running" &&
+      !!message.id,
   );
 }
 
@@ -164,6 +172,7 @@ export function useAssistantChat({
   }, [threadKey]);
 
   const eventsRef = useRef<AssistantEvent[]>([]);
+  const autoContinueCountRef = useRef(0);
 
   const updateLatestAssistantMessage = (
     updater: (message: Message) => Message,
@@ -393,15 +402,23 @@ export function useAssistantChat({
        * starting one. The message argument is ignored.
        */
       resumeTurn?: { assistantMessageId: string };
+      /** Transcript to send when chaining a slice before React state commits. */
+      history?: Message[];
+      autoContinue?: boolean;
+      /** Chat created during the previous slice, before state has committed. */
+      continueChatId?: string;
     },
   ): Promise<string | null> => {
     const resumeTurn = opts?.resumeTurn ?? null;
+    const turnChatId = opts?.continueChatId ?? chatId;
     if (!resumeTurn && !message.content.trim()) return null;
-    if (resumeTurn && !chatId) return null;
+    if (resumeTurn && !turnChatId) return null;
+    if (!opts?.autoContinue) autoContinueCountRef.current = 0;
 
     setIsResponseLoading(true);
 
-    const lastMessage = messages[messages.length - 1];
+    const priorMessages = opts?.history ?? messages;
+    const lastMessage = priorMessages[priorMessages.length - 1];
     const isMessageAlreadyAdded =
       !!resumeTurn ||
       (lastMessage &&
@@ -409,8 +426,8 @@ export function useAssistantChat({
         lastMessage.content === message.content);
 
     const apiMessagesForTurn: Message[] = isMessageAlreadyAdded
-      ? messages
-      : [...messages, message];
+      ? priorMessages
+      : [...priorMessages, message];
     const askInputsResponseEvent = opts?.askInputsResponse ?? null;
     const optimisticResponseEvent = askInputsResponseEvent;
     const userInputThinkingEvent = optimisticResponseEvent
@@ -421,7 +438,7 @@ export function useAssistantChat({
       : null;
     const displayMessages: Message[] = optimisticResponseEvent
       ? (() => {
-          const updated = messages.map((item) => ({
+          const updated = priorMessages.map((item) => ({
             ...item,
             events: item.events ? [...item.events] : item.events,
           }));
@@ -502,9 +519,9 @@ export function useAssistantChat({
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const isCurrentRequest = () => requestGenerationRef.current === generation;
-    if (resumeTurn && chatId) {
+    if (resumeTurn && turnChatId) {
       activeTurnRef.current = {
-        chatId,
+        chatId: turnChatId,
         assistantMessageId: resumeTurn.assistantMessageId,
       };
     }
@@ -537,9 +554,9 @@ export function useAssistantChat({
         document_id: f.document_id as string,
       }));
 
-      const response = await (resumeTurn && chatId
+      const response = await (resumeTurn && turnChatId
         ? streamChatTurn({
-            chatId,
+            chatId: turnChatId,
             assistantMessageId: resumeTurn.assistantMessageId,
             signal: controller.signal,
           })
@@ -547,7 +564,7 @@ export function useAssistantChat({
           ? streamProjectChat({
               projectId,
               messages: apiMessages,
-              chat_id: chatId,
+              chat_id: turnChatId,
               model,
               reasoning,
               displayed_doc: displayedDoc
@@ -563,7 +580,7 @@ export function useAssistantChat({
             })
           : streamChat({
               messages: apiMessages,
-              chat_id: chatId,
+              chat_id: turnChatId,
               model,
               reasoning,
               ask_inputs_response: opts?.askInputsResponse,
@@ -574,12 +591,12 @@ export function useAssistantChat({
         await response.body?.cancel().catch(() => {});
         return null;
       }
-      if (resumeTurn && response.status === 202 && chatId) {
+      if (resumeTurn && response.status === 202 && turnChatId) {
         // Nothing to attach to here: the turn finished a moment ago or runs
         // on another instance. Poll the transcript until it settles.
         await response.body?.cancel().catch(() => {});
-        await pollRunningTurn(chatId, generation, controller.signal);
-        return chatId;
+        await pollRunningTurn(turnChatId, generation, controller.signal);
+        return turnChatId;
       }
       if (response.status === 409 && !resumeTurn) {
         // Another turn already holds this chat. Show that one rather than an
@@ -591,7 +608,7 @@ export function useAssistantChat({
         if (
           body?.code === "turn_in_progress" &&
           typeof body.assistant_message_id === "string" &&
-          chatId &&
+          turnChatId &&
           isCurrentRequest()
         ) {
           // Drop the optimistic user row and placeholder this send added; the
@@ -603,6 +620,8 @@ export function useAssistantChat({
           abortControllerRef.current = null;
           return handleChat(message, {
             resumeTurn: { assistantMessageId: body.assistant_message_id },
+            ...(turnChatId ? { continueChatId: turnChatId } : {}),
+            ...(opts?.autoContinue ? { autoContinue: true } : {}),
           });
         }
         throw new Error(`Chat request failed with status ${response.status}`);
@@ -625,205 +644,469 @@ export function useAssistantChat({
         const data = frame as Record<string, unknown>;
 
         try {
-            if (data.type === "chat_id") {
-              const streamed = data.chatId as string;
-              const isNewChatId =
-                streamed !== chatId && streamed !== streamedChatId;
-              streamedChatId = streamed;
-              setChatId(streamed);
-              setCurrentChatId(streamed);
-              if (isNewChatId && onChatCreated) {
-                adoptedThreadKeyRef.current = `${projectId ?? ""}:${streamed}`;
-                onChatCreated(streamed);
-              }
-              const assistantMessageId = data.assistantMessageId;
-              if (typeof assistantMessageId === "string") {
-                activeTurnRef.current = {
-                  chatId: streamed,
-                  assistantMessageId,
-                };
-                updateLatestAssistantMessage((message) => ({
-                  ...message,
-                  id: assistantMessageId,
-                }));
-              }
-              continue;
+          if (data.type === "chat_id") {
+            const streamed = data.chatId as string;
+            const isNewChatId =
+              streamed !== turnChatId && streamed !== streamedChatId;
+            streamedChatId = streamed;
+            setChatId(streamed);
+            setCurrentChatId(streamed);
+            if (isNewChatId && onChatCreated) {
+              adoptedThreadKeyRef.current = `${projectId ?? ""}:${streamed}`;
+              onChatCreated(streamed);
             }
-
-            if (
-              data.type === "chat_title" &&
-              typeof data.chatId === "string" &&
-              typeof data.title === "string"
-            ) {
-              updateChatTitle(data.chatId, data.title);
-              continue;
+            const assistantMessageId = data.assistantMessageId;
+            if (typeof assistantMessageId === "string") {
+              activeTurnRef.current = {
+                chatId: streamed,
+                assistantMessageId,
+              };
+              updateLatestAssistantMessage((message) => ({
+                ...message,
+                id: assistantMessageId,
+              }));
             }
+            continue;
+          }
 
-            if (data.type === "content_done") {
-              setIsLoadingCitations(true);
-              continue;
-            }
+          if (
+            data.type === "chat_title" &&
+            typeof data.chatId === "string" &&
+            typeof data.title === "string"
+          ) {
+            updateChatTitle(data.chatId, data.title);
+            continue;
+          }
 
-            if (data.type === "error") {
-              const safeToDisplay = data.safe_to_display === true;
-              const message = readableStreamError(
-                data.message,
-                safeToDisplay,
-              );
-              clearStreamingPlaceholders();
-              finalizeStreamingContent();
-              finalizeStreamingReasoning();
+          if (data.type === "content_done") {
+            setIsLoadingCitations(true);
+            continue;
+          }
+
+          if (data.type === "error") {
+            const safeToDisplay = data.safe_to_display === true;
+            const message = readableStreamError(data.message, safeToDisplay);
+            clearStreamingPlaceholders();
+            finalizeStreamingContent();
+            finalizeStreamingReasoning();
+            eventsRef.current = [
+              ...eventsRef.current,
+              {
+                type: "error",
+                message,
+                ...(safeToDisplay ? { safe_to_display: true } : {}),
+              },
+            ];
+            const snapshot = [...eventsRef.current];
+            updateLatestAssistantMessage((assistantMessage) => ({
+              ...assistantMessage,
+              events: snapshot,
+              error: message,
+            }));
+            setIsResponseLoading(false);
+            setIsLoadingCitations(false);
+            continue;
+          }
+
+          if (data.type === "content_delta") {
+            const text = data.text as string;
+
+            // Real content is streaming — retire any
+            // "Thinking…" / "Running…" placeholders, and
+            // finalize any in-flight reasoning block so it
+            // doesn't get stuck rendering as streaming.
+            clearStreamingPlaceholders();
+            finalizeStreamingReasoning();
+
+            // Ensure a streaming content event exists. If
+            // the last event isn't already a streaming
+            // content block, start a fresh one so interleaved
+            // tool/reasoning events split content naturally.
+            const events = eventsRef.current;
+            const lastEvent = events[events.length - 1];
+            if (lastEvent?.type !== "content" || !lastEvent.isStreaming) {
               eventsRef.current = [
-                ...eventsRef.current,
+                ...events,
                 {
-                  type: "error",
-                  message,
-                  ...(safeToDisplay ? { safe_to_display: true } : {}),
+                  type: "content" as const,
+                  text,
+                  isStreaming: true,
                 },
               ];
               const snapshot = [...eventsRef.current];
-              updateLatestAssistantMessage((assistantMessage) => ({
-                ...assistantMessage,
-                events: snapshot,
-                error: message,
-              }));
-              setIsResponseLoading(false);
-              setIsLoadingCitations(false);
-              continue;
-            }
-
-            if (data.type === "content_delta") {
-              const text = data.text as string;
-
-              // Real content is streaming — retire any
-              // "Thinking…" / "Running…" placeholders, and
-              // finalize any in-flight reasoning block so it
-              // doesn't get stuck rendering as streaming.
-              clearStreamingPlaceholders();
-              finalizeStreamingReasoning();
-
-              // Ensure a streaming content event exists. If
-              // the last event isn't already a streaming
-              // content block, start a fresh one so interleaved
-              // tool/reasoning events split content naturally.
-              const events = eventsRef.current;
-              const lastEvent = events[events.length - 1];
-              if (lastEvent?.type !== "content" || !lastEvent.isStreaming) {
-                eventsRef.current = [
-                  ...events,
-                  {
-                    type: "content" as const,
-                    text,
-                    isStreaming: true,
-                  },
-                ];
-                const snapshot = [...eventsRef.current];
-                updateLatestAssistantMessage((message) => ({
-                  ...message,
-                  events: snapshot,
-                }));
-              } else {
-                const nextEvents = [...events];
-                nextEvents[nextEvents.length - 1] = {
-                  type: "content" as const,
-                  text: `${lastEvent.text}${text}`,
-                  isStreaming: true,
-                };
-                eventsRef.current = nextEvents;
-                const snapshot = [...nextEvents];
-                updateLatestAssistantMessage((message) => ({
-                  ...message,
-                  events: snapshot,
-                }));
-              }
-              continue;
-            }
-
-            if (data.type === "reasoning_delta") {
-              const text = data.text as string;
-              let events = eventsRef.current;
-              const last = events[events.length - 1];
-              if (last?.type === "reasoning" && last.isStreaming) {
-                eventsRef.current = [
-                  ...events.slice(0, -1),
-                  {
-                    type: "reasoning" as const,
-                    text: last.text + text,
-                    isStreaming: true,
-                  },
-                ];
-              } else {
-                // New reasoning block — finalize any in-flight
-                // content event first so the next content_delta
-                // starts a fresh block at the correct position.
-                finalizeStreamingContent();
-                clearStreamingPlaceholders();
-                events = eventsRef.current;
-                eventsRef.current = [
-                  ...events,
-                  {
-                    type: "reasoning" as const,
-                    text,
-                    isStreaming: true,
-                  },
-                ];
-              }
-              const snapshot = [...eventsRef.current];
               updateLatestAssistantMessage((message) => ({
                 ...message,
                 events: snapshot,
               }));
-              continue;
-            }
-
-            if (data.type === "reasoning_block_end") {
-              const events = eventsRef.current;
-              const last = events[events.length - 1];
-              if (last?.type === "reasoning" && last.isStreaming) {
-                eventsRef.current = [
-                  ...events.slice(0, -1),
-                  {
-                    type: "reasoning" as const,
-                    text: last.text,
-                  },
-                ];
-              }
-              const snapshot = [...eventsRef.current];
-              updateLatestAssistantMessage((message) => ({
-                ...message,
-                events: snapshot,
-              }));
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "tool_call_start") {
-              // Transient placeholder so the client immediately
-              // shows activity after Claude ends a turn with
-              // tool_use. Replaced by the real tool event
-              // (doc_edited_start, doc_read_start, …) if one
-              // arrives; otherwise it lingers as a "Working…"
-              // indicator until the next iteration streams.
-              pushEvent({
-                type: "tool_call_start",
-                name: (data.name as string) ?? "",
+            } else {
+              const nextEvents = [...events];
+              nextEvents[nextEvents.length - 1] = {
+                type: "content" as const,
+                text: `${lastEvent.text}${text}`,
                 isStreaming: true,
-              });
-              continue;
+              };
+              eventsRef.current = nextEvents;
+              const snapshot = [...nextEvents];
+              updateLatestAssistantMessage((message) => ({
+                ...message,
+                events: snapshot,
+              }));
             }
+            continue;
+          }
 
-            if (data.type === "workflow_applied") {
-              pushEvent({
-                type: "workflow_applied",
-                workflow_id: data.workflow_id as string,
-                title: data.title as string,
-              });
-              continue;
+          if (data.type === "reasoning_delta") {
+            const text = data.text as string;
+            let events = eventsRef.current;
+            const last = events[events.length - 1];
+            if (last?.type === "reasoning" && last.isStreaming) {
+              eventsRef.current = [
+                ...events.slice(0, -1),
+                {
+                  type: "reasoning" as const,
+                  text: last.text + text,
+                  isStreaming: true,
+                },
+              ];
+            } else {
+              // New reasoning block — finalize any in-flight
+              // content event first so the next content_delta
+              // starts a fresh block at the correct position.
+              finalizeStreamingContent();
+              clearStreamingPlaceholders();
+              events = eventsRef.current;
+              eventsRef.current = [
+                ...events,
+                {
+                  type: "reasoning" as const,
+                  text,
+                  isStreaming: true,
+                },
+              ];
             }
+            const snapshot = [...eventsRef.current];
+            updateLatestAssistantMessage((message) => ({
+              ...message,
+              events: snapshot,
+            }));
+            continue;
+          }
 
-            if (data.type === "case_citation") {
-              pushEvent({
-                type: "case_citation",
+          if (data.type === "reasoning_block_end") {
+            const events = eventsRef.current;
+            const last = events[events.length - 1];
+            if (last?.type === "reasoning" && last.isStreaming) {
+              eventsRef.current = [
+                ...events.slice(0, -1),
+                {
+                  type: "reasoning" as const,
+                  text: last.text,
+                },
+              ];
+            }
+            const snapshot = [...eventsRef.current];
+            updateLatestAssistantMessage((message) => ({
+              ...message,
+              events: snapshot,
+            }));
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "tool_call_start") {
+            // Transient placeholder so the client immediately
+            // shows activity after Claude ends a turn with
+            // tool_use. Replaced by the real tool event
+            // (doc_edited_start, doc_read_start, …) if one
+            // arrives; otherwise it lingers as a "Working…"
+            // indicator until the next iteration streams.
+            pushEvent({
+              type: "tool_call_start",
+              name: (data.name as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "workflow_applied") {
+            pushEvent({
+              type: "workflow_applied",
+              workflow_id: data.workflow_id as string,
+              title: data.title as string,
+            });
+            continue;
+          }
+
+          if (data.type === "case_citation") {
+            pushEvent({
+              type: "case_citation",
+              cluster_id:
+                typeof data.cluster_id === "number"
+                  ? (data.cluster_id as number)
+                  : null,
+              case_name:
+                typeof data.case_name === "string"
+                  ? (data.case_name as string)
+                  : null,
+              citation:
+                typeof data.citation === "string"
+                  ? (data.citation as string)
+                  : null,
+              url: data.url as string,
+              pdfUrl:
+                typeof data.pdfUrl === "string"
+                  ? (data.pdfUrl as string)
+                  : null,
+              dateFiled:
+                typeof data.dateFiled === "string"
+                  ? (data.dateFiled as string)
+                  : null,
+              document: isPanelDocument(data.document)
+                ? data.document
+                : undefined,
+            });
+            continue;
+          }
+
+          if (data.type === "legislation_citation") {
+            pushEvent({
+              type: "legislation_citation",
+              title_id: (data.title_id as string) ?? "",
+              name:
+                typeof data.name === "string" ? (data.name as string) : null,
+              as_at:
+                typeof data.as_at === "string" ? (data.as_at as string) : null,
+              compilation_number:
+                typeof data.compilation_number === "string"
+                  ? (data.compilation_number as string)
+                  : null,
+              url: (data.url as string) ?? "",
+              document: isPanelDocument(data.document)
+                ? data.document
+                : undefined,
+            });
+            continue;
+          }
+
+          if (data.type === "case_opinions") {
+            pushEvent({
+              type: "case_opinions",
+              cluster_id:
+                typeof data.cluster_id === "number"
+                  ? (data.cluster_id as number)
+                  : 0,
+              document: isPanelDocument(data.document)
+                ? data.document
+                : undefined,
+            });
+            continue;
+          }
+
+          if (data.type === "mcp_tool_start") {
+            pushEvent({
+              type: "mcp_tool_call",
+              connector_id: "",
+              connector_name: "",
+              tool_name: (data.name as string) ?? "",
+              openai_tool_name: (data.name as string) ?? "",
+              status: "ok",
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "mcp_tool_result") {
+            const openaiToolName = (data.name as string) ?? "";
+            updateMatchingEvent(
+              (e) =>
+                e.type === "mcp_tool_call" &&
+                e.openai_tool_name === openaiToolName &&
+                !!e.isStreaming,
+              () => ({
+                type: "mcp_tool_call",
+                connector_id: "",
+                connector_name:
+                  typeof data.connector_name === "string"
+                    ? (data.connector_name as string)
+                    : "",
+                tool_name:
+                  typeof data.tool_name === "string"
+                    ? (data.tool_name as string)
+                    : openaiToolName,
+                openai_tool_name: openaiToolName,
+                status: data.status === "error" ? "error" : "ok",
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "courtlistener_search_case_law_start") {
+            pushEvent({
+              type: "courtlistener_search_case_law",
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "courtlistener_search_case_law") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "courtlistener_search_case_law" &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
+                type: "courtlistener_search_case_law",
+                query: (data.query as string) ?? "",
+                result_count:
+                  typeof data.result_count === "number"
+                    ? (data.result_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "courtlistener_get_cases_start") {
+            pushEvent({
+              type: "courtlistener_get_cases",
+              cluster_ids: Array.isArray(data.cluster_ids)
+                ? (data.cluster_ids as unknown[]).filter(
+                    (value: unknown): value is number =>
+                      typeof value === "number",
+                  )
+                : [],
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "courtlistener_get_cases") {
+            updateMatchingEvent(
+              (e) => e.type === "courtlistener_get_cases" && !!e.isStreaming,
+              () => ({
+                type: "courtlistener_get_cases",
+                cluster_ids: Array.isArray(data.cluster_ids)
+                  ? (data.cluster_ids as unknown[]).filter(
+                      (value: unknown): value is number =>
+                        typeof value === "number",
+                    )
+                  : [],
+                case_count:
+                  typeof data.case_count === "number"
+                    ? (data.case_count as number)
+                    : 0,
+                opinion_count:
+                  typeof data.opinion_count === "number"
+                    ? (data.opinion_count as number)
+                    : 0,
+                cases: parseCourtlistenerEventCases(data.cases),
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "courtlistener_find_in_case_start") {
+            const searches = parseCourtlistenerCaseSearches(data.searches);
+            pushEvent({
+              type: "courtlistener_find_in_case",
+              cluster_id: searches?.length
+                ? null
+                : typeof data.cluster_id === "number"
+                  ? (data.cluster_id as number)
+                  : null,
+              query: searches?.length ? "" : ((data.query as string) ?? ""),
+              searches,
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "courtlistener_find_in_case") {
+            const searches = parseCourtlistenerCaseSearches(data.searches);
+            updateMatchingEvent(
+              (e) =>
+                e.type === "courtlistener_find_in_case" &&
+                (searches?.length
+                  ? Array.isArray(e.searches)
+                  : e.cluster_id ===
+                      (typeof data.cluster_id === "number"
+                        ? (data.cluster_id as number)
+                        : null) && e.query === (data.query as string)) &&
+                !!e.isStreaming,
+              () => ({
+                type: "courtlistener_find_in_case",
+                cluster_id: searches?.length
+                  ? null
+                  : typeof data.cluster_id === "number"
+                    ? (data.cluster_id as number)
+                    : null,
+                query: searches?.length ? "" : ((data.query as string) ?? ""),
+                total_matches:
+                  typeof data.total_matches === "number"
+                    ? (data.total_matches as number)
+                    : 0,
+                searches,
+                case_name:
+                  typeof data.case_name === "string"
+                    ? (data.case_name as string)
+                    : null,
+                citation:
+                  typeof data.citation === "string"
+                    ? (data.citation as string)
+                    : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "courtlistener_read_case_start") {
+            pushEvent({
+              type: "courtlistener_read_case",
+              cluster_id:
+                typeof data.cluster_id === "number"
+                  ? (data.cluster_id as number)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "courtlistener_read_case") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "courtlistener_read_case" &&
+                e.cluster_id ===
+                  (typeof data.cluster_id === "number"
+                    ? (data.cluster_id as number)
+                    : null) &&
+                !!e.isStreaming,
+              () => ({
+                type: "courtlistener_read_case",
                 cluster_id:
                   typeof data.cluster_id === "number"
                     ? (data.cluster_id as number)
@@ -836,1662 +1119,1385 @@ export function useAssistantChat({
                   typeof data.citation === "string"
                     ? (data.citation as string)
                     : null,
-                url: data.url as string,
-                pdfUrl:
-                  typeof data.pdfUrl === "string"
-                    ? (data.pdfUrl as string)
-                    : null,
-                dateFiled:
-                  typeof data.dateFiled === "string"
-                    ? (data.dateFiled as string)
-                    : null,
-                document: isPanelDocument(data.document)
-                    ? data.document
-                    : undefined,
-              });
-              continue;
-            }
-
-            if (data.type === "legislation_citation") {
-              pushEvent({
-                type: "legislation_citation",
-                title_id: (data.title_id as string) ?? "",
-                name:
-                  typeof data.name === "string" ? (data.name as string) : null,
-                as_at:
-                  typeof data.as_at === "string"
-                    ? (data.as_at as string)
-                    : null,
-                compilation_number:
-                  typeof data.compilation_number === "string"
-                    ? (data.compilation_number as string)
-                    : null,
-                url: (data.url as string) ?? "",
-                document: isPanelDocument(data.document)
-                  ? data.document
-                  : undefined,
-              });
-              continue;
-            }
-
-            if (data.type === "case_opinions") {
-              pushEvent({
-                type: "case_opinions",
-                cluster_id:
-                  typeof data.cluster_id === "number"
-                    ? (data.cluster_id as number)
+                opinion_count:
+                  typeof data.opinion_count === "number"
+                    ? (data.opinion_count as number)
                     : 0,
-                document: isPanelDocument(data.document)
-                    ? data.document
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
                     : undefined,
-              });
-              continue;
-            }
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "mcp_tool_start") {
-              pushEvent({
-                type: "mcp_tool_call",
-                connector_id: "",
-                connector_name: "",
-                tool_name: (data.name as string) ?? "",
-                openai_tool_name: (data.name as string) ?? "",
-                status: "ok",
-                isStreaming: true,
-              });
-              continue;
-            }
+          if (data.type === "courtlistener_verify_citations_start") {
+            pushEvent({
+              type: "courtlistener_verify_citations",
+              citation_count:
+                typeof data.citation_count === "number"
+                  ? (data.citation_count as number)
+                  : 0,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "mcp_tool_result") {
-              const openaiToolName = (data.name as string) ?? "";
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "mcp_tool_call" &&
-                  e.openai_tool_name === openaiToolName &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "mcp_tool_call",
-                  connector_id: "",
-                  connector_name:
-                    typeof data.connector_name === "string"
-                      ? (data.connector_name as string)
-                      : "",
-                  tool_name:
-                    typeof data.tool_name === "string"
-                      ? (data.tool_name as string)
-                      : openaiToolName,
-                  openai_tool_name: openaiToolName,
-                  status: data.status === "error" ? "error" : "ok",
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "courtlistener_search_case_law_start") {
-              pushEvent({
-                type: "courtlistener_search_case_law",
-                query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "courtlistener_search_case_law") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "courtlistener_search_case_law" &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "courtlistener_search_case_law",
-                  query: (data.query as string) ?? "",
-                  result_count:
-                    typeof data.result_count === "number"
-                      ? (data.result_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "courtlistener_get_cases_start") {
-              pushEvent({
-                type: "courtlistener_get_cases",
-                cluster_ids: Array.isArray(data.cluster_ids)
-                  ? (data.cluster_ids as unknown[]).filter(
-                      (value: unknown): value is number =>
-                        typeof value === "number",
-                    )
-                  : [],
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "courtlistener_get_cases") {
-              updateMatchingEvent(
-                (e) => e.type === "courtlistener_get_cases" && !!e.isStreaming,
-                () => ({
-                  type: "courtlistener_get_cases",
-                  cluster_ids: Array.isArray(data.cluster_ids)
-                    ? (data.cluster_ids as unknown[]).filter(
-                        (value: unknown): value is number =>
-                          typeof value === "number",
-                      )
-                    : [],
-                  case_count:
-                    typeof data.case_count === "number"
-                      ? (data.case_count as number)
-                      : 0,
-                  opinion_count:
-                    typeof data.opinion_count === "number"
-                      ? (data.opinion_count as number)
-                      : 0,
-                  cases: parseCourtlistenerEventCases(data.cases),
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "courtlistener_find_in_case_start") {
-              const searches = parseCourtlistenerCaseSearches(data.searches);
-              pushEvent({
-                type: "courtlistener_find_in_case",
-                cluster_id: searches?.length
-                  ? null
-                  : typeof data.cluster_id === "number"
-                    ? (data.cluster_id as number)
-                    : null,
-                query: searches?.length ? "" : ((data.query as string) ?? ""),
-                searches,
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "courtlistener_find_in_case") {
-              const searches = parseCourtlistenerCaseSearches(data.searches);
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "courtlistener_find_in_case" &&
-                  (searches?.length
-                    ? Array.isArray(e.searches)
-                    : e.cluster_id ===
-                        (typeof data.cluster_id === "number"
-                          ? (data.cluster_id as number)
-                          : null) && e.query === (data.query as string)) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "courtlistener_find_in_case",
-                  cluster_id: searches?.length
-                    ? null
-                    : typeof data.cluster_id === "number"
-                      ? (data.cluster_id as number)
-                      : null,
-                  query: searches?.length ? "" : ((data.query as string) ?? ""),
-                  total_matches:
-                    typeof data.total_matches === "number"
-                      ? (data.total_matches as number)
-                      : 0,
-                  searches,
-                  case_name:
-                    typeof data.case_name === "string"
-                      ? (data.case_name as string)
-                      : null,
-                  citation:
-                    typeof data.citation === "string"
-                      ? (data.citation as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "courtlistener_read_case_start") {
-              pushEvent({
-                type: "courtlistener_read_case",
-                cluster_id:
-                  typeof data.cluster_id === "number"
-                    ? (data.cluster_id as number)
-                    : null,
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "courtlistener_read_case") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "courtlistener_read_case" &&
-                  e.cluster_id ===
-                    (typeof data.cluster_id === "number"
-                      ? (data.cluster_id as number)
-                      : null) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "courtlistener_read_case",
-                  cluster_id:
-                    typeof data.cluster_id === "number"
-                      ? (data.cluster_id as number)
-                      : null,
-                  case_name:
-                    typeof data.case_name === "string"
-                      ? (data.case_name as string)
-                      : null,
-                  citation:
-                    typeof data.citation === "string"
-                      ? (data.citation as string)
-                      : null,
-                  opinion_count:
-                    typeof data.opinion_count === "number"
-                      ? (data.opinion_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "courtlistener_verify_citations_start") {
-              pushEvent({
+          if (data.type === "courtlistener_verify_citations") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "courtlistener_verify_citations" && !!e.isStreaming,
+              () => ({
                 type: "courtlistener_verify_citations",
                 citation_count:
                   typeof data.citation_count === "number"
                     ? (data.citation_count as number)
                     : 0,
-                isStreaming: true,
-              });
-              continue;
-            }
+                match_count:
+                  typeof data.match_count === "number"
+                    ? (data.match_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "courtlistener_verify_citations") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "courtlistener_verify_citations" &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "courtlistener_verify_citations",
-                  citation_count:
-                    typeof data.citation_count === "number"
-                      ? (data.citation_count as number)
-                      : 0,
-                  match_count:
-                    typeof data.match_count === "number"
-                      ? (data.match_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_search_legislation_start") {
+            pushEvent({
+              type: "au_search_legislation",
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_search_legislation_start") {
-              pushEvent({
+          if (data.type === "au_search_legislation") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_search_legislation" &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_search_legislation",
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                result_count:
+                  typeof data.result_count === "number"
+                    ? (data.result_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_search_legislation") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_search_legislation" &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_search_legislation",
-                  query: (data.query as string) ?? "",
-                  result_count:
-                    typeof data.result_count === "number"
-                      ? (data.result_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_get_legislation_start") {
+            pushEvent({
+              type: "au_get_legislation",
+              title_id: (data.title_id as string) ?? "",
+              section:
+                typeof data.section === "string"
+                  ? (data.section as string)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_get_legislation_start") {
-              pushEvent({
+          if (data.type === "au_get_legislation") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_get_legislation" &&
+                e.title_id === (data.title_id as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_get_legislation",
                 title_id: (data.title_id as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
                 section:
                   typeof data.section === "string"
                     ? (data.section as string)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
+                as_at:
+                  typeof data.as_at === "string"
+                    ? (data.as_at as string)
+                    : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_get_legislation") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_get_legislation" &&
-                  e.title_id === (data.title_id as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_get_legislation",
-                  title_id: (data.title_id as string) ?? "",
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  section:
-                    typeof data.section === "string"
-                      ? (data.section as string)
-                      : null,
-                  as_at:
-                    typeof data.as_at === "string"
-                      ? (data.as_at as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_get_legislation_as_at_start") {
+            pushEvent({
+              type: "au_get_legislation_as_at",
+              title_id: (data.title_id as string) ?? "",
+              date: (data.date as string) ?? "",
+              section:
+                typeof data.section === "string"
+                  ? (data.section as string)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_get_legislation_as_at_start") {
-              pushEvent({
+          if (data.type === "au_get_legislation_as_at") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_get_legislation_as_at" &&
+                e.title_id === (data.title_id as string) &&
+                e.date === (data.date as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_get_legislation_as_at",
                 title_id: (data.title_id as string) ?? "",
                 date: (data.date as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
                 section:
                   typeof data.section === "string"
                     ? (data.section as string)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_get_legislation_as_at") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_get_legislation_as_at" &&
-                  e.title_id === (data.title_id as string) &&
-                  e.date === (data.date as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_get_legislation_as_at",
-                  title_id: (data.title_id as string) ?? "",
-                  date: (data.date as string) ?? "",
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  section:
-                    typeof data.section === "string"
-                      ? (data.section as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_legislation_versions_start") {
+            pushEvent({
+              type: "au_legislation_versions",
+              title_id: (data.title_id as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_legislation_versions_start") {
-              pushEvent({
+          if (data.type === "au_legislation_versions") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_legislation_versions" &&
+                e.title_id === (data.title_id as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_legislation_versions",
                 title_id: (data.title_id as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                version_count:
+                  typeof data.version_count === "number"
+                    ? (data.version_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_legislation_versions") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_legislation_versions" &&
-                  e.title_id === (data.title_id as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_legislation_versions",
-                  title_id: (data.title_id as string) ?? "",
-                  version_count:
-                    typeof data.version_count === "number"
-                      ? (data.version_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_find_in_legislation_start") {
+            pushEvent({
+              type: "au_find_in_legislation",
+              title_id:
+                typeof data.title_id === "string"
+                  ? (data.title_id as string)
+                  : null,
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_find_in_legislation_start") {
-              pushEvent({
+          if (data.type === "au_find_in_legislation") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_find_in_legislation" &&
+                e.title_id ===
+                  (typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null) &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_find_in_legislation",
                 title_id:
                   typeof data.title_id === "string"
                     ? (data.title_id as string)
                     : null,
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                total_matches:
+                  typeof data.total_matches === "number"
+                    ? (data.total_matches as number)
+                    : 0,
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_find_in_legislation") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_find_in_legislation" &&
-                  e.title_id ===
-                    (typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null) &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_find_in_legislation",
-                  title_id:
-                    typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null,
-                  query: (data.query as string) ?? "",
-                  total_matches:
-                    typeof data.total_matches === "number"
-                      ? (data.total_matches as number)
-                      : 0,
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_search_energy_start") {
+            pushEvent({
+              type: "au_search_energy",
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_search_energy_start") {
-              pushEvent({
+          if (data.type === "au_search_energy") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_search_energy" &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_search_energy",
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                result_count:
+                  typeof data.result_count === "number"
+                    ? (data.result_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_search_energy") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_search_energy" &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_search_energy",
-                  query: (data.query as string) ?? "",
-                  result_count:
-                    typeof data.result_count === "number"
-                      ? (data.result_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_get_energy_start") {
+            pushEvent({
+              type: "au_get_energy",
+              title_id: (data.title_id as string) ?? "",
+              section:
+                typeof data.section === "string"
+                  ? (data.section as string)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_get_energy_start") {
-              pushEvent({
+          if (data.type === "au_get_energy") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_get_energy" &&
+                e.title_id === (data.title_id as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_get_energy",
                 title_id: (data.title_id as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
                 section:
                   typeof data.section === "string"
                     ? (data.section as string)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
+                as_at:
+                  typeof data.as_at === "string"
+                    ? (data.as_at as string)
+                    : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_get_energy") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_get_energy" &&
-                  e.title_id === (data.title_id as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_get_energy",
-                  title_id: (data.title_id as string) ?? "",
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  section:
-                    typeof data.section === "string"
-                      ? (data.section as string)
-                      : null,
-                  as_at:
-                    typeof data.as_at === "string"
-                      ? (data.as_at as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_get_energy_as_at_start") {
+            pushEvent({
+              type: "au_get_energy_as_at",
+              title_id: (data.title_id as string) ?? "",
+              date: (data.date as string) ?? "",
+              section:
+                typeof data.section === "string"
+                  ? (data.section as string)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_get_energy_as_at_start") {
-              pushEvent({
+          if (data.type === "au_get_energy_as_at") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_get_energy_as_at" &&
+                e.title_id === (data.title_id as string) &&
+                e.date === (data.date as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_get_energy_as_at",
                 title_id: (data.title_id as string) ?? "",
                 date: (data.date as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
                 section:
                   typeof data.section === "string"
                     ? (data.section as string)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_get_energy_as_at") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_get_energy_as_at" &&
-                  e.title_id === (data.title_id as string) &&
-                  e.date === (data.date as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_get_energy_as_at",
-                  title_id: (data.title_id as string) ?? "",
-                  date: (data.date as string) ?? "",
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  section:
-                    typeof data.section === "string"
-                      ? (data.section as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_energy_versions_start") {
+            pushEvent({
+              type: "au_energy_versions",
+              title_id: (data.title_id as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_energy_versions_start") {
-              pushEvent({
+          if (data.type === "au_energy_versions") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_energy_versions" &&
+                e.title_id === (data.title_id as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_energy_versions",
                 title_id: (data.title_id as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                version_count:
+                  typeof data.version_count === "number"
+                    ? (data.version_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_energy_versions") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_energy_versions" &&
-                  e.title_id === (data.title_id as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_energy_versions",
-                  title_id: (data.title_id as string) ?? "",
-                  version_count:
-                    typeof data.version_count === "number"
-                      ? (data.version_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_find_in_energy_start") {
+            pushEvent({
+              type: "au_find_in_energy",
+              title_id:
+                typeof data.title_id === "string"
+                  ? (data.title_id as string)
+                  : null,
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_find_in_energy_start") {
-              pushEvent({
+          if (data.type === "au_find_in_energy") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_find_in_energy" &&
+                e.title_id ===
+                  (typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null) &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_find_in_energy",
                 title_id:
                   typeof data.title_id === "string"
                     ? (data.title_id as string)
                     : null,
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                total_matches:
+                  typeof data.total_matches === "number"
+                    ? (data.total_matches as number)
+                    : 0,
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_find_in_energy") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_find_in_energy" &&
-                  e.title_id ===
-                    (typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null) &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_find_in_energy",
-                  title_id:
-                    typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null,
-                  query: (data.query as string) ?? "",
-                  total_matches:
-                    typeof data.total_matches === "number"
-                      ? (data.total_matches as number)
-                      : 0,
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_search_vic_legislation_start") {
+            pushEvent({
+              type: "au_search_vic_legislation",
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_search_vic_legislation_start") {
-              pushEvent({
+          if (data.type === "au_search_vic_legislation") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_search_vic_legislation" &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_search_vic_legislation",
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                result_count:
+                  typeof data.result_count === "number"
+                    ? (data.result_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_search_vic_legislation") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_search_vic_legislation" &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_search_vic_legislation",
-                  query: (data.query as string) ?? "",
-                  result_count:
-                    typeof data.result_count === "number"
-                      ? (data.result_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_get_vic_legislation_start") {
+            pushEvent({
+              type: "au_get_vic_legislation",
+              title_id: (data.title_id as string) ?? "",
+              section:
+                typeof data.section === "string"
+                  ? (data.section as string)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_get_vic_legislation_start") {
-              pushEvent({
+          if (data.type === "au_get_vic_legislation") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_get_vic_legislation" &&
+                e.title_id === (data.title_id as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_get_vic_legislation",
                 title_id: (data.title_id as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
                 section:
                   typeof data.section === "string"
                     ? (data.section as string)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
+                as_at:
+                  typeof data.as_at === "string"
+                    ? (data.as_at as string)
+                    : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_get_vic_legislation") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_get_vic_legislation" &&
-                  e.title_id === (data.title_id as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_get_vic_legislation",
-                  title_id: (data.title_id as string) ?? "",
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  section:
-                    typeof data.section === "string"
-                      ? (data.section as string)
-                      : null,
-                  as_at:
-                    typeof data.as_at === "string"
-                      ? (data.as_at as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_get_vic_legislation_as_at_start") {
+            pushEvent({
+              type: "au_get_vic_legislation_as_at",
+              title_id: (data.title_id as string) ?? "",
+              date: (data.date as string) ?? "",
+              section:
+                typeof data.section === "string"
+                  ? (data.section as string)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_get_vic_legislation_as_at_start") {
-              pushEvent({
+          if (data.type === "au_get_vic_legislation_as_at") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_get_vic_legislation_as_at" &&
+                e.title_id === (data.title_id as string) &&
+                e.date === (data.date as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_get_vic_legislation_as_at",
                 title_id: (data.title_id as string) ?? "",
                 date: (data.date as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
                 section:
                   typeof data.section === "string"
                     ? (data.section as string)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_get_vic_legislation_as_at") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_get_vic_legislation_as_at" &&
-                  e.title_id === (data.title_id as string) &&
-                  e.date === (data.date as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_get_vic_legislation_as_at",
-                  title_id: (data.title_id as string) ?? "",
-                  date: (data.date as string) ?? "",
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  section:
-                    typeof data.section === "string"
-                      ? (data.section as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_vic_legislation_versions_start") {
+            pushEvent({
+              type: "au_vic_legislation_versions",
+              title_id: (data.title_id as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_vic_legislation_versions_start") {
-              pushEvent({
+          if (data.type === "au_vic_legislation_versions") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_vic_legislation_versions" &&
+                e.title_id === (data.title_id as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_vic_legislation_versions",
                 title_id: (data.title_id as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                version_count:
+                  typeof data.version_count === "number"
+                    ? (data.version_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_vic_legislation_versions") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_vic_legislation_versions" &&
-                  e.title_id === (data.title_id as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_vic_legislation_versions",
-                  title_id: (data.title_id as string) ?? "",
-                  version_count:
-                    typeof data.version_count === "number"
-                      ? (data.version_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_find_in_vic_legislation_start") {
+            pushEvent({
+              type: "au_find_in_vic_legislation",
+              title_id:
+                typeof data.title_id === "string"
+                  ? (data.title_id as string)
+                  : null,
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_find_in_vic_legislation_start") {
-              pushEvent({
+          if (data.type === "au_find_in_vic_legislation") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_find_in_vic_legislation" &&
+                e.title_id ===
+                  (typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null) &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_find_in_vic_legislation",
                 title_id:
                   typeof data.title_id === "string"
                     ? (data.title_id as string)
                     : null,
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                total_matches:
+                  typeof data.total_matches === "number"
+                    ? (data.total_matches as number)
+                    : 0,
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_find_in_vic_legislation") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_find_in_vic_legislation" &&
-                  e.title_id ===
-                    (typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null) &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_find_in_vic_legislation",
-                  title_id:
-                    typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null,
-                  query: (data.query as string) ?? "",
-                  total_matches:
-                    typeof data.total_matches === "number"
-                      ? (data.total_matches as number)
-                      : 0,
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_search_case_law_start") {
+            pushEvent({
+              type: "au_search_case_law",
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_search_case_law_start") {
-              pushEvent({
+          if (data.type === "au_search_case_law") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_search_case_law" &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_search_case_law",
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                result_count:
+                  typeof data.result_count === "number"
+                    ? (data.result_count as number)
+                    : 0,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_search_case_law") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_search_case_law" &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_search_case_law",
-                  query: (data.query as string) ?? "",
-                  result_count:
-                    typeof data.result_count === "number"
-                      ? (data.result_count as number)
-                      : 0,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_get_case_start") {
+            pushEvent({
+              type: "au_get_case",
+              title_id: (data.title_id as string) ?? "",
+              section:
+                typeof data.section === "string"
+                  ? (data.section as string)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_get_case_start") {
-              pushEvent({
+          if (data.type === "au_get_case") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_get_case" &&
+                e.title_id === (data.title_id as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_get_case",
                 title_id: (data.title_id as string) ?? "",
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
                 section:
                   typeof data.section === "string"
                     ? (data.section as string)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_get_case") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_get_case" &&
-                  e.title_id === (data.title_id as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_get_case",
-                  title_id: (data.title_id as string) ?? "",
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  section:
-                    typeof data.section === "string"
-                      ? (data.section as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "au_find_in_case_start") {
+            pushEvent({
+              type: "au_find_in_case",
+              title_id:
+                typeof data.title_id === "string"
+                  ? (data.title_id as string)
+                  : null,
+              query: (data.query as string) ?? "",
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "au_find_in_case_start") {
-              pushEvent({
+          if (data.type === "au_find_in_case") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "au_find_in_case" &&
+                e.title_id ===
+                  (typeof data.title_id === "string"
+                    ? (data.title_id as string)
+                    : null) &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              () => ({
                 type: "au_find_in_case",
                 title_id:
                   typeof data.title_id === "string"
                     ? (data.title_id as string)
                     : null,
                 query: (data.query as string) ?? "",
-                isStreaming: true,
-              });
-              continue;
-            }
+                total_matches:
+                  typeof data.total_matches === "number"
+                    ? (data.total_matches as number)
+                    : 0,
+                name:
+                  typeof data.name === "string" ? (data.name as string) : null,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "au_find_in_case") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "au_find_in_case" &&
-                  e.title_id ===
-                    (typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null) &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "au_find_in_case",
-                  title_id:
-                    typeof data.title_id === "string"
-                      ? (data.title_id as string)
-                      : null,
-                  query: (data.query as string) ?? "",
+          if (data.type === "doc_read_start") {
+            pushEvent({
+              type: "doc_read",
+              filename: data.filename as string,
+              document_id:
+                typeof data.document_id === "string"
+                  ? (data.document_id as string)
+                  : undefined,
+              version_id:
+                typeof data.version_id === "string"
+                  ? (data.version_id as string)
+                  : null,
+              version_number:
+                typeof data.version_number === "number"
+                  ? (data.version_number as number)
+                  : null,
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "plan") {
+            const eventId =
+              typeof data.event_id === "string" ? data.event_id.trim() : "";
+            const title =
+              typeof data.title === "string" && data.title.trim()
+                ? data.title.trim()
+                : "Plan";
+            const rawItems = Array.isArray(data.items)
+              ? (data.items as unknown[])
+              : [];
+            const items = rawItems.flatMap((item, index) => {
+              if (!item || typeof item !== "object") return [];
+              const row = item as Record<string, unknown>;
+              const content =
+                typeof row.content === "string" ? row.content.trim() : "";
+              if (!content) return [];
+              const status =
+                row.status === "completed"
+                  ? ("completed" as const)
+                  : row.status === "in_progress"
+                    ? ("in_progress" as const)
+                    : ("pending" as const);
+              return [
+                {
+                  id:
+                    typeof row.id === "string" && row.id.trim()
+                      ? row.id.trim()
+                      : `step-${index + 1}`,
+                  content,
+                  status,
+                },
+              ];
+            });
+            if (eventId && items.length > 0) {
+              pushEvent({
+                type: "plan",
+                event_id: eventId,
+                title,
+                items,
+              });
+            }
+            continue;
+          }
+
+          if (data.type === "ask_inputs") {
+            const eventId =
+              typeof data.event_id === "string" ? data.event_id.trim() : "";
+            const rawItems = Array.isArray(data.items)
+              ? (data.items as unknown[])
+              : [];
+            const items = rawItems.reduce<
+              Extract<AssistantEvent, { type: "ask_inputs" }>["items"]
+            >((acc, item, index) => {
+              if (!item || typeof item !== "object") return acc;
+              const row = item as Record<string, unknown>;
+              const id =
+                typeof row.id === "string" && row.id.trim()
+                  ? row.id.trim()
+                  : `input-${index + 1}`;
+              if (row.kind === "choice" || row.kind === "multi_choice") {
+                const options = Array.isArray(row.options)
+                  ? (row.options as unknown[]).flatMap((option) => {
+                      if (!option || typeof option !== "object") return [];
+                      const optionRow = option as Record<string, unknown>;
+                      const value =
+                        typeof optionRow.value === "string"
+                          ? optionRow.value
+                          : typeof optionRow.label === "string"
+                            ? optionRow.label
+                            : "";
+                      if (!value.trim()) return [];
+                      return [
+                        {
+                          value,
+                        },
+                      ];
+                    })
+                  : [];
+                acc.push({
+                  id,
+                  kind: row.kind,
+                  question:
+                    typeof row.question === "string"
+                      ? row.question
+                      : row.kind === "multi_choice"
+                        ? "Please choose one or more options."
+                        : "Please choose an option.",
+                  options,
+                  allow_other: row.allow_other !== false,
+                  other_label:
+                    typeof row.other_label === "string"
+                      ? row.other_label
+                      : "Other",
+                  response_prefix:
+                    typeof row.response_prefix === "string"
+                      ? row.response_prefix
+                      : undefined,
+                });
+                return acc;
+              }
+              if (row.kind === "text") {
+                acc.push({
+                  id,
+                  kind: "text" as const,
+                  question:
+                    typeof row.question === "string"
+                      ? row.question
+                      : "Please provide the requested information.",
+                  response_prefix:
+                    typeof row.response_prefix === "string"
+                      ? row.response_prefix
+                      : undefined,
+                });
+                return acc;
+              }
+              if (row.kind === "documents") {
+                const documentTypes = Array.isArray(row.document_types)
+                  ? (row.document_types as unknown[])
+                      .filter(
+                        (type): type is string => typeof type === "string",
+                      )
+                      .map((type) => type.trim())
+                      .filter(Boolean)
+                  : [];
+                acc.push({
+                  id,
+                  kind: "documents" as const,
+                  document_types: documentTypes,
+                  response_prefix:
+                    typeof row.response_prefix === "string"
+                      ? row.response_prefix
+                      : undefined,
+                });
+                return acc;
+              }
+              return acc;
+            }, []);
+            if (eventId && items.length > 0) {
+              pushEvent({ type: "ask_inputs", event_id: eventId, items });
+            }
+            continue;
+          }
+
+          if (data.type === "doc_read") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "doc_read" &&
+                e.filename === data.filename &&
+                !!e.isStreaming,
+              (e) => {
+                const event = e as Extract<
+                  AssistantEvent,
+                  { type: "doc_read" }
+                >;
+                return {
+                  ...event,
+                  document_id:
+                    typeof data.document_id === "string"
+                      ? (data.document_id as string)
+                      : event.document_id,
+                  version_id:
+                    typeof data.version_id === "string"
+                      ? (data.version_id as string)
+                      : event.version_id,
+                  version_number:
+                    typeof data.version_number === "number"
+                      ? (data.version_number as number)
+                      : event.version_number,
+                  isStreaming: false,
+                };
+              },
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "doc_find_start") {
+            pushEvent({
+              type: "doc_find",
+              filename: data.filename as string,
+              document_id:
+                typeof data.document_id === "string"
+                  ? (data.document_id as string)
+                  : undefined,
+              version_id:
+                typeof data.version_id === "string"
+                  ? (data.version_id as string)
+                  : null,
+              version_number:
+                typeof data.version_number === "number"
+                  ? (data.version_number as number)
+                  : null,
+              query: (data.query as string) ?? "",
+              total_matches: 0,
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "doc_find") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "doc_find" &&
+                e.filename === data.filename &&
+                e.query === (data.query as string) &&
+                !!e.isStreaming,
+              (e) => {
+                const event = e as Extract<
+                  AssistantEvent,
+                  { type: "doc_find" }
+                >;
+                return {
+                  ...event,
+                  document_id:
+                    typeof data.document_id === "string"
+                      ? (data.document_id as string)
+                      : event.document_id,
+                  version_id:
+                    typeof data.version_id === "string"
+                      ? (data.version_id as string)
+                      : event.version_id,
+                  version_number:
+                    typeof data.version_number === "number"
+                      ? (data.version_number as number)
+                      : event.version_number,
+                  isStreaming: false,
                   total_matches:
                     typeof data.total_matches === "number"
                       ? (data.total_matches as number)
-                      : 0,
-                  name:
-                    typeof data.name === "string"
-                      ? (data.name as string)
-                      : null,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
+                      : event.total_matches,
+                };
+              },
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "outlook_draft_start") {
+            if (data.stage === true) {
+              pushEvent({
+                type: "outlook_draft_created",
+                web_link: "",
+                subject: "",
+                to: [],
+                attachment_names: [],
+                threaded: false,
+                isStreaming: true,
+              });
+            } else {
+              pushEvent({
+                type: "outlook_draft_preview",
+                subject: "",
+                to: [],
+                html_body: "",
+                attachment_names: [],
+                isStreaming: true,
+              });
+            }
+            continue;
+          }
+
+          if (data.type === "outlook_draft_preview") {
+            const next = {
+              type: "outlook_draft_preview" as const,
+              subject: typeof data.subject === "string" ? data.subject : "",
+              to: Array.isArray(data.to)
+                ? data.to.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : [],
+              cc: Array.isArray(data.cc)
+                ? data.cc.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : undefined,
+              html_body:
+                typeof data.html_body === "string" ? data.html_body : "",
+              attachment_names: Array.isArray(data.attachment_names)
+                ? data.attachment_names.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : [],
+              isStreaming: false,
+            };
+            const replaced = updateMatchingEvent(
+              (e) => e.type === "outlook_draft_preview" && !!e.isStreaming,
+              () => next,
+            );
+            if (!replaced) pushEvent(next);
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "outlook_draft_created") {
+            const next = {
+              type: "outlook_draft_created" as const,
+              web_link: typeof data.web_link === "string" ? data.web_link : "",
+              subject: typeof data.subject === "string" ? data.subject : "",
+              to: Array.isArray(data.to)
+                ? data.to.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : [],
+              attachment_names: Array.isArray(data.attachment_names)
+                ? data.attachment_names.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : [],
+              threaded: data.threaded === true,
+              thread_status: parseOutlookThreadStatus(data.thread_status),
+              isStreaming: false,
+            };
+            const replaced = updateMatchingEvent(
+              (e) => e.type === "outlook_draft_created" && !!e.isStreaming,
+              () => next,
+            );
+            if (!replaced) pushEvent(next);
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "outlook_auth_required") {
+            pushEvent({ type: "outlook_auth_required" });
+            pushThinkingPlaceholder();
+            continue;
+          }
+
+          if (data.type === "doc_created_start") {
+            pushEvent({
+              type: "doc_created",
+              filename: data.filename as string,
+              download_url: "",
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "doc_download") {
+            pushEvent({
+              type: "doc_download",
+              filename: data.filename as string,
+              download_url: data.download_url as string,
+            });
+            continue;
+          }
+
+          if (data.type === "doc_created") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "doc_created" &&
+                e.filename === data.filename &&
+                !!e.isStreaming,
+              (e) => {
+                const next: Extract<AssistantEvent, { type: "doc_created" }> = {
+                  type: "doc_created",
+                  filename: (e as { filename: string }).filename,
+                  download_url: data.download_url as string,
                   isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+                };
+                if (typeof data.document_id === "string") {
+                  next.document_id = data.document_id as string;
+                }
+                if (typeof data.version_id === "string") {
+                  next.version_id = data.version_id as string;
+                }
+                if (typeof data.version_number === "number") {
+                  next.version_number = data.version_number as number;
+                }
+                return next;
+              },
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "doc_read_start") {
-              pushEvent({
-                type: "doc_read",
+          if (data.type === "doc_finalized_start") {
+            pushEvent({
+              type: "doc_finalized",
+              filename: data.filename as string,
+              source_filename: data.filename as string,
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "doc_finalized") {
+            const sourceFilename =
+              typeof data.source_filename === "string"
+                ? (data.source_filename as string)
+                : (data.filename as string);
+            const replaced = updateMatchingEvent(
+              (e) =>
+                e.type === "doc_finalized" &&
+                e.source_filename === sourceFilename &&
+                !!e.isStreaming,
+              () => ({
+                type: "doc_finalized",
                 filename: data.filename as string,
+                source_filename: sourceFilename,
                 document_id:
-                  typeof data.document_id === "string"
+                  typeof data.document_id === "string" && data.document_id
                     ? (data.document_id as string)
                     : undefined,
                 version_id:
-                  typeof data.version_id === "string"
+                  typeof data.version_id === "string" && data.version_id
                     ? (data.version_id as string)
-                    : null,
+                    : undefined,
                 version_number:
                   typeof data.version_number === "number"
                     ? (data.version_number as number)
                     : null,
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "plan") {
-                const eventId =
-                    typeof data.event_id === "string" ? data.event_id.trim() : "";
-                const title =
-                    typeof data.title === "string" && data.title.trim()
-                        ? data.title.trim()
-                        : "Plan";
-                const rawItems = Array.isArray(data.items)
-                    ? (data.items as unknown[])
-                    : [];
-                const items = rawItems.flatMap((item, index) => {
-                    if (!item || typeof item !== "object") return [];
-                    const row = item as Record<string, unknown>;
-                    const content =
-                        typeof row.content === "string" ? row.content.trim() : "";
-                    if (!content) return [];
-                    const status =
-                        row.status === "completed"
-                            ? ("completed" as const)
-                            : row.status === "in_progress"
-                              ? ("in_progress" as const)
-                              : ("pending" as const);
-                    return [
-                        {
-                            id:
-                                typeof row.id === "string" && row.id.trim()
-                                    ? row.id.trim()
-                                    : `step-${index + 1}`,
-                            content,
-                            status,
-                        },
-                    ];
-                });
-                if (eventId && items.length > 0) {
-                    pushEvent({
-                        type: "plan",
-                        event_id: eventId,
-                        title,
-                        items,
-                    });
-                }
-                continue;
-            }
-
-            if (data.type === "ask_inputs") {
-              const eventId =
-                typeof data.event_id === "string" ? data.event_id.trim() : "";
-              const rawItems = Array.isArray(data.items)
-                ? (data.items as unknown[])
-                : [];
-              const items = rawItems.reduce<
-                Extract<AssistantEvent, { type: "ask_inputs" }>["items"]
-              >((acc, item, index) => {
-                if (!item || typeof item !== "object") return acc;
-                const row = item as Record<string, unknown>;
-                const id =
-                  typeof row.id === "string" && row.id.trim()
-                    ? row.id.trim()
-                    : `input-${index + 1}`;
-                if (
-                  row.kind === "choice" ||
-                  row.kind === "multi_choice"
-                ) {
-                  const options = Array.isArray(row.options)
-                    ? (row.options as unknown[]).flatMap((option) => {
-                        if (!option || typeof option !== "object") return [];
-                        const optionRow = option as Record<string, unknown>;
-                        const value =
-                          typeof optionRow.value === "string"
-                            ? optionRow.value
-                            : typeof optionRow.label === "string"
-                              ? optionRow.label
-                              : "";
-                        if (!value.trim()) return [];
-                        return [
-                          {
-                            value,
-                          },
-                        ];
-                      })
-                    : [];
-                  acc.push({
-                    id,
-                    kind: row.kind,
-                    question:
-                      typeof row.question === "string"
-                        ? row.question
-                        : row.kind === "multi_choice"
-                          ? "Please choose one or more options."
-                          : "Please choose an option.",
-                    options,
-                    allow_other: row.allow_other !== false,
-                    other_label:
-                      typeof row.other_label === "string"
-                        ? row.other_label
-                        : "Other",
-                    response_prefix:
-                      typeof row.response_prefix === "string"
-                        ? row.response_prefix
-                        : undefined,
-                  });
-                  return acc;
-                }
-                if (row.kind === "text") {
-                  acc.push({
-                    id,
-                    kind: "text" as const,
-                    question:
-                      typeof row.question === "string"
-                        ? row.question
-                        : "Please provide the requested information.",
-                    response_prefix:
-                      typeof row.response_prefix === "string"
-                        ? row.response_prefix
-                        : undefined,
-                  });
-                  return acc;
-                }
-                if (row.kind === "documents") {
-                  const documentTypes = Array.isArray(row.document_types)
-                    ? (row.document_types as unknown[])
-                        .filter(
-                          (type): type is string => typeof type === "string",
-                        )
-                        .map((type) => type.trim())
-                        .filter(Boolean)
-                    : [];
-                  acc.push({
-                    id,
-                    kind: "documents" as const,
-                    document_types: documentTypes,
-                    response_prefix:
-                      typeof row.response_prefix === "string"
-                        ? row.response_prefix
-                        : undefined,
-                  });
-                  return acc;
-                }
-                return acc;
-              }, []);
-              if (eventId && items.length > 0) {
-                pushEvent({ type: "ask_inputs", event_id: eventId, items });
-              }
-              continue;
-            }
-
-            if (data.type === "doc_read") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "doc_read" &&
-                  e.filename === data.filename &&
-                  !!e.isStreaming,
-                (e) => {
-                  const event = e as Extract<
-                    AssistantEvent,
-                    { type: "doc_read" }
-                  >;
-                  return {
-                    ...event,
-                    document_id:
-                      typeof data.document_id === "string"
-                        ? (data.document_id as string)
-                        : event.document_id,
-                    version_id:
-                      typeof data.version_id === "string"
-                        ? (data.version_id as string)
-                        : event.version_id,
-                    version_number:
-                      typeof data.version_number === "number"
-                        ? (data.version_number as number)
-                        : event.version_number,
-                    isStreaming: false,
-                  };
-                },
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "doc_find_start") {
-              pushEvent({
-                type: "doc_find",
-                filename: data.filename as string,
-                document_id:
-                  typeof data.document_id === "string"
-                    ? (data.document_id as string)
+                source_document_id:
+                  typeof data.source_document_id === "string"
+                    ? (data.source_document_id as string)
                     : undefined,
-                version_id:
-                  typeof data.version_id === "string"
-                    ? (data.version_id as string)
-                    : null,
-                version_number:
-                  typeof data.version_number === "number"
-                    ? (data.version_number as number)
-                    : null,
-                query: (data.query as string) ?? "",
-                total_matches: 0,
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "doc_find") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "doc_find" &&
-                  e.filename === data.filename &&
-                  e.query === (data.query as string) &&
-                  !!e.isStreaming,
-                (e) => {
-                  const event = e as Extract<
-                    AssistantEvent,
-                    { type: "doc_find" }
-                  >;
-                  return {
-                    ...event,
-                    document_id:
-                      typeof data.document_id === "string"
-                        ? (data.document_id as string)
-                        : event.document_id,
-                    version_id:
-                      typeof data.version_id === "string"
-                        ? (data.version_id as string)
-                        : event.version_id,
-                    version_number:
-                      typeof data.version_number === "number"
-                        ? (data.version_number as number)
-                        : event.version_number,
-                    isStreaming: false,
-                    total_matches:
-                      typeof data.total_matches === "number"
-                        ? (data.total_matches as number)
-                        : event.total_matches,
-                  };
-                },
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "outlook_draft_start") {
-              if (data.stage === true) {
-                pushEvent({
-                  type: "outlook_draft_created",
-                  web_link: "",
-                  subject: "",
-                  to: [],
-                  attachment_names: [],
-                  threaded: false,
-                  isStreaming: true,
-                });
-              } else {
-                pushEvent({
-                  type: "outlook_draft_preview",
-                  subject: "",
-                  to: [],
-                  html_body: "",
-                  attachment_names: [],
-                  isStreaming: true,
-                });
-              }
-              continue;
-            }
-
-            if (data.type === "outlook_draft_preview") {
-              const next = {
-                type: "outlook_draft_preview" as const,
-                subject: typeof data.subject === "string" ? data.subject : "",
-                to: Array.isArray(data.to)
-                  ? data.to.filter((item): item is string => typeof item === "string")
-                  : [],
-                cc: Array.isArray(data.cc)
-                  ? data.cc.filter((item): item is string => typeof item === "string")
-                  : undefined,
-                html_body:
-                  typeof data.html_body === "string" ? data.html_body : "",
-                attachment_names: Array.isArray(data.attachment_names)
-                  ? data.attachment_names.filter(
-                      (item): item is string => typeof item === "string",
-                    )
-                  : [],
+                download_url:
+                  typeof data.download_url === "string"
+                    ? (data.download_url as string)
+                    : undefined,
+                accepted:
+                  typeof data.accepted === "number"
+                    ? (data.accepted as number)
+                    : undefined,
+                comments_removed:
+                  typeof data.comments_removed === "number"
+                    ? (data.comments_removed as number)
+                    : undefined,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
                 isStreaming: false,
-              };
-              const replaced = updateMatchingEvent(
-                (e) => e.type === "outlook_draft_preview" && !!e.isStreaming,
-                () => next,
-              );
-              if (!replaced) pushEvent(next);
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "outlook_draft_created") {
-              const next = {
-                type: "outlook_draft_created" as const,
-                web_link: typeof data.web_link === "string" ? data.web_link : "",
-                subject: typeof data.subject === "string" ? data.subject : "",
-                to: Array.isArray(data.to)
-                  ? data.to.filter((item): item is string => typeof item === "string")
-                  : [],
-                attachment_names: Array.isArray(data.attachment_names)
-                  ? data.attachment_names.filter(
-                      (item): item is string => typeof item === "string",
-                    )
-                  : [],
-                threaded: data.threaded === true,
-                thread_status: parseOutlookThreadStatus(data.thread_status),
-                isStreaming: false,
-              };
-              const replaced = updateMatchingEvent(
-                (e) => e.type === "outlook_draft_created" && !!e.isStreaming,
-                () => next,
-              );
-              if (!replaced) pushEvent(next);
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "outlook_auth_required") {
-              pushEvent({ type: "outlook_auth_required" });
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "doc_created_start") {
-              pushEvent({
-                type: "doc_created",
-                filename: data.filename as string,
-                download_url: "",
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "doc_download") {
-              pushEvent({
-                type: "doc_download",
-                filename: data.filename as string,
-                download_url: data.download_url as string,
-              });
-              continue;
-            }
-
-            if (data.type === "doc_created") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "doc_created" &&
-                  e.filename === data.filename &&
-                  !!e.isStreaming,
-                (e) => {
-                  const next: Extract<AssistantEvent, { type: "doc_created" }> =
-                    {
-                      type: "doc_created",
-                      filename: (e as { filename: string }).filename,
-                      download_url: data.download_url as string,
-                      isStreaming: false,
-                    };
-                  if (typeof data.document_id === "string") {
-                    next.document_id = data.document_id as string;
-                  }
-                  if (typeof data.version_id === "string") {
-                    next.version_id = data.version_id as string;
-                  }
-                  if (typeof data.version_number === "number") {
-                    next.version_number = data.version_number as number;
-                  }
-                  return next;
-                },
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "doc_finalized_start") {
+              }),
+            );
+            if (!replaced) {
               pushEvent({
                 type: "doc_finalized",
                 filename: data.filename as string,
-                source_filename: data.filename as string,
-                isStreaming: true,
+                source_filename: sourceFilename,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
               });
-              continue;
             }
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "doc_finalized") {
-              const sourceFilename =
-                typeof data.source_filename === "string"
-                  ? (data.source_filename as string)
-                  : (data.filename as string);
-              const replaced = updateMatchingEvent(
-                (e) =>
-                  e.type === "doc_finalized" &&
-                  e.source_filename === sourceFilename &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "doc_finalized",
-                  filename: data.filename as string,
-                  source_filename: sourceFilename,
-                  document_id:
-                    typeof data.document_id === "string" && data.document_id
-                      ? (data.document_id as string)
-                      : undefined,
-                  version_id:
-                    typeof data.version_id === "string" && data.version_id
-                      ? (data.version_id as string)
-                      : undefined,
-                  version_number:
-                    typeof data.version_number === "number"
-                      ? (data.version_number as number)
-                      : null,
-                  source_document_id:
-                    typeof data.source_document_id === "string"
-                      ? (data.source_document_id as string)
-                      : undefined,
-                  download_url:
-                    typeof data.download_url === "string"
-                      ? (data.download_url as string)
-                      : undefined,
-                  accepted:
-                    typeof data.accepted === "number"
-                      ? (data.accepted as number)
-                      : undefined,
-                  comments_removed:
-                    typeof data.comments_removed === "number"
-                      ? (data.comments_removed as number)
-                      : undefined,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              if (!replaced) {
-                pushEvent({
-                  type: "doc_finalized",
-                  filename: data.filename as string,
-                  source_filename: sourceFilename,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                });
-              }
-              pushThinkingPlaceholder();
-              continue;
-            }
+          if (data.type === "doc_replicate_start") {
+            pushEvent({
+              type: "doc_replicated",
+              filename: data.filename as string,
+              count:
+                typeof data.count === "number" ? (data.count as number) : 1,
+              isStreaming: true,
+            });
+            continue;
+          }
 
-            if (data.type === "doc_replicate_start") {
-              pushEvent({
+          if (data.type === "doc_replicated") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "doc_replicated" &&
+                e.filename === data.filename &&
+                !!e.isStreaming,
+              () => ({
                 type: "doc_replicated",
                 filename: data.filename as string,
                 count:
-                  typeof data.count === "number" ? (data.count as number) : 1,
-                isStreaming: true,
-              });
-              continue;
-            }
-
-            if (data.type === "doc_replicated") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "doc_replicated" &&
-                  e.filename === data.filename &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "doc_replicated",
-                  filename: data.filename as string,
-                  count:
-                    typeof data.count === "number"
-                      ? (data.count as number)
-                      : Array.isArray(data.copies)
-                        ? (data.copies as unknown[]).length
-                        : 1,
-                  copies: Array.isArray(data.copies)
-                    ? (data.copies as {
-                        new_filename: string;
-                        document_id: string;
-                        version_id: string;
-                      }[])
+                  typeof data.count === "number"
+                    ? (data.count as number)
+                    : Array.isArray(data.copies)
+                      ? (data.copies as unknown[]).length
+                      : 1,
+                copies: Array.isArray(data.copies)
+                  ? (data.copies as {
+                      new_filename: string;
+                      document_id: string;
+                      version_id: string;
+                    }[])
+                  : undefined,
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
                     : undefined,
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "doc_edited_start") {
-              pushEvent({
+          if (data.type === "doc_edited_start") {
+            pushEvent({
+              type: "doc_edited",
+              filename: data.filename as string,
+              document_id: "",
+              version_id: "",
+              download_url: "",
+              annotations: [],
+              isStreaming: true,
+            });
+            continue;
+          }
+
+          if (data.type === "doc_edited") {
+            updateMatchingEvent(
+              (e) =>
+                e.type === "doc_edited" &&
+                e.filename === data.filename &&
+                !!e.isStreaming,
+              () => ({
                 type: "doc_edited",
                 filename: data.filename as string,
-                document_id: "",
-                version_id: "",
-                download_url: "",
-                annotations: [],
-                isStreaming: true,
-              });
-              continue;
-            }
+                document_id: (data.document_id as string) ?? "",
+                version_id: (data.version_id as string) ?? "",
+                version_number:
+                  typeof data.version_number === "number"
+                    ? (data.version_number as number)
+                    : null,
+                download_url: (data.download_url as string) ?? "",
+                annotations: Array.isArray(data.annotations)
+                  ? (data.annotations as import("@/app/components/shared/types").EditAnnotation[])
+                  : [],
+                error:
+                  typeof data.error === "string"
+                    ? (data.error as string)
+                    : undefined,
+                isStreaming: false,
+              }),
+            );
+            pushThinkingPlaceholder();
+            continue;
+          }
 
-            if (data.type === "doc_edited") {
-              updateMatchingEvent(
-                (e) =>
-                  e.type === "doc_edited" &&
-                  e.filename === data.filename &&
-                  !!e.isStreaming,
-                () => ({
-                  type: "doc_edited",
-                  filename: data.filename as string,
-                  document_id: (data.document_id as string) ?? "",
-                  version_id: (data.version_id as string) ?? "",
-                  version_number:
-                    typeof data.version_number === "number"
-                      ? (data.version_number as number)
-                      : null,
-                  download_url: (data.download_url as string) ?? "",
-                  annotations: Array.isArray(data.annotations)
-                    ? (data.annotations as import("@/app/components/shared/types").EditAnnotation[])
-                    : [],
-                  error:
-                    typeof data.error === "string"
-                      ? (data.error as string)
-                      : undefined,
-                  isStreaming: false,
-                }),
-              );
-              pushThinkingPlaceholder();
-              continue;
-            }
-
-            if (data.type === "citations") {
-              const status =
-                data.status === "started" ||
-                data.status === "partial" ||
-                data.status === "final"
-                  ? data.status
-                  : "final";
-              const incoming = (data.citations ?? []) as Citation[];
-              if (status === "started" || status === "partial") {
-                updateLatestAssistantMessage((message) => ({
-                  ...message,
-                  citations: incoming,
-                  citationStatus: status,
-                }));
-                continue;
-              }
-              // End-of-stream signal — scrub any lingering
-              // placeholders so they don't persist into the
-              // finalised message. First finalize content so adding
-              // citations cannot re-render the markdown/citation view
-              // against a streaming block.
-              finalizeStreamingContent();
-              clearStreamingPlaceholders();
+          if (data.type === "citations") {
+            const status =
+              data.status === "started" ||
+              data.status === "partial" ||
+              data.status === "final"
+                ? data.status
+                : "final";
+            const incoming = (data.citations ?? []) as Citation[];
+            if (status === "started" || status === "partial") {
               updateLatestAssistantMessage((message) => ({
                 ...message,
                 citations: incoming,
-                citationStatus: incoming.length ? "final" : undefined,
+                citationStatus: status,
               }));
               continue;
             }
+            // End-of-stream signal — scrub any lingering
+            // placeholders so they don't persist into the
+            // finalised message. First finalize content so adding
+            // citations cannot re-render the markdown/citation view
+            // against a streaming block.
+            finalizeStreamingContent();
+            clearStreamingPlaceholders();
+            updateLatestAssistantMessage((message) => ({
+              ...message,
+              citations: incoming,
+              citationStatus: incoming.length ? "final" : undefined,
+            }));
+            continue;
+          }
         } catch (e) {
-          console.warn("[useAssistantChat] failed to handle SSE event:", data, e);
+          console.warn(
+            "[useAssistantChat] failed to handle SSE event:",
+            data,
+            e,
+          );
         }
       }
 
       if (!isCurrentRequest()) return null;
 
+      finalizeStreamingContent();
       finalizeStreamingReasoning();
-      setIsResponseLoading(false);
-      setIsLoadingCitations(false);
+      const finishedEvents = [...eventsRef.current];
+      const keepGoing = shouldAutoContinue({
+        events: finishedEvents,
+        aborted: controller.signal.aborted,
+        continues: autoContinueCountRef.current,
+      });
+      if (!keepGoing) {
+        setIsResponseLoading(false);
+        setIsLoadingCitations(false);
+      }
       activeTurnRef.current = null;
 
-      const finalChatId = streamedChatId || chatId || null;
-      if (finalChatId && finalChatId !== chatId) {
+      const finalChatId = streamedChatId || turnChatId || null;
+      if (finalChatId && finalChatId !== turnChatId) {
         if (chatId) {
           replaceChatId(
             chatId,
@@ -2509,6 +2515,28 @@ export function useAssistantChat({
       }
 
       await loadChats();
+
+      if (keepGoing && isCurrentRequest()) {
+        autoContinueCountRef.current += 1;
+        return handleChat(
+          { role: "user", content: CONTINUE_PLAN_MESSAGE },
+          {
+            history: [
+              ...apiMessagesForTurn,
+              {
+                role: "assistant",
+                content: assistantHistoryContent({
+                  content: "",
+                  events: finishedEvents,
+                }),
+                events: finishedEvents,
+              },
+            ],
+            autoContinue: true,
+            continueChatId: streamedChatId || turnChatId,
+          },
+        );
+      }
 
       return streamedChatId || null;
     } catch (error: unknown) {

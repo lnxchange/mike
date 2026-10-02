@@ -90,6 +90,7 @@ import {
   readDocumentContent,
   findInDocumentContent,
   findTextMatches,
+  runCommentDocument,
   runEditDocument,
   runFinalizeDocument,
   safeGeneratedFilename,
@@ -2815,7 +2816,9 @@ export async function runToolCalls(
               version_number: result.version_number,
               applied: result.annotations.length,
               errors: result.errors,
+              author: result.author,
               next_required_action: [
+                `Tracked changes from this edit are attributed to "${result.author}", the signed-in user's name. Word shows that name on the markup. Do not say the author cannot be set.`,
                 `The edited document remains available as doc_id "${docId}".`,
                 `Before making factual claims about the edited document's final contents, call read_document with doc_id "${docId}" and base the response on that returned text.`,
                 `Do not include download links or URLs in your prose response; the edited document card is shown automatically by the UI.`,
@@ -2843,6 +2846,98 @@ export async function runToolCalls(
               error: result.error,
             }),
           });
+        }
+      }
+    } else if (tc.function.name === "comment_document" && docIndex) {
+      const rawDocId = args.doc_id as string;
+      const commentsRaw = args.comments as unknown[] | undefined;
+      const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+      const docInfo = docStore.get(docId);
+      const indexed = docIndex?.[docId];
+      const fail = (error: string) => {
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: false, error }),
+        });
+      };
+      if (
+        docInfo?.source_kind === "library_template" ||
+        docInfo?.source_kind === "workflow_asset"
+      ) {
+        fail(
+          "Templates and workflow assets cannot be commented on directly. Call replicate_document with a new_filename, then comment on the returned copy.",
+        );
+      } else if (!docInfo || !indexed) {
+        fail(`Document '${docId}' not found in this chat's attachments.`);
+      } else if (!Array.isArray(commentsRaw) || commentsRaw.length === 0) {
+        fail("comments array is required and must not be empty.");
+      } else if (docInfo.file_type !== "docx") {
+        fail("comment_document only supports .docx files.");
+      } else {
+        const comments = (commentsRaw as Record<string, unknown>[]).map((row) => ({
+          anchor: String(row.anchor ?? ""),
+          context_before: row.context_before ? String(row.context_before) : "",
+          context_after: row.context_after ? String(row.context_after) : "",
+          text: String(row.text ?? ""),
+          parent_id: row.parent_id ? String(row.parent_id) : undefined,
+        }));
+        const reuseVersion = turnEditState?.get(indexed.document_id);
+        const result = await runCommentDocument({
+          documentId: indexed.document_id,
+          filename: docInfo.filename,
+          userId,
+          comments,
+          db,
+          reuseVersion,
+        });
+        if (result.ok) {
+          turnEditState?.set(indexed.document_id, {
+            versionId: result.version_id,
+            versionNumber: result.version_number,
+            storagePath: result.storage_path,
+          });
+          clearTurnReadsForDocument(turnReadState, indexed.document_id);
+          if (docIndex[docId]) {
+            docIndex[docId] = {
+              ...docIndex[docId],
+              version_id: result.version_id,
+              version_number: result.version_number,
+            };
+          }
+          const currentDocStore = docStore.get(docId);
+          if (currentDocStore) {
+            docStore.set(docId, {
+              ...currentDocStore,
+              storage_path: result.storage_path,
+            });
+          }
+          write(
+            `data: ${JSON.stringify({
+              type: "doc_edited",
+              filename: result.filename,
+              document_id: indexed.document_id,
+              version_id: result.version_id,
+              version_number: result.version_number,
+              download_url: result.download_url,
+              annotations: [],
+            })}\n\n`,
+          );
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: true,
+              doc_id: docId,
+              document_id: indexed.document_id,
+              version_id: result.version_id,
+              comments: result.comments,
+              errors: result.errors,
+              next_required_action: `The commented document remains available as doc_id "${docId}". Call read_document if you need to see the comments as they now stand.`,
+            }),
+          });
+        } else {
+          fail(result.error);
         }
       }
     } else if (tc.function.name === "replicate_document" && docIndex) {

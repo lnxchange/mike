@@ -107,6 +107,66 @@ describe("formatTrackedChangesSection", () => {
     expect(section).toContain("finalize_document");
   });
 
+  it("lists each review comment's author, anchor and bubble text", () => {
+    const section = formatTrackedChangesSection({
+      changes: [],
+      propertyChanges: 0,
+      moves: 0,
+      comments: 1,
+      commentRecords: [
+        {
+          id: "0",
+          author: "Amana Zahid",
+          date: "2026-09-18T01:02:03Z",
+          initials: "AZ",
+          text: "Confirm the limit is $20m.",
+          anchor: "maintain insurance",
+          parentId: null,
+          resolved: false,
+        },
+        {
+          id: "1",
+          author: "Yule Guttenbeil",
+          date: "2026-09-18T04:05:06Z",
+          initials: "YG",
+          text: "It is $20 million.",
+          anchor: null,
+          parentId: "0",
+          resolved: false,
+        },
+      ],
+    });
+    expect(section).toContain("TRACKED CHANGES (0 pending, 2 comments)");
+    expect(section).toContain(
+      '[id 0] Amana Zahid, 2026-09-18 on "maintain insurance": "Confirm the limit is $20m."',
+    );
+    expect(section).toContain(
+      '[id 1] Yule Guttenbeil, 2026-09-18 reply to comment 0: "It is $20 million."',
+    );
+    expect(section).toContain("comment_document");
+  });
+
+  it("names an author whose changes sit past the first page of a long redline", () => {
+    const changes = Array.from({ length: 62 }, (_, index) => ({
+      w_id: String(index + 1),
+      kind: "ins" as const,
+      author: index < 60 ? "Irving, Dann" : "Yule Guttenbeil",
+      date: "2026-10-02T00:00:00Z",
+      text: index < 60 ? `bp change ${index}` : "[Blue NRG note: keep this visible]",
+    }));
+    const section = formatTrackedChangesSection({
+      changes,
+      propertyChanges: 0,
+      moves: 0,
+      comments: 0,
+      commentRecords: [],
+    });
+    expect(section).toContain("Authors in that remainder: Yule Guttenbeil (2)");
+    expect(section).toContain(
+      '[ins] Yule Guttenbeil, 2026-10-02: "[Blue NRG note: keep this visible]"',
+    );
+  });
+
   it("says so plainly when there is no redline", () => {
     expect(
       formatTrackedChangesSection({

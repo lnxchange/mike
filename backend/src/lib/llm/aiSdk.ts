@@ -86,7 +86,9 @@ export type FinishedStepShape = {
 };
 
 /** A step that hit the output cap with nothing to show is a thinking overrun. */
-export function isReasoningOverrunStep(step: FinishedStepShape | null): boolean {
+export function isReasoningOverrunStep(
+  step: FinishedStepShape | null,
+): boolean {
   return (
     step !== null &&
     step.finishReason === "length" &&
@@ -108,7 +110,8 @@ export function messagesForOverrunRetry(
 ): ModelMessageLike[] {
   const kept = responseMessages.filter((message) => {
     if (message.role !== "assistant") return true;
-    if (typeof message.content === "string") return message.content.trim() !== "";
+    if (typeof message.content === "string")
+      return message.content.trim() !== "";
     return Array.isArray(message.content) && message.content.length > 0;
   });
   return [...original, ...kept, { role: "user", content: nudge }];
@@ -359,8 +362,18 @@ function usesCourtlistenerTool(
 
 export const LAST_STEP_WRITE_REMINDER = `LAST STEP: Do not call any tools. Write the user-facing answer now from the documents and notes already in this response. If you cannot finish every attachment or edit, write what you have and state what remains.`;
 
+export const PLAN_NOW_REMINDER = `PLAN NOW: Call create_plan. Name the parts of the response, including what you still need to read. Each item is one short sentence. Do not review, explain, draft, or answer the substance in this response.`;
+
+export const PLAN_COMPLETE_SUMMARY = `PLAN COMPLETE: The plan has no remaining steps. Do not call any tools. Write a short summary of what was actually produced for the user. Name the documents, edits, and notes that exist in this conversation. If a step was marked done but the document, edit, or note was not produced, say so and include the text now. Do not claim something was drafted, filed, or placed in Outlook unless that happened in this conversation.`;
+
 export type StreamStepState = {
   toolCalls: Array<{ toolName: string }>;
+};
+
+export type PreparedStreamStep = {
+  system?: string;
+  activeTools?: string[];
+  toolChoice?: "none" | "required" | { type: "tool"; toolName: "create_plan" };
 };
 
 export function prepareAssistantStreamStep(args: {
@@ -368,14 +381,40 @@ export function prepareAssistantStreamStep(args: {
   maxIterations: number;
   systemPrompt: string;
   courtlistenerReminder?: boolean;
-}):
-  | { system?: string; activeTools?: []; toolChoice?: "none" }
-  | undefined {
+  requirePlan?: boolean;
+  planSummaryNow?: { current: boolean };
+}): PreparedStreamStep | undefined {
   const maxIterations = Math.max(1, args.maxIterations);
   const lastStep = args.steps.length >= maxIterations - 1;
+  if (args.planSummaryNow?.current) {
+    return {
+      activeTools: [],
+      toolChoice: "none",
+      system: `${args.systemPrompt}\n\n${PLAN_COMPLETE_SUMMARY}`,
+    };
+  }
+  const requirePlan = args.requirePlan === true;
+  // After one look, or immediately when this is the only step, the turn
+  // names its work and stops. It does not become the written answer.
+  const forcePlan = requirePlan && (args.steps.length >= 1 || lastStep);
+  const requireTool = requirePlan && !forcePlan;
   const courtlistener =
-    args.courtlistenerReminder === true && usesCourtlistenerTool(args.steps);
-  if (!lastStep && !courtlistener) return undefined;
+    !forcePlan &&
+    args.courtlistenerReminder === true &&
+    usesCourtlistenerTool(args.steps);
+  if (!lastStep && !courtlistener && !forcePlan && !requireTool) {
+    return undefined;
+  }
+  if (forcePlan) {
+    return {
+      activeTools: ["create_plan"],
+      toolChoice: { type: "tool", toolName: "create_plan" },
+      system: `${args.systemPrompt}\n\n${PLAN_NOW_REMINDER}`,
+    };
+  }
+  if (requireTool) {
+    return { toolChoice: "required" };
+  }
   const extras = [
     courtlistener ? COURTLISTENER_CITATION_REMINDER : "",
     lastStep ? LAST_STEP_WRITE_REMINDER : "",
@@ -452,87 +491,89 @@ export async function streamAiSdk(
             maxIterations: remainingSteps,
             systemPrompt: params.systemPrompt,
             courtlistenerReminder: config.courtlistenerCitationReminder,
+            requirePlan: params.requirePlan,
+            planSummaryNow: params.planSummaryNow,
           }),
       });
 
       let truncatedTool: string | null | undefined;
       try {
-      for await (const part of result.stream) {
-        switch (part.type) {
-          case "start-step":
-            iteration += 1;
-            stepsThisRun += 1;
-            currentStep = {
-              finishReason: undefined,
-              producedText: false,
-              producedToolCall: false,
-            };
-            break;
-          case "finish-step":
-            currentStep.finishReason = part.finishReason;
-            lastFinishedStep = currentStep;
-            break;
-          case "raw":
-            logRawLlmStream({
-              provider: config.provider,
-              model: config.modelId,
-              iteration: Math.max(0, iteration - 1),
-              label: "ai_sdk_raw",
-              payload: part.rawValue,
-            });
-            rawStreamRecorder?.record({
-              iteration: Math.max(0, iteration - 1),
-              label: "ai_sdk_raw",
-              payload: part.rawValue,
-            });
-            break;
-          case "text-delta":
-            if (part.text) currentStep.producedText = true;
-            fullText += part.text;
-            params.callbacks?.onContentDelta?.(part.text);
-            break;
-          case "reasoning-start":
-            openReasoningBlocks.add(part.id);
-            break;
-          case "reasoning-delta":
-            openReasoningBlocks.add(part.id);
-            params.callbacks?.onReasoningDelta?.(part.text);
-            break;
-          case "reasoning-end":
-            if (openReasoningBlocks.delete(part.id)) {
-              params.callbacks?.onReasoningBlockEnd?.();
-            }
-            break;
-          case "tool-call": {
-            currentStep.producedToolCall = true;
-            const call: NormalizedToolCall = {
-              id: part.toolCallId,
-              name: part.toolName,
-              input: normalizeToolInput(part.input),
-            };
-            params.callbacks?.onToolCallStart?.(call);
-            break;
-          }
-          case "tool-error":
-          case "error": {
-            const streamError =
-              part.error instanceof Error
-                ? part.error
-                : new Error(errorMessage(part.error, config.label));
-            if (isTruncatedToolInputError(streamError)) {
-              throw Object.assign(streamError, {
-                truncatedToolInput: true,
+        for await (const part of result.stream) {
+          switch (part.type) {
+            case "start-step":
+              iteration += 1;
+              stepsThisRun += 1;
+              currentStep = {
+                finishReason: undefined,
+                producedText: false,
+                producedToolCall: false,
+              };
+              break;
+            case "finish-step":
+              currentStep.finishReason = part.finishReason;
+              lastFinishedStep = currentStep;
+              break;
+            case "raw":
+              logRawLlmStream({
+                provider: config.provider,
+                model: config.modelId,
+                iteration: Math.max(0, iteration - 1),
+                label: "ai_sdk_raw",
+                payload: part.rawValue,
               });
+              rawStreamRecorder?.record({
+                iteration: Math.max(0, iteration - 1),
+                label: "ai_sdk_raw",
+                payload: part.rawValue,
+              });
+              break;
+            case "text-delta":
+              if (part.text) currentStep.producedText = true;
+              fullText += part.text;
+              params.callbacks?.onContentDelta?.(part.text);
+              break;
+            case "reasoning-start":
+              openReasoningBlocks.add(part.id);
+              break;
+            case "reasoning-delta":
+              openReasoningBlocks.add(part.id);
+              params.callbacks?.onReasoningDelta?.(part.text);
+              break;
+            case "reasoning-end":
+              if (openReasoningBlocks.delete(part.id)) {
+                params.callbacks?.onReasoningBlockEnd?.();
+              }
+              break;
+            case "tool-call": {
+              currentStep.producedToolCall = true;
+              const call: NormalizedToolCall = {
+                id: part.toolCallId,
+                name: part.toolName,
+                input: normalizeToolInput(part.input),
+              };
+              params.callbacks?.onToolCallStart?.(call);
+              break;
             }
-            throw streamError;
-          }
-          case "abort": {
-            const error = new Error(part.reason || "Stream aborted.");
-            error.name = "AbortError";
-            throw error;
+            case "tool-error":
+            case "error": {
+              const streamError =
+                part.error instanceof Error
+                  ? part.error
+                  : new Error(errorMessage(part.error, config.label));
+              if (isTruncatedToolInputError(streamError)) {
+                throw Object.assign(streamError, {
+                  truncatedToolInput: true,
+                });
+              }
+              throw streamError;
+            }
+            case "abort": {
+              const error = new Error(part.reason || "Stream aborted.");
+              error.name = "AbortError";
+              throw error;
+            }
           }
         }
-      }
       } catch (error) {
         if (!isTruncatedToolInputError(error)) throw error;
         truncatedTool = truncatedToolName(error);
@@ -566,7 +607,8 @@ export async function streamAiSdk(
       overrunRetries += 1;
       let responseMessages: ModelMessageLike[] = [];
       try {
-        responseMessages = (await result.responseMessages) as ModelMessageLike[];
+        responseMessages =
+          (await result.responseMessages) as ModelMessageLike[];
       } catch {
         responseMessages = [];
       }
@@ -578,14 +620,17 @@ export async function streamAiSdk(
           : REASONING_OVERRUN_NUDGE,
       );
       reasoning = lowerReasoningLevel(reasoning);
-      console.warn("[llm-stream] reasoning overrun, retrying with less thinking", {
-        provider: config.provider,
-        model: config.modelId,
-        attempt: overrunRetries,
-        reasoning,
-        remainingSteps,
-        truncatedTool: toolInputCutOff ? truncatedTool : undefined,
-      });
+      console.warn(
+        "[llm-stream] reasoning overrun, retrying with less thinking",
+        {
+          provider: config.provider,
+          model: config.modelId,
+          attempt: overrunRetries,
+          reasoning,
+          remainingSteps,
+          truncatedTool: toolInputCutOff ? truncatedTool : undefined,
+        },
+      );
     }
 
     await rawStreamRecorder?.flush("completed");

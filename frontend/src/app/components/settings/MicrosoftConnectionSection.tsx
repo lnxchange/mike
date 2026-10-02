@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+    AuthApiError,
     getAuthConfig,
     startMicrosoftOAuth,
 } from "@/app/lib/authApi";
@@ -45,17 +46,20 @@ export function MicrosoftConnectionSection() {
         setBusy(true);
         setStatus(null);
         try {
-            const { url } = await startMicrosoftOAuth(
-                "/settings/security",
-                "link",
-            );
+            // Sign in with Microsoft rather than linkIdentity. Hosted
+            // projects keep manual linking off, and that call never reaches
+            // Microsoft. A normal Azure sign-in still attaches the identity
+            // when the email matches, and the callback stores the mail grant.
+            const { url } = await startMicrosoftOAuth("/settings/security");
             window.location.assign(url);
         } catch (error) {
             setStatus(
-                userFacingApiError(
-                    error,
-                    "Microsoft could not be connected. Please try again.",
-                ),
+                error instanceof AuthApiError && error.message
+                    ? error.message
+                    : userFacingApiError(
+                          error,
+                          "Microsoft could not be connected. Please try again.",
+                      ),
             );
             setBusy(false);
         }

@@ -10,11 +10,20 @@ export const PLAN_PAUSE_CONTENT =
 
 export const PLAN_CONTINUE_MESSAGE = "Continue with the next step.";
 
+/** A first look, then create_plan. The answer waits for Continue. */
+export const PLAN_FIRST_MAX_ITERATIONS = 2;
+
+/** Short questions below this length, with no documents, may answer directly. */
+export const PLAN_WORD_THRESHOLD = 25;
+
+const ATTACHMENT_MARKER = "[The user attached the following document(s)";
+
 /** Continuation budget: enough to read and produce one slice, not a whole job. */
 export const PLAN_SLICE_MAX_ITERATIONS = 8;
 
 export const PLAN_FIRST_BLOCKED_TOOLS: ReadonlySet<string> = new Set([
   "edit_document",
+  "comment_document",
   "replicate_document",
   "finalize_document",
   "generate_docx",
@@ -22,6 +31,8 @@ export const PLAN_FIRST_BLOCKED_TOOLS: ReadonlySet<string> = new Set([
   "generate_ppt",
   "create_outlook_draft",
   "apply_word_edits",
+  "comment_active_document",
+  "comment_document",
 ]);
 
 export const ACTIVE_PLAN_MARKER = "[Active plan]";
@@ -70,6 +81,45 @@ export function messagesHaveActivePlan(
   return messages.some((message) =>
     (message.content ?? "").includes(ACTIVE_PLAN_MARKER),
   );
+}
+
+export type PlanTurnMessage = {
+  role?: string;
+  content?: string | null;
+  files?: readonly unknown[] | null;
+  workflow?: unknown;
+};
+
+function lastUserMessage(messages: PlanTurnMessage[]): PlanTurnMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === "user") return message;
+  }
+  return null;
+}
+
+function wordCount(content: string): number {
+  return content.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * The server decides this. A review is not optional. The model does not get
+ * to treat one as a single step.
+ */
+export function turnRequiresPlan(
+  messages: PlanTurnMessage[],
+  options?: { hasDocuments?: boolean },
+): boolean {
+  if (messagesHaveActivePlan(messages)) return false;
+  const last = lastUserMessage(messages);
+  if (!last) return false;
+  const content = (last.content ?? "").trim();
+  if (content === PLAN_CONTINUE_MESSAGE) return false;
+  if (last.workflow || lastUserHasWorkflow(messages)) return true;
+  if ((last.files?.length ?? 0) > 0) return true;
+  if (content.includes(ATTACHMENT_MARKER)) return true;
+  if (options?.hasDocuments) return true;
+  return wordCount(content) >= PLAN_WORD_THRESHOLD;
 }
 
 export function formatActivePlanBlock(plan: PlanEvent): string {

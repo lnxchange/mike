@@ -36,7 +36,9 @@ const { streamChatWithTools, runToolCalls } = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../../lib/llm", async () => ({
-  ...(await vi.importActual<Record<string, unknown>>("../../../../lib/llm/models")),
+  ...(await vi.importActual<Record<string, unknown>>(
+    "../../../../lib/llm/models",
+  )),
   DEFAULT_STREAM_MAX_ITERATIONS: 16,
   streamChatWithTools: (params: StreamChatCall) => streamChatWithTools(params),
   completeText: vi.fn(),
@@ -63,6 +65,7 @@ import {
   DOCUMENT_MUTATING_TOOL_NAMES,
   PROJECT_EXTRA_TOOLS,
 } from "../tools/toolSchemas";
+import { PLAN_COMPLETE_SUMMARY } from "../../../../lib/llm/aiSdk";
 import {
   CREATE_PLAN_REQUIRED_ERROR,
   PLAN_PAUSE_CONTENT,
@@ -110,6 +113,7 @@ function advertisedToolNames(): string[] {
 
 const WRITERS = [
   "edit_document",
+  "comment_document",
   "replicate_document",
   "finalize_document",
   "generate_docx",
@@ -380,8 +384,16 @@ describe("runLLMStream planning", () => {
       event_id: "plan-1",
       title: "New job request",
       items: [
-        { id: "read", content: "Read the emails", status: "in_progress" as const },
-        { id: "review", content: "Review the terms", status: "pending" as const },
+        {
+          id: "read",
+          content: "Read the emails",
+          status: "in_progress" as const,
+        },
+        {
+          id: "review",
+          content: "Review the terms",
+          status: "pending" as const,
+        },
       ],
     };
     runToolCalls.mockResolvedValueOnce({
@@ -435,6 +447,70 @@ describe("runLLMStream planning", () => {
     );
   });
 
+  it("asks for a summary instead of pausing when the plan is finished", async () => {
+    const planEvent = {
+      type: "plan" as const,
+      event_id: "plan-1",
+      title: "BP confirmation",
+      items: [
+        {
+          id: "markup",
+          content: "Mark up the set-off clause",
+          status: "completed" as const,
+        },
+        {
+          id: "note",
+          content: "Draft the covering note",
+          status: "completed" as const,
+        },
+      ],
+    };
+    runToolCalls.mockResolvedValueOnce({
+      toolResults: [
+        {
+          role: "tool",
+          tool_call_id: "call-a",
+          content: JSON.stringify({ ok: true }),
+        },
+      ],
+      docsRead: [],
+      docsFound: [],
+      docsCreated: [],
+      docsReplicated: [],
+      docsFinalized: [],
+      workflowsApplied: [],
+      docsEdited: [],
+      askInputsEvents: [],
+      planEvents: [planEvent],
+      courtlistenerEvents: [],
+      caseCitationEvents: [],
+      auLegislationEvents: [],
+      auEnergyEvents: [],
+      auVicLegislationEvents: [],
+      auCaseLawEvents: [],
+      legislationCitationEvents: [],
+      mcpEvents: [],
+      outlookEvents: [],
+    } as never);
+    let toolResults: { tool_use_id: string; content: string }[] | undefined;
+    streamChatWithTools.mockImplementationOnce(
+      async (params: { runTools?: RunToolsFn }) => {
+        toolResults = await params.runTools?.([
+          { id: "call-a", name: "update_plan", input: {} },
+        ]);
+        return { fullText: "" };
+      },
+    );
+
+    const result = await runLLMStream(baseParams());
+
+    expect(result.events).toContainEqual(planEvent);
+    expect(result.events).not.toContainEqual(
+      expect.objectContaining({ type: "content", text: PLAN_PAUSE_CONTENT }),
+    );
+    expect(toolResults?.[0]?.content).toContain(PLAN_COMPLETE_SUMMARY);
+  });
+
   it("blocks drafting on a workflow turn until a plan exists", async () => {
     let toolResults: { tool_use_id: string; content: string }[] | undefined;
     streamChatWithTools.mockImplementation(
@@ -456,7 +532,8 @@ describe("runLLMStream planning", () => {
       apiMessages: [
         {
           role: "user",
-          content: "[Workflow: New job request (id: wf-1)]\n\nPlease process this new job.",
+          content:
+            "[Workflow: New job request (id: wf-1)]\n\nPlease process this new job.",
         },
       ],
     });
@@ -475,6 +552,7 @@ describe("runLLMStream planning", () => {
     await runLLMStream({
       ...baseParams(),
       maxIterations: 16,
+      reasoning: "high",
       apiMessages: [
         { role: "assistant", content: `${"[Active plan]"}\nTitle: Job` },
         { role: "user", content: "Continue with the next step." },
@@ -483,6 +561,103 @@ describe("runLLMStream planning", () => {
 
     expect(streamChatWithTools.mock.calls[0]![0].maxIterations).toBe(
       PLAN_SLICE_MAX_ITERATIONS,
+    );
+    expect(streamChatWithTools.mock.calls[0]![0].requirePlan).toBe(false);
+    expect(streamChatWithTools.mock.calls[0]![0].reasoning).toBe("high");
+  });
+
+  it("forces a plan on a long review with no workflow", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      reasoning: "high",
+      apiMessages: [
+        {
+          role: "user",
+          content:
+            "Could you please conduct an initial review of the confirmation that we received today from BP for the urgent review? Give me your thoughts on the commercial fundamentals and explain how the ex-ante energy offset transaction works.",
+        },
+      ],
+    });
+
+    expect(streamChatWithTools.mock.calls[0]![0].maxIterations).toBe(2);
+    expect(streamChatWithTools.mock.calls[0]![0].requirePlan).toBe(true);
+    expect(streamChatWithTools.mock.calls[0]![0].reasoning).toBe("low");
+  });
+
+  it("does not force a plan for a short question with no documents", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      apiMessages: [{ role: "user", content: "What is an ISDA?" }],
+    });
+
+    expect(streamChatWithTools.mock.calls[0]![0].maxIterations).toBe(16);
+    expect(streamChatWithTools.mock.calls[0]![0].requirePlan).toBe(false);
+    expect(streamChatWithTools.mock.calls[0]![0].reasoning).toBe("high");
+  });
+
+  it("still pauses for ask_inputs on a review before any plan exists", async () => {
+    const askInputsEvent = {
+      type: "ask_inputs" as const,
+      items: [
+        {
+          id: "docs",
+          kind: "documents" as const,
+          question: "Please attach the confirmation.",
+          document_types: ["BP draft confirmation"],
+        },
+      ],
+    };
+    runToolCalls.mockResolvedValueOnce({
+      toolResults: [],
+      docsRead: [],
+      docsFound: [],
+      docsCreated: [],
+      docsReplicated: [],
+      docsFinalized: [],
+      workflowsApplied: [],
+      docsEdited: [],
+      askInputsEvents: [askInputsEvent],
+      planEvents: [],
+      courtlistenerEvents: [],
+      caseCitationEvents: [],
+      auLegislationEvents: [],
+      auEnergyEvents: [],
+      auVicLegislationEvents: [],
+      auCaseLawEvents: [],
+      legislationCitationEvents: [],
+      mcpEvents: [],
+      outlookEvents: [],
+    } as never);
+    streamChatWithTools.mockImplementationOnce(
+      async (params: { runTools?: RunToolsFn }) => {
+        try {
+          await params.runTools?.([
+            { id: "call-a", name: "ask_inputs", input: {} },
+          ]);
+        } catch (error) {
+          throw new Error(error instanceof Error ? error.message : "wrapped");
+        }
+        return { fullText: "" };
+      },
+    );
+
+    const result = await runLLMStream({
+      ...baseParams(),
+      apiMessages: [
+        {
+          role: "user",
+          content:
+            "Could you please conduct an initial review of the confirmation that we received today from BP for the urgent review and explain the ex-ante energy offset?",
+        },
+      ],
+    });
+
+    expect(result.events).toEqual([askInputsEvent]);
+    expect(result.events).not.toContainEqual(
+      expect.objectContaining({ type: "error" }),
+    );
+    expect(result.events).not.toContainEqual(
+      expect.objectContaining({ type: "plan" }),
     );
   });
 });

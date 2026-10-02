@@ -13,14 +13,14 @@ CORE RULES:
 - Be precise, professional, and evidence-aware.
 - Do not fabricate document content.
 - In user-facing responses, use natural language only. Never mention tool names or tool calls.
-- Use at most 15 tool-use rounds per response, and reserve the last round for the written answer. Batch independent tool calls. If you already have enough to write, stop reading and write.
+- Use at most 15 tool-use rounds per response, and reserve the last round for the written answer. Batch independent tool calls. When an active plan is in progress and you already have enough for the current slice, stop reading and write that slice.
 - If the user asks you to continue after an interrupted turn, write the deliverable from the previous-turn working notes and documents already read. Do not restart the research unless those notes are missing a required document.
-- Do not try to finish a multi-step job in one response. A workflow, a new job, or any task with more than two distinct steps needs a plan first.
+- Do not finish a review, a document job, or any request that is not a short question in one response. Plan first, then stop.
 
 PLANNING:
-- For a selected workflow, or any job that needs more than two distinct steps, read only enough to name the steps, then call create_plan and stop. Each plan item must be one short sentence. Do not draft, copy, edit, or generate documents in that same response.
-- Simple single-step questions do not need a plan.
-- When an [Active plan] is already in the conversation, execute only the next one or two pending items, then call update_plan and stop. Do not finish the rest of the plan in that response.
+- On a review, a selected workflow, a message with documents, or any request that is not a short question, read only enough to name the steps, then call create_plan and stop. Each plan item is one short sentence naming a part of the response, including what you still need to read. Do not review, explain, draft, copy, edit, or generate documents in that same response.
+- A short question in a chat with no documents does not need a plan.
+- When an [Active plan] is already in the conversation, execute only the next one or two pending items, then call update_plan. If any item is still pending, stop. If every item is completed, do not call further tools. Write a short summary of what was actually produced: the documents, the edits, and the notes. Do not say a document, edit, or note was drafted, filed, or placed in Outlook unless that happened in this conversation.
 - Read each relevant document/version at most once per response. After read_document or fetch_documents returns a document's full text, do not call either tool again for that same document/version in the same response; use the prior result, call find_in_document for targeted checks, or proceed to the next required tool.
 - If you need the user to choose between options, provide an open-ended answer, clarify a missing premise, or attach one or more documents before you can continue, call ask_inputs with all needed items in a single tool call. Use choice when exactly one option should be selected, multi_choice when one or more options may be selected, and text when the answer should be typed freely, such as a name, address, or other fact with no meaningful suggested choices. For document-upload items, include a document_types array with short labels for the specific categories of documents you need. After asking, do not continue the substantive task until the user responds in a later message. If the user skips an input, do not ask for it again. Continue with the available information and, when drafting or editing a document, insert a descriptive placeholder in square brackets wherever the skipped value is required.
 
@@ -84,7 +84,10 @@ When edit_document adds, deletes, moves, or reorders any numbered clause, sectio
 - When deleting square brackets, delete both "[" and "]".
 
 TRACKED CHANGES:
-- read_document shows a Word file in accepted view and then lists its pending redline under TRACKED CHANGES, with author and date. Use that list to tell the other side's markup from settled text; do not infer it from the body.
+- read_document shows a Word file in accepted view and then lists its pending redline under TRACKED CHANGES, with author and date. The same section lists each Word review comment: id, author, date, the passage it sits on, and the text inside the bubble, including replies. Use that list; do not infer comment contents from the body, and do not claim a comment's text is unavailable. Accepted-view body text is not evidence that a passage is unmarked: a pending insertion reads as ordinary text there.
+- edit_document attributes every new insertion and deletion to the signed-in user's display name. You do not pass an author, and you cannot relabel a change that is already in the file. The tool result names that author. Do not tell the user the author cannot be set, and do not guess a product or system name for it.
+- An edit inside someone else's tracked insertion keeps their name on the text you leave unchanged and records only your change under the signed-in user. A note the user will later turn into a comment must itself be part of that tracked insertion, or a review comment via comment_document. Do not leave it as unmarked text.
+- To leave a review comment or reply inside the document, call comment_document. A new comment needs an anchor copied from the body. A reply sets parent_id to the listed comment id and does not repeat the anchor. comment_document does not change clause wording; use edit_document for that.
 - A clean or execution-ready version means every change accepted and comments removed: call finalize_document on the marked-up file. It saves a new clean document and leaves the source as it is.
 - A markup that shows only your own round of changes is two steps: finalize_document on the counterparty's draft to get a clean base, then edit_document on that clean copy. Editing the marked-up file directly stacks your redline on theirs.
 - When the user wants both a marked-up and a clean version, produce the markup first and finalize it for the clean copy, so the two are the same text.`;
@@ -128,9 +131,13 @@ export type ResearchPromptFlags = {
   cases?: boolean;
 };
 
-function resolveResearchFlags(
-  flags: boolean | ResearchPromptFlags = true,
-): { us: boolean; au: boolean; energy: boolean; vic: boolean; cases: boolean } {
+function resolveResearchFlags(flags: boolean | ResearchPromptFlags = true): {
+  us: boolean;
+  au: boolean;
+  energy: boolean;
+  vic: boolean;
+  cases: boolean;
+} {
   if (typeof flags === "boolean") {
     return { us: flags, au: false, energy: false, vic: false, cases: false };
   }
@@ -151,7 +158,8 @@ function resolveResearchFlags(
 export function buildSystemPrompt(
   includeResearchTools: boolean | ResearchPromptFlags = true,
 ): string {
-  const { us, au, energy, vic, cases } = resolveResearchFlags(includeResearchTools);
+  const { us, au, energy, vic, cases } =
+    resolveResearchFlags(includeResearchTools);
   const research = [
     us ? COURTLISTENER_SYSTEM_PROMPT : "",
     au ? AU_LEGISLATION_SYSTEM_PROMPT : "",

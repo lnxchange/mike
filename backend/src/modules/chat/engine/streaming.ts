@@ -4,20 +4,26 @@ import {
   type LlmMessage,
   type OpenAIToolSchema,
 } from "../../../lib/llm";
+import { PLAN_COMPLETE_SUMMARY } from "../../../lib/llm/aiSdk";
 import { DEFAULT_STREAM_MAX_ITERATIONS } from "../../../lib/llm/types";
 import { withIncompleteTurnEvent } from "./incompleteTurn";
 import {
   CREATE_PLAN_REQUIRED_ERROR,
   PLAN_FIRST_BLOCKED_TOOLS,
+  PLAN_FIRST_MAX_ITERATIONS,
   PLAN_PAUSE_CONTENT,
   PLAN_SLICE_MAX_ITERATIONS,
-  lastUserHasWorkflow,
   messagesHaveActivePlan,
+  planHasPendingItems,
+  turnRequiresPlan,
 } from "./tools/planTools";
 import { resolveRequestedModel } from "../../../lib/routerModels";
 import { UserFacingError } from "../../../lib/userFacingError";
 import type { Db } from "../../../lib/supabase";
-import { buildUserMcpTools, type McpToolEvent } from "../../../lib/mcpConnectors";
+import {
+  buildUserMcpTools,
+  type McpToolEvent,
+} from "../../../lib/mcpConnectors";
 import type { SourceDocument } from "../../../lib/sourceDocuments";
 import {
   COURTLISTENER_TOOLS,
@@ -156,11 +162,7 @@ class AssistantStreamPlanPause extends Error {
   }
 }
 
-function isNamedPause(
-  error: unknown,
-  name: string,
-  message: string,
-): boolean {
+function isNamedPause(error: unknown, name: string, message: string): boolean {
   if (!error || typeof error !== "object") return false;
   const record = error as {
     name?: unknown;
@@ -340,7 +342,12 @@ export async function runLLMStream(params: {
 
   // Extract system prompt; pass remaining turns to the adapter as
   // plain user/assistant messages.
-  const rawMsgs = apiMessages as { role: string; content: string | null }[];
+  const rawMsgs = apiMessages as {
+    role: string;
+    content: string | null;
+    files?: readonly unknown[] | null;
+    workflow?: unknown;
+  }[];
   const baseSystemPrompt =
     rawMsgs[0]?.role === "system" ? (rawMsgs[0].content ?? "") : "";
   const memory = await buildMemoryTurn({
@@ -354,12 +361,10 @@ export async function runLLMStream(params: {
   const systemPrompt = memory.systemPrompt;
   const chatMessages: LlmMessage[] = rawMsgs
     .filter((m) => m.role !== "system")
-    .map(
-      (m): LlmMessage => ({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: m.content ?? "",
-      }),
-    )
+    .map((m): LlmMessage => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content ?? "",
+    }))
     // An assistant turn with no text (an error, a cancellation, or a client
     // that keeps prose in events) carries nothing for the model, and Anthropic
     // rejects the entire request over one empty text block.
@@ -368,13 +373,18 @@ export async function runLLMStream(params: {
   if (memory.message) chatMessages.unshift(memory.message);
 
   const hasActivePlan = messagesHaveActivePlan(chatMessages);
-  const requirePlanBeforeMutation =
-    lastUserHasWorkflow(chatMessages) && !hasActivePlan;
+  const requirePlanFirst = turnRequiresPlan(rawMsgs, {
+    hasDocuments: docStore.size > 0,
+  });
+  const requirePlanBeforeMutation = requirePlanFirst;
+  const planSummaryNow = { current: false };
   const requestedMaxIterations =
     params.maxIterations ?? DEFAULT_STREAM_MAX_ITERATIONS;
   const maxIterations = hasActivePlan
     ? Math.min(requestedMaxIterations, PLAN_SLICE_MAX_ITERATIONS)
-    : requestedMaxIterations;
+    : requirePlanFirst
+      ? Math.min(requestedMaxIterations, PLAN_FIRST_MAX_ITERATIONS)
+      : requestedMaxIterations;
 
   const events: AssistantEvent[] = [];
   // One assistant turn produces at most one document_versions row per
@@ -544,7 +554,9 @@ export async function runLLMStream(params: {
       tools: activeTools as OpenAIToolSchema[],
       maxIterations,
       apiKeys,
-      reasoning: params.reasoning ?? "high",
+      requirePlan: requirePlanFirst,
+      planSummaryNow,
+      reasoning: requirePlanFirst ? "low" : (params.reasoning ?? "high"),
       abortSignal: signal,
       callbacks: {
         onContentDelta: (delta) => {
@@ -783,8 +795,12 @@ export async function runLLMStream(params: {
         if (askInputsEvents.length > 0) {
           throw new AssistantStreamAskInputsPause();
         }
-        if (planEvents.length > 0) {
+        const latestPlan = planEvents[planEvents.length - 1];
+        if (latestPlan && planHasPendingItems(latestPlan)) {
           throw new AssistantStreamPlanPause();
+        }
+        if (latestPlan) {
+          planSummaryNow.current = true;
         }
 
         // Index alignment would break if any tool branch skips its
@@ -806,10 +822,17 @@ export async function runLLMStream(params: {
         return calls.map((c) => ({
           tool_use_id: c.id,
           content:
-            resultByCallId.get(c.id) ??
-            JSON.stringify({
-              error: `Tool '${c.name}' is not available.`,
-            }),
+            planSummaryNow.current &&
+            (c.name === "create_plan" || c.name === "update_plan")
+              ? JSON.stringify({
+                  ok: true,
+                  plan_complete: true,
+                  instruction: PLAN_COMPLETE_SUMMARY,
+                })
+              : (resultByCallId.get(c.id) ??
+                JSON.stringify({
+                  error: `Tool '${c.name}' is not available.`,
+                })),
         }));
       },
     });

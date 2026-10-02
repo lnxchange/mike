@@ -206,6 +206,35 @@ describe("auth routes", () => {
     );
   });
 
+  it("reconnects Microsoft with a sign-in instead of manual linking", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    authClient.auth.getUser.mockResolvedValue({
+      data: { user },
+      error: null,
+    });
+    authClient.auth.signInWithOAuth.mockResolvedValue({
+      data: { url: "https://login.microsoftonline.test/authorize" },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .send({ provider: "azure", intent: "link", next: "/settings/security" });
+
+    expect(response.status).toBe(200);
+    expect(authClient.auth.linkIdentity).not.toHaveBeenCalled();
+    expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "azure",
+      options: {
+        redirectTo:
+          "https://app.example.test/auth/callback?next=%2Fsettings%2Fsecurity",
+        skipBrowserRedirect: true,
+        scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
+      },
+    });
+  });
+
   it("reports whether Microsoft login is enabled", async () => {
     process.env.MICROSOFT_OAUTH_ENABLED = "true";
     const response = await request(app)
