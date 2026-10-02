@@ -17,7 +17,7 @@ function stubSelection(options: {
         rangeCount: options.rangeCount ?? (options.collapsed ? 0 : 1),
         toString: () => options.text ?? "selected",
         anchorNode: options.anchor ?? document.body,
-    } as Selection);
+    } as unknown as Selection);
 }
 
 describe("text selection backdrop suspension", () => {
@@ -95,7 +95,7 @@ describe("text selection backdrop suspension", () => {
                 rangeCount: 1,
                 toString: () => "parties",
                 anchorNode: text,
-            } as Selection),
+            } as unknown as Selection),
         ).toBe(true);
         expect(
             elementContainsTextSelection(scroller, {
@@ -103,7 +103,7 @@ describe("text selection backdrop suspension", () => {
                 rangeCount: 0,
                 toString: () => "",
                 anchorNode: text,
-            } as Selection),
+            } as unknown as Selection),
         ).toBe(false);
 
         scroller.remove();
