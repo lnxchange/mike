@@ -50,6 +50,11 @@ export {
 } from "./chat.turnRegistry";
 export { type PreparedChatStream, prepareChatStream } from "./chat.prepare";
 export {
+    schedulePlanContinuation,
+    type PlanContinuationRequest,
+} from "./chat.planRun";
+export { decidePlanContinuation } from "./engine/tools/planTools";
+export {
   devLog,
   appendAssistantEventsToMessage,
   AssistantStreamError,

@@ -276,6 +276,10 @@ export async function runLLMStream(params: {
    *  here so that the same nonce fences both the system-prompt filenames
    *  (added by buildMessages) and the document bodies returned by tools. */
   nonce?: string;
+  /** Reuse this id so update_plan replaces the card instead of adding one. */
+  planEventId?: string;
+  /** Continuation slices stay on the same response, so they skip the pause line. */
+  suppressPlanPauseContent?: boolean;
 }): Promise<{
   fullText: string;
   events: AssistantEvent[];
@@ -684,6 +688,9 @@ export async function runLLMStream(params: {
           apiKeys,
           nonce,
           auLegislationTurnState,
+          params.planEventId
+            ? { planEventId: params.planEventId }
+            : undefined,
         );
         throwIfAborted(signal);
         for (const r of docsRead) {
@@ -843,6 +850,7 @@ export async function runLLMStream(params: {
       // working the rest of the job in this same turn.
       if (
         isPlanPause(err) &&
+        !params.suppressPlanPauseContent &&
         !events.some(
           (event) => event.type === "content" && event.text.trim().length > 0,
         )

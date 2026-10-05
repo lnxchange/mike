@@ -67,8 +67,10 @@ import {
     getRunningTurn,
     subscribeToTurn,
     activeTurnFromChatRow,
+    schedulePlanContinuation,
     type ChatTurnLease,
 } from "./chat.service";
+import { decidePlanContinuation } from "./engine/tools/planTools";
 
 export const chatRouter = Router();
 
@@ -215,6 +217,74 @@ chatRouter.get(
                 resolve();
             });
         });
+    }),
+);
+
+// POST /chat/:chatId/plan/continue — run the next slice of an unfinished plan.
+// No user message is stored. A run the server already holds is returned as-is.
+chatRouter.post(
+    "/:chatId/plan/continue",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId } = req.params;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+        if (!can(access.projectRole, "content.edit")) {
+            return void res.status(403).json({
+                detail: "You do not have permission to modify this chat",
+            });
+        }
+
+        const active = activeTurnFromChatRow(access.chat);
+        if (active?.assistantMessageId) {
+            return void res.status(202).json({
+                assistant_message_id: active.assistantMessageId,
+            });
+        }
+
+        const messages = await getChatMessages(db, chatId);
+        let assistantMessageId: string | null = null;
+        let events: unknown[] = [];
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const row = messages[index] as {
+                id?: unknown;
+                role?: unknown;
+                content?: unknown;
+            };
+            if (row?.role !== "assistant" || typeof row.id !== "string") continue;
+            assistantMessageId = row.id;
+            events = Array.isArray(row.content) ? row.content : [];
+            break;
+        }
+        if (!assistantMessageId) {
+            return void res.status(404).json({ detail: "Chat not found" });
+        }
+
+        const decision = decidePlanContinuation({
+            events,
+            slicesCompleted: 0,
+            previousStatusKey: null,
+            userResume: true,
+        });
+        if (!decision.continue) {
+            return void res.json({ continued: false, reason: decision.stop });
+        }
+
+        schedulePlanContinuation({
+            db,
+            userId,
+            userEmail,
+            chatId,
+            assistantMessageId,
+            slicesCompleted: 0,
+            previousStatusKey: null,
+            userResume: true,
+        });
+        res.status(202).json({ assistant_message_id: assistantMessageId });
     }),
 );
 
@@ -599,6 +669,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
     let memoryTurnScheduled = false;
     let turnLease: ChatTurnLease | null = null;
+    let planHandoffId: string | null = null;
 
     devLog("[chat/stream] starting LLM stream", {
         apiMessageCount: apiMessages.length,
@@ -881,6 +952,18 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 },
                 persistedEvents,
             );
+            const handoffId =
+                assistantMessageId ??
+                askInputsResponse?.assistant_message_id ??
+                null;
+            const continuation = decidePlanContinuation({
+                events: persistedEvents,
+                slicesCompleted: 1,
+                previousStatusKey: null,
+            });
+            if (handoffId && !turnSignal.aborted && continuation.continue) {
+                planHandoffId = handoffId;
+            }
             write("data: [DONE]\n\n");
         } catch (err) {
             if (isAbortError(err)) {
@@ -986,6 +1069,17 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         }
     } finally {
         if (turnLease) await releaseChatTurn(db, turnLease);
+        if (planHandoffId) {
+            schedulePlanContinuation({
+                db,
+                userId,
+                userEmail,
+                chatId,
+                assistantMessageId: planHandoffId,
+                slicesCompleted: 1,
+                previousStatusKey: null,
+            });
+        }
         if (memoryTurn && !memoryTurnScheduled) {
             try {
                 await releaseMemoryConversationTurn({

@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   cancelChatTurn,
+  continueChatPlan,
   getChat,
   streamChat,
   streamChatTurn,
@@ -11,9 +12,14 @@ import {
 } from "@/app/lib/mikeApi";
 import { assistantHistoryContent } from "@/app/lib/assistantHistoryContent";
 import {
-  CONTINUE_PLAN_MESSAGE,
-  shouldAutoContinue,
-} from "@/app/lib/autoContinuePlan";
+  planSettleTitlePrefix,
+  settlePlanNotification,
+} from "@/app/lib/planNotification";
+import {
+  planSettleReason,
+  shouldFollowServerPlan,
+  shouldResumeIdlePlan,
+} from "@/app/lib/planRun";
 import { readSseFrames } from "@/app/lib/sse";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { isPanelDocument } from "@/app/components/shared/types";
@@ -39,6 +45,8 @@ interface UseAssistantChatOptions {
   initialMessages?: Message[];
   chatId?: string;
   projectId?: string;
+  /** Chat name used when a background plan run settles. */
+  chatTitle?: string | null;
   /** Adopts the server id as soon as it arrives, without navigation. */
   onChatCreated?: (chatId: string) => void;
 }
@@ -109,6 +117,7 @@ export function useAssistantChat({
   initialMessages = [],
   chatId: initialChatId,
   projectId,
+  chatTitle,
   onChatCreated,
 }: UseAssistantChatOptions = {}) {
   const router = useRouter();
@@ -172,7 +181,10 @@ export function useAssistantChat({
   }, [threadKey]);
 
   const eventsRef = useRef<AssistantEvent[]>([]);
-  const autoContinueCountRef = useRef(0);
+  const chatTitleRef = useRef(chatTitle);
+  chatTitleRef.current = chatTitle;
+  const titlePrefixRef = useRef("");
+  const askedNotificationRef = useRef(false);
 
   const updateLatestAssistantMessage = (
     updater: (message: Message) => Message,
@@ -404,7 +416,6 @@ export function useAssistantChat({
       resumeTurn?: { assistantMessageId: string };
       /** Transcript to send when chaining a slice before React state commits. */
       history?: Message[];
-      autoContinue?: boolean;
       /** Chat created during the previous slice, before state has committed. */
       continueChatId?: string;
     },
@@ -413,7 +424,6 @@ export function useAssistantChat({
     const turnChatId = opts?.continueChatId ?? chatId;
     if (!resumeTurn && !message.content.trim()) return null;
     if (resumeTurn && !turnChatId) return null;
-    if (!opts?.autoContinue) autoContinueCountRef.current = 0;
 
     setIsResponseLoading(true);
 
@@ -460,12 +470,26 @@ export function useAssistantChat({
       : apiMessagesForTurn;
 
     if (resumeTurn) {
-      // The running row from GET /chat becomes the live placeholder; its
-      // events are rebuilt from the replayed frames. Functional update: the
-      // host usually calls this right after setMessages(loaded), before
-      // this closure has seen that render.
-      setMessages((prev) =>
-        prev.some((item) => item.id === resumeTurn.assistantMessageId)
+      // A continuation already has the earlier slices on the message. Keep
+      // those and append the live frames. A first slice has no events yet,
+      // so the replay rebuilds it. Functional update: the host usually calls
+      // this right after setMessages(loaded), before this closure has seen
+      // that render.
+      setMessages((prev) => {
+        const existing = prev.find(
+          (item) => item.id === resumeTurn.assistantMessageId,
+        );
+        const kept = existing?.events ?? [];
+        if (kept.length > 0) {
+          eventsRef.current = kept;
+          return prev.map((item) =>
+            item.id === resumeTurn.assistantMessageId
+              ? { ...item, status: undefined }
+              : item,
+          );
+        }
+        eventsRef.current = [];
+        return prev.some((item) => item.id === resumeTurn.assistantMessageId)
           ? prev.map((item) =>
               item.id === resumeTurn.assistantMessageId
                 ? {
@@ -486,8 +510,8 @@ export function useAssistantChat({
                 citations: [],
                 events: [],
               },
-            ],
-      );
+            ];
+      });
     } else {
       setMessages(
         optimisticResponseEvent
@@ -506,12 +530,14 @@ export function useAssistantChat({
 
     let streamedChatId: string | null = null;
 
-    eventsRef.current =
-      optimisticResponseEvent && !resumeTurn
-        ? ([...displayMessages]
-            .reverse()
-            .find((item) => item.role === "assistant")?.events ?? [])
-        : [];
+    if (!resumeTurn) {
+      eventsRef.current =
+        optimisticResponseEvent
+          ? ([...displayMessages]
+              .reverse()
+              .find((item) => item.role === "assistant")?.events ?? [])
+          : [];
+    }
 
     const generation = ++requestGenerationRef.current;
     // A previous viewer loop on this hook exits on its next frame; the turn
@@ -621,7 +647,6 @@ export function useAssistantChat({
           return handleChat(message, {
             resumeTurn: { assistantMessageId: body.assistant_message_id },
             ...(turnChatId ? { continueChatId: turnChatId } : {}),
-            ...(opts?.autoContinue ? { autoContinue: true } : {}),
           });
         }
         throw new Error(`Chat request failed with status ${response.status}`);
@@ -703,8 +728,13 @@ export function useAssistantChat({
               events: snapshot,
               error: message,
             }));
-            setIsResponseLoading(false);
-            setIsLoadingCitations(false);
+            if (
+              message !==
+              "The response stopped after reading documents and before writing the answer. Ask me to continue. I will write from what was already read rather than starting the research again."
+            ) {
+              setIsResponseLoading(false);
+              setIsLoadingCitations(false);
+            }
             continue;
           }
 
@@ -1939,12 +1969,25 @@ export function useAssistantChat({
               ];
             });
             if (eventId && items.length > 0) {
-              pushEvent({
+              const planEvent: AssistantEvent = {
                 type: "plan",
                 event_id: eventId,
                 title,
                 items,
-              });
+              };
+              const replaced = updateMatchingEvent(
+                (event) => event.type === "plan" && event.event_id === eventId,
+                () => planEvent,
+              );
+              if (!replaced) pushEvent(planEvent);
+              if (
+                !askedNotificationRef.current &&
+                typeof Notification !== "undefined" &&
+                Notification.permission === "default"
+              ) {
+                askedNotificationRef.current = true;
+                void Notification.requestPermission().catch(() => {});
+              }
             }
             continue;
           }
@@ -2485,14 +2528,17 @@ export function useAssistantChat({
       finalizeStreamingContent();
       finalizeStreamingReasoning();
       const finishedEvents = [...eventsRef.current];
-      const keepGoing = shouldAutoContinue({
-        events: finishedEvents,
-        aborted: controller.signal.aborted,
-        continues: autoContinueCountRef.current,
-      });
-      if (!keepGoing) {
+      const followChatId = streamedChatId || turnChatId || null;
+      const followMessageId = activeTurnRef.current?.assistantMessageId ?? null;
+      const follow =
+        !!followChatId &&
+        !!followMessageId &&
+        !controller.signal.aborted &&
+        shouldFollowServerPlan(finishedEvents);
+      if (!follow) {
         setIsResponseLoading(false);
         setIsLoadingCitations(false);
+        publishPlanSettlement(finishedEvents);
       }
       activeTurnRef.current = null;
 
@@ -2516,26 +2562,19 @@ export function useAssistantChat({
 
       await loadChats();
 
-      if (keepGoing && isCurrentRequest()) {
-        autoContinueCountRef.current += 1;
-        return handleChat(
-          { role: "user", content: CONTINUE_PLAN_MESSAGE },
-          {
-            history: [
-              ...apiMessagesForTurn,
-              {
-                role: "assistant",
-                content: assistantHistoryContent({
-                  content: "",
-                  events: finishedEvents,
-                }),
-                events: finishedEvents,
-              },
-            ],
-            autoContinue: true,
-            continueChatId: streamedChatId || turnChatId,
-          },
+      if (follow && followChatId && followMessageId && isCurrentRequest()) {
+        const attached = await followServerPlan(
+          followChatId,
+          followMessageId,
+          generation,
+          controller.signal,
         );
+        if (attached) return followChatId;
+        if (isCurrentRequest()) {
+          setIsResponseLoading(false);
+          setIsLoadingCitations(false);
+          publishPlanSettlement(eventsRef.current);
+        }
       }
 
       return streamedChatId || null;
@@ -2567,6 +2606,145 @@ export function useAssistantChat({
       }
     }
   };
+
+  const publishPlanSettlement = (events: AssistantEvent[]) => {
+    const reason = planSettleReason(events);
+    if (!reason || typeof document === "undefined") return;
+    const permission =
+      typeof Notification === "undefined"
+        ? "unsupported"
+        : Notification.permission;
+    const settled = settlePlanNotification({
+      hidden: document.hidden,
+      permission,
+      title: chatTitleRef.current?.trim() || "Libris",
+      reason,
+      currentTitle: document.title,
+    });
+    if (settled.mode === "notification") {
+      try {
+        new Notification(settled.title, { body: settled.body });
+      } catch {
+        /* the browser refused the notification */
+      }
+      return;
+    }
+    if (settled.mode === "title") {
+      titlePrefixRef.current = planSettleTitlePrefix(reason);
+      document.title = settled.title;
+    }
+  };
+
+  const followServerPlan = async (
+    targetChatId: string,
+    assistantMessageId: string,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      if (requestGenerationRef.current !== generation || signal.aborted) {
+        return false;
+      }
+      let loaded: Awaited<ReturnType<typeof getChat>>;
+      try {
+        loaded = await getChat(targetChatId);
+      } catch {
+        return false;
+      }
+      if (requestGenerationRef.current !== generation || signal.aborted) {
+        return false;
+      }
+      const running = findRunningTurn(loaded.messages);
+      if (running?.id) {
+        await handleChat(
+          { role: "user", content: "" },
+          {
+            resumeTurn: { assistantMessageId: running.id },
+            continueChatId: targetChatId,
+          },
+        );
+        return true;
+      }
+      const latest = [...loaded.messages]
+        .reverse()
+        .find((item) => item.role === "assistant");
+      if (!shouldFollowServerPlan(latest?.events ?? [])) {
+        eventsRef.current = latest?.events ?? [];
+        setMessages(loaded.messages);
+        return false;
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 300);
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    }
+    return false;
+  };
+
+  const continuePlan = async (): Promise<void> => {
+    const id = initialChatId ?? chatId;
+    if (!id) return;
+    setIsResponseLoading(true);
+    try {
+      const result = await continueChatPlan(id);
+      if (!result.continued) {
+        setIsResponseLoading(false);
+        const latest = [...messages]
+          .reverse()
+          .find((item) => item.role === "assistant");
+        publishPlanSettlement(latest?.events ?? []);
+        return;
+      }
+      const generation = requestGenerationRef.current;
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const attached = await followServerPlan(
+        id,
+        result.assistantMessageId,
+        generation,
+        controller.signal,
+      );
+      if (!attached && requestGenerationRef.current === generation) {
+        setIsResponseLoading(false);
+        publishPlanSettlement(eventsRef.current);
+      }
+    } catch {
+      setIsResponseLoading(false);
+    }
+  };
+
+  const resumeIdlePlan = (loaded: Message[]) => {
+    if (findRunningTurn(loaded) || !shouldResumeIdlePlan(loaded)) return;
+    void continuePlan();
+  };
+
+  useEffect(() => {
+    const restore = () => {
+      const prefix = titlePrefixRef.current;
+      if (!prefix) return;
+      if (document.title.startsWith(prefix)) {
+        document.title = document.title.slice(prefix.length);
+      }
+      titlePrefixRef.current = "";
+    };
+    const onVisibility = () => {
+      if (!document.hidden) restore();
+    };
+    window.addEventListener("focus", restore);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", restore);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
   const handleNewChat = async (
     message: Message,
@@ -2605,6 +2783,8 @@ export function useAssistantChat({
     handleChat,
     handleNewChat,
     attachToTurn,
+    continuePlan,
+    resumeIdlePlan,
     setMessages,
     cancel,
     resetChat: () => {

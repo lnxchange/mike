@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVE_PLAN_MARKER,
   PLAN_CONTINUE_MESSAGE,
+  PLAN_PAUSE_CONTENT,
+  PLAN_SLICE_CAP,
   PLAN_WORD_THRESHOLD,
+  decidePlanContinuation,
   formatActivePlanBlock,
   lastUserHasWorkflow,
   latestPlanEvent,
+  mergePlanSliceEvents,
   messagesHaveActivePlan,
   normalizePlanEvent,
   planHasPendingItems,
@@ -63,6 +67,21 @@ describe("normalizePlanEvent", () => {
       "completed",
       "in_progress",
     ]);
+    expect(
+      normalizePlanEvent(
+        {
+          items: [
+            {
+              id: "read",
+              content: "Read the incoming emails",
+              status: "completed",
+            },
+          ],
+        },
+        "update",
+        { eventId: "plan-1" },
+      )?.event_id,
+    ).toBe("plan-1");
   });
 
   it("rejects an empty plan", () => {
@@ -193,5 +212,139 @@ describe("turnRequiresPlan", () => {
         { role: "user", content: review },
       ]),
     ).toBe(false);
+  });
+});
+
+const pendingPlan = {
+  type: "plan" as const,
+  event_id: "plan-1",
+  title: "Review",
+  items: [
+    { id: "read", content: "Read the emails", status: "completed" as const },
+    { id: "note", content: "Draft the note", status: "pending" as const },
+  ],
+};
+
+describe("decidePlanContinuation", () => {
+  it("continues a pending plan and stops when the plan is finished", () => {
+    expect(
+      decidePlanContinuation({
+        events: [pendingPlan],
+        slicesCompleted: 1,
+        previousStatusKey: null,
+      }).continue,
+    ).toBe(true);
+    expect(
+      decidePlanContinuation({
+        events: [
+          {
+            ...pendingPlan,
+            items: pendingPlan.items.map((item) => ({
+              ...item,
+              status: "completed" as const,
+            })),
+          },
+        ],
+        slicesCompleted: 2,
+        previousStatusKey: null,
+      }),
+    ).toEqual({ continue: false, stop: "complete" });
+  });
+
+  it("stops for a question, a cancel, a hard error, the cap, or a stall", () => {
+    expect(
+      decidePlanContinuation({
+        events: [
+          pendingPlan,
+          { type: "ask_inputs", event_id: "ask", items: [] },
+        ],
+        slicesCompleted: 1,
+        previousStatusKey: null,
+      }).stop,
+    ).toBe("ask_inputs");
+    expect(
+      decidePlanContinuation({
+        events: [
+          pendingPlan,
+          { type: "content", text: "Cancelled by user." },
+        ],
+        slicesCompleted: 1,
+        previousStatusKey: null,
+      }).stop,
+    ).toBe("cancelled");
+    expect(
+      decidePlanContinuation({
+        events: [
+          pendingPlan,
+          { type: "error", message: "Sorry, something went wrong." },
+        ],
+        slicesCompleted: 1,
+        previousStatusKey: null,
+      }).stop,
+    ).toBe("error");
+    expect(
+      decidePlanContinuation({
+        events: [pendingPlan],
+        slicesCompleted: PLAN_SLICE_CAP,
+        previousStatusKey: null,
+      }).stop,
+    ).toBe("cap");
+    expect(
+      decidePlanContinuation({
+        events: [pendingPlan],
+        slicesCompleted: 2,
+        previousStatusKey: pendingPlan.items
+          .map((item) => `${item.id}:${item.status}`)
+          .join("\n"),
+      }).stop,
+    ).toBe("stall");
+  });
+
+  it("lets Continue grant another run after a cap or a stall", () => {
+    expect(
+      decidePlanContinuation({
+        events: [pendingPlan],
+        slicesCompleted: PLAN_SLICE_CAP,
+        previousStatusKey: pendingPlan.items
+          .map((item) => `${item.id}:${item.status}`)
+          .join("\n"),
+        userResume: true,
+      }).continue,
+    ).toBe(true);
+  });
+});
+
+describe("mergePlanSliceEvents", () => {
+  it("keeps one plan id and drops the between-slice pause line", () => {
+    const merged = mergePlanSliceEvents(
+      [pendingPlan, { type: "content", text: "Read the first email." }],
+      [
+        {
+          ...pendingPlan,
+          event_id: "plan-new",
+          items: [
+            { id: "read", content: "Read the emails", status: "completed" },
+            { id: "note", content: "Draft the note", status: "in_progress" },
+          ],
+        },
+        { type: "content", text: PLAN_PAUSE_CONTENT },
+        { type: "content", text: "Drafted the note." },
+      ],
+    );
+    const plans = merged.filter((event) => event.type === "plan");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ event_id: "plan-1" });
+    expect(
+      merged.some(
+        (event) =>
+          event.type === "content" && event.text === PLAN_PAUSE_CONTENT,
+      ),
+    ).toBe(false);
+    expect(
+      merged.some(
+        (event) =>
+          event.type === "content" && event.text === "Drafted the note.",
+      ),
+    ).toBe(true);
   });
 });

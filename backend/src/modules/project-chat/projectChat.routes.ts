@@ -34,6 +34,8 @@ import {
     claimChatTurn,
     discardChatInputMessage,
     releaseChatTurn,
+    decidePlanContinuation,
+    schedulePlanContinuation,
     turnInProgressBody,
     type ChatTurnLease,
 } from "../chat/chat.service";
@@ -157,6 +159,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
     let memoryTurnScheduled = false;
     let turnLease: ChatTurnLease | null = null;
+    let planHandoffId: string | null = null;
 
     try {
         // One turn per chat. A second request while a turn is running would
@@ -364,6 +367,18 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 },
                 persistedEvents,
             );
+            const handoffId =
+                assistantMessageId ??
+                askInputsResponse?.assistant_message_id ??
+                null;
+            const continuation = decidePlanContinuation({
+                events: persistedEvents,
+                slicesCompleted: 1,
+                previousStatusKey: null,
+            });
+            if (handoffId && !turnSignal.aborted && continuation.continue) {
+                planHandoffId = handoffId;
+            }
             write("data: [DONE]\n\n");
         } catch (err) {
             if (isAbortError(err)) {
@@ -478,6 +493,17 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         }
     } finally {
         if (turnLease) await releaseChatTurn(db, turnLease);
+        if (planHandoffId) {
+            schedulePlanContinuation({
+                db,
+                userId,
+                userEmail,
+                chatId,
+                assistantMessageId: planHandoffId,
+                slicesCompleted: 1,
+                previousStatusKey: null,
+            });
+        }
         if (memoryTurn && !memoryTurnScheduled) {
             try {
                 await releaseMemoryConversationTurn({

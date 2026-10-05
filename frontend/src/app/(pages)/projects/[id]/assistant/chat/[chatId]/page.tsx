@@ -396,6 +396,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     isResponseLoading,
     handleChat,
     attachToTurn,
+    continuePlan,
+    resumeIdlePlan,
     setMessages,
     cancel,
     resetChat,
@@ -404,6 +406,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     onChatCreated: adoptCreatedChat,
     chatId: activeChatId || undefined,
     projectId,
+    chatTitle,
   });
   const availableProjectChats = useMemo(() => {
     const byId = new Map<string, Chat>();
@@ -625,6 +628,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         // mid-turn) is shown live again rather than as unanswered.
         const running = findRunningTurn(loaded);
         if (running?.id) void attachToTurn(running.id);
+        else resumeIdlePlan(loaded);
         setProjectChats((current) => {
           if (!current) return current;
           const nextChat = { ...chat, project_id: projectId };
@@ -1888,10 +1892,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                   isResponseLoading
                     ? undefined
                     : () => {
-                        void handleSubmit({
-                          role: "user",
-                          content: "Continue with the next step.",
-                        });
+                        void continuePlan();
                       }
                 }
                 onCancel={cancel}

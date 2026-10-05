@@ -2383,6 +2383,25 @@ export async function streamChat(payload: {
  * so far, then tails the rest. A 202 body `{ status: "running" | "finished" }`
  * means nothing to attach to here; poll `getChat` instead.
  */
+export async function continueChatPlan(
+    chatId: string,
+): Promise<
+    | { continued: true; assistantMessageId: string }
+    | { continued: false }
+> {
+    const raw = await apiRequest<{
+        assistant_message_id?: string;
+        continued?: boolean;
+    }>(`/chat/${chatId}/plan/continue`, { method: "POST" });
+    if (typeof raw.assistant_message_id === "string") {
+        return {
+            continued: true,
+            assistantMessageId: raw.assistant_message_id,
+        };
+    }
+    return { continued: false };
+}
+
 export async function streamChatTurn(payload: {
     chatId: string;
     assistantMessageId: string;

@@ -827,4 +827,117 @@ describe("useAssistantChat SSE parsing", () => {
         expect(fetchMock).not.toHaveBeenCalled();
         expect(result.current.messages).toEqual([]);
     });
+
+    it("follows the server plan and does not send Continue with the next step", async () => {
+        const plan = {
+            type: "plan",
+            event_id: "plan-1",
+            title: "New job",
+            items: [{ id: "read", content: "Read the emails", status: "pending" }],
+        };
+        const donePlan = {
+            ...plan,
+            items: [{ id: "read", content: "Read the emails", status: "completed" }],
+        };
+        let transcriptReads = 0;
+        fetchMock.mockImplementation((url: string) => {
+            const target = String(url);
+            if (target.endsWith("/chat/chat-1/turns/asst-1/stream")) {
+                return Promise.resolve(
+                    sseResponse([
+                        `data: ${JSON.stringify({ ...plan, items: [{ id: "read", content: "Read the emails", status: "in_progress" }] })}\n\n`,
+                        "data: [DONE]\n\n",
+                    ]),
+                );
+            }
+            if (target.endsWith("/chat/chat-1")) {
+                transcriptReads += 1;
+                const running = transcriptReads === 1;
+                return Promise.resolve(
+                    new Response(
+                        JSON.stringify({
+                            chat: { id: "chat-1", title: "AML" },
+                            messages: [
+                                {
+                                    id: "asst-1",
+                                    chat_id: "chat-1",
+                                    role: "assistant",
+                                    ...(running ? { status: "running" } : {}),
+                                    content: [running ? plan : donePlan],
+                                    created_at: "2026-10-05T00:00:00Z",
+                                },
+                            ],
+                        }),
+                        { status: 200, headers: { "Content-Type": "application/json" } },
+                    ),
+                );
+            }
+            return Promise.resolve(
+                sseResponse([
+                    'data: {"type":"chat_id","chatId":"chat-1","assistantMessageId":"asst-1"}\n\n',
+                    `data: ${JSON.stringify(plan)}\n\n`,
+                    "data: [DONE]\n\n",
+                ]),
+            );
+        });
+        const { result } = renderHook(() =>
+            useAssistantChat({ chatId: "chat-1" }),
+        );
+        await act(async () => {
+            await result.current.handleChat(userMessage("Process the job"));
+        });
+        const bodies = fetchMock.mock.calls.map(
+            (call) => (call[1] as RequestInit | undefined)?.body,
+        );
+        expect(JSON.stringify(bodies)).not.toContain(
+            "Continue with the next step.",
+        );
+        expect(
+            fetchMock.mock.calls.some((call) =>
+                String(call[0]).includes("/turns/asst-1/stream"),
+            ),
+        ).toBe(true);
+        const plans = result.current.messages
+            .at(-1)
+            ?.events?.filter((event) => event.type === "plan");
+        expect(plans).toHaveLength(1);
+        expect(plans?.[0]).toMatchObject({ event_id: "plan-1" });
+        expect(result.current.isResponseLoading).toBe(false);
+    });
+
+    it("notifies when a finished plan settles in a hidden tab", async () => {
+        const created: Array<{ title: string; body?: string }> = [];
+        class FakeNotification {
+            static permission: NotificationPermission = "granted";
+            constructor(title: string, options?: NotificationOptions) {
+                created.push({ title, body: options?.body });
+            }
+        }
+        vi.stubGlobal("Notification", FakeNotification);
+        Object.defineProperty(document, "hidden", {
+            configurable: true,
+            value: true,
+        });
+        fetchMock.mockResolvedValue(
+            sseResponse([
+                'data: {"type":"chat_id","chatId":"chat-1","assistantMessageId":"asst-1"}\n\n',
+                'data: {"type":"plan","event_id":"plan-1","title":"AML","items":[{"id":"read","content":"Read the emails","status":"completed"}]}\n\n',
+                "data: [DONE]\n\n",
+            ]),
+        );
+        const { result } = renderHook(() =>
+            useAssistantChat({ chatId: "chat-1", chatTitle: "AML meeting" }),
+        );
+        await act(async () => {
+            await result.current.handleChat(userMessage("Process the job"));
+        });
+        expect(created).toEqual([
+            { title: "AML meeting", body: "The plan is finished." },
+        ]);
+        expect(result.current.isResponseLoading).toBe(false);
+        Object.defineProperty(document, "hidden", {
+            configurable: true,
+            value: false,
+        });
+    });
 });

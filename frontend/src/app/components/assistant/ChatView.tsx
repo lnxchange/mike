@@ -65,6 +65,8 @@ interface Props {
     },
   ) => Promise<string | null>;
   cancel: () => void;
+  /** Starts the next slice of a plan the server has stopped. */
+  continuePlan?: () => void;
   /**
    * Whether the caller may write in this chat. The server serves the
    * standing on GET /chat/:id; surfaces that know it must pass it, so a
@@ -107,6 +109,7 @@ export function ChatView({
   isResponseLoading,
   handleChat,
   cancel,
+  continuePlan,
   canSend,
   accessResolved = true,
   onInitialSubmit,
@@ -972,13 +975,10 @@ export function ChatView({
                         );
                       }}
                       onContinue={
-                        isResponseLoading
+                        isResponseLoading || !continuePlan
                           ? undefined
                           : () => {
-                              void handleChat({
-                                role: "user",
-                                content: "Continue with the next step.",
-                              });
+                              continuePlan();
                             }
                       }
                       onCancel={cancel}

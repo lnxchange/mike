@@ -435,6 +435,7 @@ export async function runToolCalls(
   apiKeys?: import("../../../../lib/llm").UserApiKeys,
   nonce?: string,
   auLegislationState?: AuLegislationTurnState,
+  options?: { planEventId?: string },
 ): Promise<{
   toolResults: unknown[];
   docsRead: {
@@ -669,13 +670,17 @@ export async function runToolCalls(
     }
 
     if (tc.function.name === "create_plan") {
-      const event = normalizePlanEvent(args, "create");
+      const event = normalizePlanEvent(args, "create", {
+        eventId: options?.planEventId,
+      });
       if (event) planEvents.push(event);
       continue;
     }
 
     if (tc.function.name === "update_plan") {
-      const event = normalizePlanEvent(args, "update");
+      const event = normalizePlanEvent(args, "update", {
+        eventId: options?.planEventId,
+      });
       if (event) {
         planEvents.push(event);
         toolResults.push({

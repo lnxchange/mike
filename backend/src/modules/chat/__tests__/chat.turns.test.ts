@@ -206,10 +206,14 @@ describe("withRunningTurnMessage", () => {
     });
   });
 
-  it("leaves the transcript alone when nothing is running or the row is already present", () => {
+  it("leaves the transcript alone when nothing is running", () => {
     const messages = [{ id: "asst-1", role: "assistant" }];
     expect(withRunningTurnMessage(messages, { id: "chat-1" })).toBe(messages);
+  });
+
+  it("marks an existing assistant row running when the lease points at it", () => {
     const now = new Date().toISOString();
+    const messages = [{ id: "asst-1", role: "assistant", content: [] }];
     expect(
       withRunningTurnMessage(messages, {
         id: "chat-1",
@@ -217,8 +221,12 @@ describe("withRunningTurnMessage", () => {
         active_turn_message_id: "asst-1",
         active_turn_started_at: now,
         active_turn_heartbeat_at: now,
-      }),
-    ).toBe(messages);
+      })[0],
+    ).toMatchObject({
+      id: "asst-1",
+      status: "running",
+      started_at: now,
+    });
   });
 });
 

@@ -18,14 +18,21 @@ export default function AssistantChatPage() {
         useChatHistoryContext();
 
     const initialMessages = newChatMessages ?? [];
+    const [chat, setChat] = useState<Chat | null>(null);
     const {
         messages,
         isResponseLoading,
         handleChat,
         attachToTurn,
+        continuePlan,
+        resumeIdlePlan,
         setMessages,
         cancel,
-    } = useAssistantChat({ initialMessages, chatId: id });
+    } = useAssistantChat({
+        initialMessages,
+        chatId: id,
+        chatTitle: chat?.title,
+    });
 
     const hasAutoSent = useRef(false);
     const hasLoaded = useRef(false);
@@ -44,7 +51,6 @@ export default function AssistantChatPage() {
     const [accessResolved, setAccessResolved] = useState<boolean>(
         initialMessages.length > 0,
     );
-    const [chat, setChat] = useState<Chat | null>(null);
     const [chatModel, setChatModel] = useState<string | null | undefined>(
         initialMessages.length > 0
             ? (initialMessages[0]?.model ?? null)
@@ -81,6 +87,7 @@ export default function AssistantChatPage() {
                     setMessages(loaded);
                     const running = findRunningTurn(loaded);
                     if (running?.id) void attachToTurn(running.id);
+                    else resumeIdlePlan(loaded);
                 } else {
                     router.replace("/assistant");
                 }
@@ -112,6 +119,7 @@ export default function AssistantChatPage() {
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}
             cancel={cancel}
+            continuePlan={continuePlan}
             canSend={canSend}
             accessResolved={accessResolved}
         />

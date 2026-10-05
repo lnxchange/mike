@@ -1,4 +1,10 @@
-import type { PlanEvent, PlanItem, PlanItemStatus } from "@mike/contracts";
+import type {
+  AssistantEvent,
+  PlanEvent,
+  PlanItem,
+  PlanItemStatus,
+} from "@mike/contracts";
+import { INCOMPLETE_TURN_MESSAGE } from "../incompleteTurn";
 
 export const CREATE_PLAN_REQUIRED_ERROR =
   "Call create_plan with the remaining steps, then stop. Do not draft, copy, edit, or generate documents in this response.";
@@ -10,8 +16,11 @@ export const PLAN_PAUSE_CONTENT =
 
 export const PLAN_CONTINUE_MESSAGE = "Continue with the next step.";
 
-/** A first look, then create_plan. The answer waits for Continue. */
+/** A first look, then create_plan. The server runs the remaining slices. */
 export const PLAN_FIRST_MAX_ITERATIONS = 2;
+
+/** Opening slice plus continuations. Past this, the run stops for Continue. */
+export const PLAN_SLICE_CAP = 16;
 
 /** Short questions below this length, with no documents, may answer directly. */
 export const PLAN_WORD_THRESHOLD = 25;
@@ -173,7 +182,7 @@ export function parsePlanEvent(value: unknown): PlanEvent | null {
   };
 }
 
-export function latestPlanEvent(events: unknown[]): PlanEvent | null {
+export function latestPlanEvent(events: readonly unknown[]): PlanEvent | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const plan = parsePlanEvent(events[i]);
     if (plan) return plan;
@@ -181,9 +190,141 @@ export function latestPlanEvent(events: unknown[]): PlanEvent | null {
   return null;
 }
 
+export function planStatusKey(
+  plan: Pick<PlanEvent, "items"> | null | undefined,
+): string {
+  if (!plan) return "";
+  return plan.items.map((item) => `${item.id}:${item.status}`).join("\n");
+}
+
+const INTERRUPTED_TURN_PREFIX =
+  "The response was interrupted before it finished.";
+
+export type PlanSliceStop =
+  | "complete"
+  | "ask_inputs"
+  | "cancelled"
+  | "error"
+  | "cap"
+  | "stall"
+  | "no_plan";
+
+export function eventsLookCancelled(events: readonly unknown[]): boolean {
+  return events.some((event) => {
+    if (!event || typeof event !== "object") return false;
+    const row = event as { type?: unknown; text?: unknown; message?: unknown };
+    if (row.type === "content" && typeof row.text === "string") {
+      return row.text.includes("Cancelled by user.");
+    }
+    return (
+      row.type === "error" &&
+      typeof row.message === "string" &&
+      row.message.startsWith(INTERRUPTED_TURN_PREFIX)
+    );
+  });
+}
+
+function isHardPlanError(event: unknown): boolean {
+  if (!event || typeof event !== "object") return false;
+  const row = event as { type?: unknown; message?: unknown };
+  if (row.type !== "error" || typeof row.message !== "string") return false;
+  if (row.message === INCOMPLETE_TURN_MESSAGE) return false;
+  if (row.message.startsWith(INTERRUPTED_TURN_PREFIX)) return false;
+  return true;
+}
+
+/**
+ * Whether the server should run another slice on the same assistant message.
+ * A user resume ignores the cap and a stall so Continue can grant another run.
+ */
+export function decidePlanContinuation(args: {
+  events: readonly unknown[];
+  cancelled?: boolean;
+  slicesCompleted: number;
+  previousStatusKey: string | null;
+  userResume?: boolean;
+}): { continue: boolean; stop: PlanSliceStop | null } {
+  if (args.cancelled || eventsLookCancelled(args.events)) {
+    return { continue: false, stop: "cancelled" };
+  }
+  if (args.events.some((event) => parseAskInputs(event))) {
+    return { continue: false, stop: "ask_inputs" };
+  }
+  if (args.events.some((event) => isHardPlanError(event))) {
+    return { continue: false, stop: "error" };
+  }
+  const plan = latestPlanEvent(args.events);
+  if (!plan) return { continue: false, stop: "no_plan" };
+  if (!planHasPendingItems(plan)) {
+    return { continue: false, stop: "complete" };
+  }
+  if (!args.userResume && args.slicesCompleted >= PLAN_SLICE_CAP) {
+    return { continue: false, stop: "cap" };
+  }
+  const key = planStatusKey(plan);
+  if (
+    !args.userResume &&
+    args.previousStatusKey !== null &&
+    args.previousStatusKey === key
+  ) {
+    return { continue: false, stop: "stall" };
+  }
+  return { continue: true, stop: null };
+}
+
+function parseAskInputs(event: unknown): boolean {
+  return (
+    !!event &&
+    typeof event === "object" &&
+    (event as { type?: unknown }).type === "ask_inputs"
+  );
+}
+
+/**
+ * One plan card on the assistant message. New slice events append, and the
+ * latest plan replaces the earlier one while keeping its id.
+ */
+export function mergePlanSliceEvents(
+  existing: AssistantEvent[],
+  incoming: AssistantEvent[],
+): AssistantEvent[] {
+  const existingPlan = latestPlanEvent(existing);
+  const incomingPlan = latestPlanEvent(incoming);
+  const plan = incomingPlan
+    ? {
+        ...incomingPlan,
+        event_id: existingPlan?.event_id ?? incomingPlan.event_id,
+      }
+    : existingPlan;
+  const kept = existing.filter((event) => event.type !== "plan");
+  const added = incoming.filter((event) => {
+    if (event.type === "plan") return false;
+    if (
+      event.type === "content" &&
+      event.text.trim() === PLAN_PAUSE_CONTENT
+    ) {
+      return false;
+    }
+    return true;
+  });
+  const merged = [...kept, ...added];
+  if (!plan) return merged;
+  const originalIndex = existing.findIndex((event) => event.type === "plan");
+  const before =
+    originalIndex >= 0
+      ? existing
+          .slice(0, originalIndex)
+          .filter((event) => event.type !== "plan").length
+      : merged.length;
+  const next = [...merged];
+  next.splice(Math.min(before, next.length), 0, plan);
+  return next;
+}
+
 export function normalizePlanEvent(
   args: Record<string, unknown>,
   mode: "create" | "update",
+  options?: { eventId?: string },
 ): PlanEvent | null {
   const title = cleanPlanString(args.title, "Plan");
   const rawItems = Array.isArray(args.items) ? args.items : [];
@@ -213,9 +354,10 @@ export function normalizePlanEvent(
   if (mode === "create" && items.every((item) => item.status === "pending")) {
     items[0] = { ...items[0]!, status: "in_progress" };
   }
+  const supplied = options?.eventId?.trim();
   return {
     type: "plan",
-    event_id: crypto.randomUUID(),
+    event_id: supplied || crypto.randomUUID(),
     title: title.slice(0, 120) || "Plan",
     items,
   };

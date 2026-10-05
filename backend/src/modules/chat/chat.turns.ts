@@ -270,8 +270,17 @@ export function withRunningTurnMessage<T extends { id?: unknown }>(
 ): Array<T | RunningAssistantMessage> {
   const active = activeTurnFromChatRow(chatRow);
   if (!active?.assistantMessageId) return messages;
-  if (messages.some((message) => message.id === active.assistantMessageId)) {
-    return messages;
+  const existingIndex = messages.findIndex(
+    (message) => message.id === active.assistantMessageId,
+  );
+  if (existingIndex >= 0) {
+    const next = messages.slice();
+    next[existingIndex] = {
+      ...messages[existingIndex],
+      status: "running",
+      started_at: active.startedAt,
+    } as T;
+    return next;
   }
   return [
     ...messages,

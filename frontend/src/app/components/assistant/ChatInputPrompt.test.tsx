@@ -220,4 +220,34 @@ describe("chat input prompts", () => {
         fireEvent.click(screen.getByRole("button", { name: "Continue" }));
         expect(onContinue).toHaveBeenCalledOnce();
     });
+
+    it("hides Continue while a plan run is still in progress", () => {
+        render(
+            input({
+                messages: [
+                    { role: "user", content: "Please process this new job." },
+                    {
+                        id: "assistant-1",
+                        role: "assistant",
+                        content: "",
+                        events: [
+                            {
+                                type: "plan",
+                                event_id: "plan-1",
+                                title: "New job request",
+                                items: [
+                                    {
+                                        id: "read",
+                                        content: "Read the emails",
+                                        status: "in_progress",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }),
+        );
+        expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    });
 });
