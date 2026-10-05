@@ -244,7 +244,7 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                       })
                 : Promise.resolve();
 
-            const { events, citations } = await runLLMStream({
+            const { fullText, events, citations } = await runLLMStream({
                 apiMessages,
                 docStore,
                 docIndex,
@@ -273,6 +273,45 @@ projectChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 nonce,
                 emitDone: false,
             });
+
+            // The non-project chat route already does this. An empty
+            // completion used to be inserted with content null, and the
+            // transcript drops those rows, so the question reloaded as if
+            // the app had never answered.
+            if (
+                !fullText?.trim() &&
+                !events?.some((event) => event.type === "ask_inputs") &&
+                (!events || events.every((event) => !("error" in event)))
+            ) {
+                const emptyEvent = {
+                    type: "error" as const,
+                    message:
+                        "The model returned an empty response. Try again, or pick a different model.",
+                    safe_to_display: true,
+                };
+                const saved = askInputsResponse
+                    ? null
+                    : await insertAssistantMessage(db, {
+                          chatId,
+                          assistantMessageId,
+                          events: [
+                              ...stripTransientAssistantEvents(events ?? []),
+                              emptyEvent,
+                          ],
+                          citations: [],
+                          authorUserId: userId,
+                          inputMessageId,
+                      });
+                if (saved && !saved.ok) {
+                    console.error(
+                        "[project-chat/stream] failed to save empty response",
+                        saved.error,
+                    );
+                }
+                write(`data: ${JSON.stringify(emptyEvent)}\n\n`);
+                write("data: [DONE]\n\n");
+                return;
+            }
 
             const persistedEvents = stripTransientAssistantEvents(events);
             if (askInputsResponse) {

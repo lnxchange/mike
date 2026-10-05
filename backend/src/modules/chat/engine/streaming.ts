@@ -280,6 +280,18 @@ export async function runLLMStream(params: {
   planEventId?: string;
   /** Continuation slices stay on the same response, so they skip the pause line. */
   suppressPlanPauseContent?: boolean;
+  /**
+   * Word has no plan card and no way to continue a paused turn. Leave this
+   * false there so a question about the open document is answered now.
+   * The web assistant keeps the default.
+   */
+  plans?: boolean;
+  /**
+   * When set, the model is shown only these tools, and a call outside the
+   * set is refused before dispatch. Word uses this so it cannot offer a
+   * web-only action the task pane cannot finish.
+   */
+  allowedToolNames?: ReadonlySet<string>;
 }): Promise<{
   fullText: string;
   events: AssistantEvent[];
@@ -340,9 +352,18 @@ export async function runLLMStream(params: {
   // never shown is a tool it will not plan around. The second half is in
   // `runTools` below, because "not advertised" is not "not callable" — a
   // model can name a tool from memory.
-  const activeTools = allowDocumentMutation
-    ? advertisedTools
-    : withoutDocumentMutatingTools(advertisedTools);
+  const plansEnabled = params.plans !== false;
+  const activeTools = (
+    allowDocumentMutation
+      ? advertisedTools
+      : withoutDocumentMutatingTools(advertisedTools)
+  ).filter((tool) => {
+    const name = (tool as OpenAIToolSchema).function.name;
+    if (!plansEnabled && (name === "create_plan" || name === "update_plan")) {
+      return false;
+    }
+    return !params.allowedToolNames || params.allowedToolNames.has(name);
+  });
 
   // Extract system prompt; pass remaining turns to the adapter as
   // plain user/assistant messages.
@@ -375,11 +396,20 @@ export async function runLLMStream(params: {
     .filter((m) => m.role === "user" || m.content.trim().length > 0);
   // Before every real turn: see MemoryTurn for why it goes there.
   if (memory.message) chatMessages.unshift(memory.message);
+  // Claude Opus 5 rejects assistant prefill: a request whose last message is
+  // from the assistant fails before any text is generated. Plan slices replay
+  // a transcript that ends on the assistant turn they are continuing.
+  if (chatMessages[chatMessages.length - 1]?.role === "assistant") {
+    chatMessages.push({ role: "user", content: "Continue." });
+  }
 
-  const hasActivePlan = messagesHaveActivePlan(chatMessages);
-  const requirePlanFirst = turnRequiresPlan(rawMsgs, {
-    hasDocuments: docStore.size > 0,
-  });
+  const hasActivePlan =
+    plansEnabled && messagesHaveActivePlan(chatMessages);
+  const requirePlanFirst =
+    plansEnabled &&
+    turnRequiresPlan(rawMsgs, {
+      hasDocuments: docStore.size > 0,
+    });
   const requirePlanBeforeMutation = requirePlanFirst;
   const planSummaryNow = { current: false };
   const requestedMaxIterations =
@@ -620,11 +650,23 @@ export async function runLLMStream(params: {
               PLAN_FIRST_BLOCKED_TOOLS.has(c.name),
             )
           : [];
-        const permittedCalls = requirePlanBeforeMutation
-          ? mutationAllowedCalls.filter(
-              (c) => !PLAN_FIRST_BLOCKED_TOOLS.has(c.name),
-            )
-          : mutationAllowedCalls;
+        const permittedCalls = mutationAllowedCalls.filter((c) => {
+          if (
+            params.allowedToolNames &&
+            !params.allowedToolNames.has(c.name)
+          ) {
+            return false;
+          }
+          if (
+            !plansEnabled &&
+            (c.name === "create_plan" || c.name === "update_plan")
+          ) {
+            return false;
+          }
+          return (
+            !requirePlanBeforeMutation || !PLAN_FIRST_BLOCKED_TOOLS.has(c.name)
+          );
+        });
         for (const call of blockedPlanCalls) {
           clientResultByCallId.set(
             call.id,
@@ -803,7 +845,7 @@ export async function runLLMStream(params: {
           throw new AssistantStreamAskInputsPause();
         }
         const latestPlan = planEvents[planEvents.length - 1];
-        if (latestPlan && planHasPendingItems(latestPlan)) {
+        if (plansEnabled && latestPlan && planHasPendingItems(latestPlan)) {
           throw new AssistantStreamPlanPause();
         }
         if (latestPlan) {
@@ -887,6 +929,14 @@ export async function runLLMStream(params: {
     }
   }
 
+  // A thinking block can end the stream without reasoning_block_end. Leaving
+  // it in the buffer drops the only thing the model sent, and the row is
+  // then saved empty and hidden on reload.
+  if (iterReasoning) {
+    events.push({ type: "reasoning", text: iterReasoning });
+    write(`data: ${JSON.stringify({ type: "reasoning_block_end" })}\n\n`);
+    iterReasoning = "";
+  }
   flushText();
 
   const incompleteEvents = withIncompleteTurnEvent(events);
