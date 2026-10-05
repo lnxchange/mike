@@ -360,6 +360,7 @@ function file(scope: "user" | "project" = "user"): MemoryFileRow {
     scope,
     user_id: scope === "user" ? "actor" : null,
     project_id: scope === "project" ? "project" : null,
+    org_id: null,
     enabled: true,
     epoch: 7,
     revision: 1,
@@ -485,6 +486,41 @@ describe("scope-bound memory curator tool", () => {
     ).toEqual(["markdown", "expectedRevision", "changeSummary"]);
     expect(JSON.stringify(MEMORY_CURATOR_WRITE_TOOL)).not.toMatch(
       /owner|project_id|scope|storage_path/i,
+    );
+  });
+
+  it("restores the email-status block when a project curator drops it", async () => {
+    const section = [
+      "<!-- matter-status:start -->",
+      "As at 18 September 2026.",
+      "<!-- matter-status:end -->",
+    ].join("\n");
+    const svc = services();
+    svc.stream = vi.fn(async (params: StreamChatParams) => {
+      await params.runTools?.([
+        {
+          id: "call-1",
+          name: "write_memory_file",
+          input: {
+            expectedRevision: 1,
+            markdown: "## Working notes\n- Chat guess",
+            changeSummary: "Remember a chat guess",
+          },
+        },
+      ]);
+      return { fullText: "" };
+    });
+    const input = args("project");
+    input.current = { content: `${section}\n\n## Working notes\n- Keep`, revision: 1 };
+    await runMemoryCuratorScope(input, svc);
+    expect(svc.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("As at 18 September 2026."),
+      }),
+    );
+    expect(svc.write.mock.calls[0]![0].content).toContain("Chat guess");
+    expect(svc.stream.mock.calls[0]![0].systemPrompt).toContain(
+      "matter-status:start",
     );
   });
 

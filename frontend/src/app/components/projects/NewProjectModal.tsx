@@ -4,15 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import {
     type Org,
-    UploadBatchError,
     addDocumentToProject,
     createProject,
-    failedUploadMessage,
     grantProjectAccess,
     listOrgs,
     setProjectMemoryEnabled,
-    uploadProjectDocuments,
 } from "@/app/lib/mikeApi";
+import { stashPendingProjectUploads } from "@/app/lib/pendingProjectUploads";
 import { FileDirectory } from "../shared/FileDirectory";
 import type { Document, Project } from "../shared/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -29,8 +27,15 @@ import {
     type PendingOrgOverride,
 } from "../modals/CreateAccessStep";
 import { WarningPopup } from "../popups/WarningPopup";
+import { appConfig } from "@/config";
+import {
+    SUPPORTED_DOCUMENT_ACCEPT,
+    formatUnsupportedDocumentWarning,
+    partitionSupportedDocumentFiles,
+} from "@/app/lib/documentUploadValidation";
 
 const PERSONAL_WORKSPACE = "__personal__";
+const t = appConfig.terminology;
 
 interface Props {
     open: boolean;
@@ -55,6 +60,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     const [pendingFiles, setPendingFiles] = useState<File[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [unsupportedWarning, setUnsupportedWarning] = useState<string | null>(
+        null,
+    );
     const [organizationLoadWarning, setOrganizationLoadWarning] =
         useState(false);
     // A project created with only some of its files attached. The modal holds
@@ -120,9 +128,12 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         const files = Array.from(e.target.files ?? []);
         e.target.value = "";
         if (!files.length) return;
+        const { supported, unsupported } = partitionSupportedDocumentFiles(files);
+        setUnsupportedWarning(formatUnsupportedDocumentWarning(unsupported));
+        if (!supported.length) return;
         setPendingFiles((prev) => [
             ...prev,
-            ...files.filter((f) => !prev.some((p) => p.name === f.name)),
+            ...supported.filter((f) => !prev.some((p) => p.name === f.name)),
         ]);
     }
 
@@ -195,44 +206,18 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 .filter((_, index) => !linkResults[index])
                 .map((document) => document.filename);
 
-            let uploadedCount = 0;
-            let uploadFailure: string | null = null;
-            if (pendingFiles.length > 0) {
-                try {
-                    const outcomes = await uploadProjectDocuments(
-                        project.id,
-                        pendingFiles.map((file) => ({ file })),
-                    );
-                    uploadedCount = outcomes.filter(
-                        (outcome) => outcome.status === "completed",
-                    ).length;
-                    if (uploadedCount < outcomes.length) {
-                        uploadFailure = failedUploadMessage(outcomes);
-                    }
-                } catch (uploadError) {
-                    // Aborts, session-creation failures, and batch validation
-                    // still throw; everything else comes back as outcomes.
-                    uploadFailure =
-                        uploadError instanceof UploadBatchError
-                            ? failedUploadMessage(uploadError.outcomes)
-                            : userFacingApiError(
-                                  uploadError,
-                                  "The attached files could not be uploaded. Please try again.",
-                              );
-                }
-            }
+            // Chosen files are not uploaded from here. Converting a large
+            // batch can take minutes, so the project page takes them over
+            // and uploads them with its own progress rows while the user can
+            // already work in the project.
+            stashPendingProjectUploads(project.id, pendingFiles);
 
-            const attachedCount = linkedCount + uploadedCount;
-            const requestedCount =
-                selectedDocuments.length + pendingFiles.length;
-            const failureMessage = [
-                uploadFailure,
+            const attachedCount = linkedCount;
+            const requestedCount = selectedDocuments.length;
+            const failureMessage =
                 failedLinkNames.length > 0
-                    ? `${failedLinkNames.join(", ")} could not be added to the project.`
-                    : null,
-            ]
-                .filter(Boolean)
-                .join(" ");
+                    ? `${failedLinkNames.join(", ")} could not be added to the ${t.projectLower}.`
+                    : "";
 
             // Sequential: these are a handful of addresses, and one refusal
             // should be reported with its own message rather than lost in a
@@ -262,7 +247,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 // did not happen. Pressing Create again retries the grants
                 // against the same project.
                 setError(
-                    `Project created, but access was not granted to ${grantFailures
+                    `${t.project} created, but access was not granted to ${grantFailures
                         .map((failure) => failure.email)
                         .join(", ")}: ${grantFailures[0].detail}`,
                 );
@@ -313,7 +298,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
 
             finishCreation({ ...stamped, document_count: attachedCount });
         } catch (err: unknown) {
-            setError(userFacingApiError(err, "Failed to create project"));
+            setError(
+                userFacingApiError(err, `Failed to create ${t.projectLower}`),
+            );
         } finally {
             setLoading(false);
         }
@@ -334,6 +321,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         setOrgId(PERSONAL_WORKSPACE);
         setMemoryEnabled(true);
         setError("");
+        setUnsupportedWarning(null);
         setOrganizationLoadWarning(false);
     }
 
@@ -347,8 +335,8 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
             open={open}
             onClose={handleClose}
             breadcrumbs={[
-                "Projects",
-                "New project",
+                t.projects,
+                `New ${t.projectLower}`,
                 step === "details"
                     ? "Details"
                     : step === "access"
@@ -414,7 +402,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                                 ? "Creating…"
                                 : pendingProject
                                   ? "Continue"
-                                  : "Create project",
+                                  : `Create ${t.projectLower}`,
                             type: "button",
                             onClick: () => void createProjectFromDocuments(),
                             disabled: !name.trim() || loading,
@@ -425,6 +413,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 ref={fileInputRef}
                 type="file"
                 multiple
+                accept={SUPPORTED_DOCUMENT_ACCEPT}
                 className="hidden"
                 onChange={handleFileChange}
             />
@@ -437,14 +426,14 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                     <div className="space-y-6">
                         <div>
                             <FieldLabel htmlFor="new-project-name">
-                                Project name
+                                {t.project} name
                             </FieldLabel>
                             <FormTextInput
                                 id="new-project-name"
                                 type="text"
                                 value={name}
                                 onChange={(e) => setName(e.target.value)}
-                                placeholder="Add project name"
+                                placeholder={`Add ${t.projectLower} name`}
                                 variant="minimal"
                                 autoFocus
                             />
@@ -452,14 +441,14 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
 
                         <div>
                             <FieldLabel htmlFor="new-project-cm-number">
-                                CM number
+                                {t.referenceNumber}
                             </FieldLabel>
                             <FormTextInput
                                 id="new-project-cm-number"
                                 type="text"
                                 value={cmNumber}
                                 onChange={(e) => setCmNumber(e.target.value)}
-                                placeholder="Add a CM number..."
+                                placeholder={`Add a ${t.referenceNumber}...`}
                                 variant="minimal"
                                 className="text-xl text-gray-600"
                             />
@@ -505,16 +494,17 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                         </div>
 
                         <div>
-                            <FieldLabel as="p">Project memory</FieldLabel>
+                            <FieldLabel as="p">{t.project} memory</FieldLabel>
                             <ToggleSwitchUI
                                 checked={memoryEnabled}
                                 onCheckedChange={(enabled) => {
                                     memoryEditedRef.current = true;
                                     setMemoryEnabled(enabled);
                                 }}
-                                aria-label="Enable project memory"
+                                aria-label={`Enable ${t.projectLower} memory`}
                             >
-                                Let Mike remember shared project context
+                                Let {appConfig.branding.appName} remember shared{" "}
+                                {t.projectLower} context
                             </ToggleSwitchUI>
                         </div>
                     </div>
@@ -530,7 +520,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                         onDirectGrantsChange={setSharedUsers}
                         orgOverrides={orgOverrides}
                         onOrgOverridesChange={setOrgOverrides}
-                        ownerLabel="Project owners"
+                        ownerLabel={`${t.project} owners`}
                     />
                 ) : (
                     <div className="flex min-h-0 flex-1 flex-col">
@@ -545,9 +535,15 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
             </form>
             <WarningPopup
+                open={unsupportedWarning !== null}
+                title="Some files were skipped"
+                message={unsupportedWarning ?? ""}
+                onClose={() => setUnsupportedWarning(null)}
+            />
+            <WarningPopup
                 open={organizationLoadWarning}
                 title="Organizations unavailable"
-                message="Your organizations could not be loaded. Close this message and try opening the project form again."
+                message={`Your organizations could not be loaded. Close this message and try opening the ${t.projectLower} form again.`}
                 onClose={() => setOrganizationLoadWarning(false)}
             />
         </Modal>

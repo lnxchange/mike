@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 function backendOrigin() {
     const configuredUrl = process.env.API_BASE_URL?.trim();
@@ -30,6 +31,14 @@ async function proxy(request: NextRequest, context: RouteContext) {
         headers.delete("host");
         headers.delete("connection");
         headers.delete("content-length");
+        // Authenticated document bytes must not be revalidated as 304.
+        // Express attaches ETags; a replayed If-None-Match returns an empty
+        // body that the viewer treats as a failed load.
+        headers.delete("if-none-match");
+        headers.delete("if-modified-since");
+        headers.delete("if-match");
+        headers.delete("if-unmodified-since");
+        headers.delete("if-range");
         headers.set("x-forwarded-host", request.nextUrl.host);
         headers.set(
             "x-forwarded-proto",
@@ -41,6 +50,10 @@ async function proxy(request: NextRequest, context: RouteContext) {
             headers,
             cache: "no-store",
             redirect: "manual",
+            // A client that stops reading (Stop, navigation) frees the upstream
+            // connection promptly. Express no longer treats that as cancel for
+            // chat turns; it only stops writing frames nobody is reading.
+            signal: request.signal,
         };
         if (request.method !== "GET" && request.method !== "HEAD") {
             init.body = request.body;
@@ -52,12 +65,24 @@ async function proxy(request: NextRequest, context: RouteContext) {
         // Fetch implementations may transparently decompress the response.
         responseHeaders.delete("content-encoding");
         responseHeaders.delete("content-length");
+        responseHeaders.delete("etag");
+        responseHeaders.delete("last-modified");
+        responseHeaders.set("cache-control", "private, no-store");
+        // Copying upstream headers can fold several Set-Cookie lines into one.
+        // The browser then drops the Microsoft login proof, and the callback
+        // reports the confirmation link as invalid.
+        const setCookies = upstream.headers.getSetCookie();
+        responseHeaders.delete("set-cookie");
 
-        return new Response(upstream.body, {
+        const response = new Response(upstream.body, {
             status: upstream.status,
             statusText: upstream.statusText,
             headers: responseHeaders,
         });
+        for (const cookie of setCookies) {
+            response.headers.append("set-cookie", cookie);
+        }
+        return response;
     } catch (error) {
         console.error("[api-gateway] upstream request failed", {
             path: requestPath,

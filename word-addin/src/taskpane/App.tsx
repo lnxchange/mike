@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from "react";
+import { useSuspendBackdropWhileSelecting } from "../../../frontend/src/shared/ui/suspendBackdropWhileSelecting";
 import { useAuth } from "./auth/useAuth";
 import { LoginPage } from "./auth/LoginPage";
 import { ApiKeyBanner } from "./components/shell/ApiKeyBanner";
@@ -24,6 +25,7 @@ import { clearLocalWordChats } from "./lib/localWordChats";
 import type { ReasoningLevel } from "./lib/wordChatTypes";
 
 export default function App(): React.ReactElement {
+  useSuspendBackdropWhileSelecting();
   const { user, loading, error, logout } = useAuth();
   const pendingOwnerId = user?.id ?? null;
   const wordChatStorage = useWordChatStoragePreference(pendingOwnerId);

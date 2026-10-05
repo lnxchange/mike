@@ -100,13 +100,16 @@ beforeEach(() => {
         .mockReset()
         .mockImplementation(
             async (url) =>
-                new Response(new Uint8Array([1, 2, 3]), {
-                    headers: {
-                        "Content-Type": String(url).includes("sheet")
-                            ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            : "application/pdf",
+                new Response(
+                    Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 1, 2, 3]),
+                    {
+                        headers: {
+                            "Content-Type": String(url).includes("sheet")
+                                ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                : "application/pdf",
+                        },
                     },
-                }),
+                ),
         );
 });
 afterEach(() => vi.restoreAllMocks());
@@ -203,6 +206,30 @@ it("refreshes changed current versions and overwritten bytes, while keeping hist
         ),
     );
     await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(7));
+});
+
+it("opens a Word file with a stored PDF rendition through /display, not /file", async () => {
+    const wordTabs: ProjectDocumentTab[] = [
+        { documentId: "letter", filename: "Letter.docx", fileType: "docx" },
+    ];
+    const wordDocs = [
+        {
+            id: "letter",
+            filename: "Letter.docx",
+            file_type: "docx",
+            current_version_id: "v1",
+            updated_at: "t1",
+            status: "ready",
+            pdf_storage_path: "converted-pdfs/letter.pdf",
+        },
+    ] as Document[];
+    render(panels(wordTabs, "letter", wordDocs));
+    await waitFor(() => expect(screen.getByText("Loaded")).toBeVisible());
+    const urls = vi
+        .mocked(authenticatedFetch)
+        .mock.calls.map(([url]) => String(url));
+    expect(urls.some((url) => url.includes("/display"))).toBe(true);
+    expect(urls.some((url) => url.includes("/file"))).toBe(false);
 });
 
 it("renders the initial view without requesting a file", () => {

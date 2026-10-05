@@ -50,6 +50,64 @@ export class UploadBatchError extends Error {
     }
 }
 
+/**
+ * The document types an upload session will accept, by lowercased extension.
+ * The web app, the Word add-in, and this client all read this one list; the
+ * backend enforces the same set in lib/documentTypes.ts. Keep them together
+ * when adding a type.
+ */
+export const SUPPORTED_UPLOAD_EXTENSIONS = [
+    "pdf",
+    "docx",
+    "doc",
+    "xlsx",
+    "xlsm",
+    "xls",
+    "pptx",
+    "ppt",
+    "eml",
+    "msg",
+    "zip",
+] as const;
+
+/**
+ * Types the server unpacks into other documents (an email's attachments, a
+ * zip's entries) rather than storing as the one document the client sent.
+ * The resulting documents are not in the upload outcome, so a collection
+ * that received one of these has to refetch to see them.
+ */
+export const EXPANDABLE_UPLOAD_EXTENSIONS: ReadonlySet<string> = new Set([
+    "eml",
+    "msg",
+    "zip",
+]);
+
+/** Ready-made value for `<input type="file" accept>`. */
+export const SUPPORTED_UPLOAD_ACCEPT = SUPPORTED_UPLOAD_EXTENSIONS.map(
+    (extension) => `.${extension}`,
+).join(",");
+
+export const UNSUPPORTED_UPLOAD_MESSAGE =
+    "Unsupported file type. Only PDF, Word, Excel, PowerPoint, email (.eml, .msg) and .zip files can be uploaded.";
+
+const SUPPORTED_UPLOAD_EXTENSION_SET: ReadonlySet<string> = new Set(
+    SUPPORTED_UPLOAD_EXTENSIONS,
+);
+
+/** Lowercased last extension of a filename, or "" when there is none. */
+export function uploadFileExtension(filename: string): string {
+    return filename.split(".").pop()?.toLowerCase() ?? "";
+}
+
+export function isSupportedUploadFilename(filename: string): boolean {
+    const extension = uploadFileExtension(filename);
+    return extension.length > 0 && SUPPORTED_UPLOAD_EXTENSION_SET.has(extension);
+}
+
+export function isExpandableUploadFilename(filename: string): boolean {
+    return EXPANDABLE_UPLOAD_EXTENSIONS.has(uploadFileExtension(filename));
+}
+
 const DIRECT_UPLOAD_CONCURRENCY = 3;
 const UPLOAD_PROCESSING_POLL_DELAYS_MS = [
     750, 1_000, 1_500, 2_500, 4_000, 5_000,
@@ -73,6 +131,7 @@ export const UPLOAD_LIMIT_MESSAGES: Record<string, string> = {
     upload_batch_too_large: `An upload batch must be ${Math.round(
         MAX_UPLOAD_SESSION_BYTES / (1024 * 1024 * 1024),
     )} GB or smaller.`,
+    unsupported_file_type: UNSUPPORTED_UPLOAD_MESSAGE,
 };
 
 /**
@@ -214,10 +273,11 @@ function storageAttemptSignal(signal?: AbortSignal): AbortSignal | undefined {
 }
 
 /**
- * A file larger than the per-file ceiling can never be sent, but it must not
- * take the rest of the selection down with it: it becomes its own error
- * outcome. Everything else is partitioned into sessions that respect the
- * per-session file count and byte budget.
+ * A file larger than the per-file ceiling, or of a type the server will not
+ * accept, can never be sent, but it must not take the rest of the selection
+ * down with it: it becomes its own error outcome. Everything else is
+ * partitioned into sessions that respect the per-session file count and byte
+ * budget.
  */
 function chunkUploadInputs(inputs: ResolvedInput[]): ResolvedInput[][] {
     const chunks: ResolvedInput[][] = [];
@@ -269,13 +329,21 @@ export async function uploadFilesWithSessionCore<T>(args: {
     const outcomes = new Map<string, UploadOutcome<T>>();
     const eligible: ResolvedInput[] = [];
     for (const input of inputs) {
-        if (input.file.size > MAX_UPLOAD_FILE_BYTES) {
+        // The server rejects a whole session on its first unsupported file,
+        // so an unsupported type has to be kept out of the manifest here or
+        // it would fail every valid file that shares its chunk.
+        const ineligibleCode = !isSupportedUploadFilename(input.file.name)
+            ? "unsupported_file_type"
+            : input.file.size > MAX_UPLOAD_FILE_BYTES
+              ? "upload_file_too_large"
+              : null;
+        if (ineligibleCode) {
             const outcome: UploadOutcome<T> = {
                 clientId: input.clientId,
                 filename: input.file.name,
                 status: "error",
                 result: null,
-                errorCode: "upload_file_too_large",
+                errorCode: ineligibleCode,
             };
             outcomes.set(input.clientId, outcome);
             reportProgress(outcome);

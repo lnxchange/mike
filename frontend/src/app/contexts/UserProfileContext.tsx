@@ -60,6 +60,10 @@ interface UserProfile {
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    legalResearchAu: boolean;
+    legalResearchAuEnergy: boolean;
+    legalResearchAuVic: boolean;
+    legalResearchAuCases: boolean;
     quickActionsVisible: boolean;
     openRouterModels: string[];
     vercelModels: string[];
@@ -103,6 +107,10 @@ interface UserProfileContextType {
     ) => Promise<boolean>;
     updateMfaOnLogin: (enabled: boolean) => Promise<boolean>;
     updateLegalResearchUs: (enabled: boolean) => Promise<boolean>;
+    updateLegalResearchAu: (enabled: boolean) => Promise<boolean>;
+    updateLegalResearchAuEnergy: (enabled: boolean) => Promise<boolean>;
+    updateLegalResearchAuVic: (enabled: boolean) => Promise<boolean>;
+    updateLegalResearchAuCases: (enabled: boolean) => Promise<boolean>;
     updateQuickActionsVisible: (visible: boolean) => Promise<boolean>;
     updateOpenRouterModels: (models: string[]) => Promise<boolean>;
     updateVercelModels: (models: string[]) => Promise<boolean>;
@@ -171,6 +179,11 @@ function toProfile(data: ApiUserProfile): UserProfile {
         lastSelectedReasoningLevel:
             profile.lastSelectedReasoningLevel ?? "high",
         mfaOnLogin: profile.mfaOnLogin === true,
+        legalResearchUs: profile.legalResearchUs !== false,
+        legalResearchAu: profile.legalResearchAu === true,
+        legalResearchAuEnergy: profile.legalResearchAuEnergy === true,
+        legalResearchAuVic: profile.legalResearchAuVic === true,
+        legalResearchAuCases: profile.legalResearchAuCases === true,
         projectMemoryDefault: profile.projectMemoryDefault !== false,
         openRouterModels: Array.isArray(profile.openRouterModels)
             ? profile.openRouterModels
@@ -237,6 +250,10 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 lastSelectedReasoningLevel: "high",
                 mfaOnLogin: false,
                 legalResearchUs: true,
+                legalResearchAu: false,
+                legalResearchAuEnergy: false,
+                legalResearchAuVic: false,
+                legalResearchAuCases: false,
                 quickActionsVisible: true,
                 openRouterModels: [],
                 vercelModels: [],
@@ -479,6 +496,78 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         [user],
     );
 
+    const updateLegalResearchAu = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (!user) return false;
+            try {
+                const updated = await updateUserProfile({
+                    legalResearchAu: enabled,
+                });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [user],
+    );
+
+    const updateLegalResearchAuEnergy = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (!user) return false;
+            try {
+                const updated = await updateUserProfile({
+                    legalResearchAuEnergy: enabled,
+                });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [user],
+    );
+
+    const updateLegalResearchAuVic = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (!user) return false;
+            try {
+                const updated = await updateUserProfile({
+                    legalResearchAuVic: enabled,
+                });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [user],
+    );
+
+    const updateLegalResearchAuCases = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (!user) return false;
+            try {
+                const updated = await updateUserProfile({
+                    legalResearchAuCases: enabled,
+                });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [user],
+    );
+
     const updateQuickActionsVisible = useCallback(
         async (visible: boolean): Promise<boolean> => {
             if (!user) return false;
@@ -652,6 +741,10 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             persistChatReasoningSelection,
             updateMfaOnLogin,
             updateLegalResearchUs,
+            updateLegalResearchAu,
+            updateLegalResearchAuEnergy,
+            updateLegalResearchAuVic,
+            updateLegalResearchAuCases,
             updateQuickActionsVisible,
             updateOpenRouterModels,
             updateVercelModels,
@@ -676,6 +769,10 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             persistChatReasoningSelection,
             updateMfaOnLogin,
             updateLegalResearchUs,
+            updateLegalResearchAu,
+            updateLegalResearchAuEnergy,
+            updateLegalResearchAuVic,
+            updateLegalResearchAuCases,
             updateQuickActionsVisible,
             updateOpenRouterModels,
             updateVercelModels,

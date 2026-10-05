@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+    authCallbackPathFromSearch,
     authCallbackUrl,
     authErrorDescription,
     browserAuthCallbackUrl,
+    homeRedirectPath,
     safeAuthNext,
 } from "./authRedirects";
 
@@ -17,6 +19,7 @@ describe("safeAuthNext", () => {
         );
         expect(safeAuthNext("/reset-password")).toBe("/reset-password");
         expect(safeAuthNext("/onboarding/profile")).toBe("/onboarding/profile");
+        expect(safeAuthNext("/settings/security")).toBe("/settings/security");
     });
 
     it.each([
@@ -57,6 +60,25 @@ describe("authCallbackUrl", () => {
         vi.stubGlobal("window", undefined);
 
         expect(browserAuthCallbackUrl("/reset-password")).toBeUndefined();
+    });
+});
+
+describe("authCallbackPathFromSearch", () => {
+    it("forwards a Site URL OAuth code to the callback page", () => {
+        expect(authCallbackPathFromSearch("?code=oauth-code&next=%2Fassistant")).toBe(
+            "/auth/callback?code=oauth-code&next=%2Fassistant",
+        );
+        expect(homeRedirectPath("?code=oauth-code")).toBe(
+            "/auth/callback?code=oauth-code",
+        );
+    });
+
+    it("forwards provider errors and otherwise sends home to assistant", () => {
+        expect(authCallbackPathFromSearch("?error=access_denied")).toBe(
+            "/auth/callback?error=access_denied",
+        );
+        expect(authCallbackPathFromSearch("")).toBeNull();
+        expect(homeRedirectPath("")).toBe("/assistant");
     });
 });
 

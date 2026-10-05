@@ -4,16 +4,38 @@ import {
   type LlmMessage,
   type OpenAIToolSchema,
 } from "../../../lib/llm";
+import { PLAN_COMPLETE_SUMMARY } from "../../../lib/llm/aiSdk";
+import { DEFAULT_STREAM_MAX_ITERATIONS } from "../../../lib/llm/types";
+import { withIncompleteTurnEvent } from "./incompleteTurn";
+import {
+  CREATE_PLAN_REQUIRED_ERROR,
+  PLAN_FIRST_BLOCKED_TOOLS,
+  PLAN_FIRST_MAX_ITERATIONS,
+  PLAN_PAUSE_CONTENT,
+  PLAN_SLICE_MAX_ITERATIONS,
+  messagesHaveActivePlan,
+  planHasPendingItems,
+  turnRequiresPlan,
+} from "./tools/planTools";
 import { resolveRequestedModel } from "../../../lib/routerModels";
 import { UserFacingError } from "../../../lib/userFacingError";
 import type { Db } from "../../../lib/supabase";
-import { buildUserMcpTools, type McpToolEvent } from "../../../lib/mcpConnectors";
+import {
+  buildUserMcpTools,
+  type McpToolEvent,
+} from "../../../lib/mcpConnectors";
 import type { SourceDocument } from "../../../lib/sourceDocuments";
 import {
   COURTLISTENER_TOOLS,
   type CaseCitationEvent,
   type CourtlistenerToolEvent,
 } from "./tools/courtlistenerTools";
+import { AU_LEGISLATION_TOOLS } from "./tools/auLegislationTools";
+import { AU_ENERGY_TOOLS } from "./tools/auEnergyTools";
+import { AU_VIC_LEGISLATION_TOOLS } from "./tools/auVicLegislationTools";
+import { AU_CASE_LAW_TOOLS } from "./tools/auCaseLawTools";
+import { OUTLOOK_DRAFT_TOOLS } from "./tools/outlookDraftTools";
+import { microsoftOAuthEnabled } from "../../../lib/microsoftOAuth";
 import {
   type DocStore,
   type DocIndex,
@@ -43,6 +65,10 @@ import {
   getCachedCaseOpinionTexts,
   type CourtlistenerTurnState,
 } from "./tools/courtlistenerTurnState";
+import {
+  getCachedLegislationText,
+  type AuLegislationTurnState,
+} from "./tools/auLegislationTurnState";
 import {
   readDocumentContent,
   type TurnEditState,
@@ -91,6 +117,9 @@ function sanitizeAssistantEvent(event: AssistantEvent): AssistantEvent {
       : { ...event, message: ASSISTANT_ERROR_MESSAGE };
   }
   if ("error" in event && typeof event.error === "string" && event.error) {
+    if ("safe_to_display" in event && event.safe_to_display === true) {
+      return event;
+    }
     return { ...event, error: TOOL_ERROR_MESSAGE };
   }
   return event;
@@ -126,21 +155,48 @@ class AssistantStreamAskInputsPause extends Error {
   }
 }
 
-function isAskInputsPause(error: unknown): boolean {
-  if (error instanceof AssistantStreamAskInputsPause) return true;
+class AssistantStreamPlanPause extends Error {
+  constructor() {
+    super("Waiting to continue the plan.");
+    this.name = "AssistantStreamPlanPause";
+  }
+}
+
+function isNamedPause(error: unknown, name: string, message: string): boolean {
   if (!error || typeof error !== "object") return false;
   const record = error as {
     name?: unknown;
     message?: unknown;
     cause?: unknown;
   };
-  if (
-    record.name === "AssistantStreamAskInputsPause" ||
-    record.message === "Waiting for user input."
-  ) {
-    return true;
-  }
-  return record.cause !== error && isAskInputsPause(record.cause);
+  if (record.name === name || record.message === message) return true;
+  return record.cause !== error && isNamedPause(record.cause, name, message);
+}
+
+function isAskInputsPause(error: unknown): boolean {
+  return (
+    error instanceof AssistantStreamAskInputsPause ||
+    isNamedPause(
+      error,
+      "AssistantStreamAskInputsPause",
+      "Waiting for user input.",
+    )
+  );
+}
+
+function isPlanPause(error: unknown): boolean {
+  return (
+    error instanceof AssistantStreamPlanPause ||
+    isNamedPause(
+      error,
+      "AssistantStreamPlanPause",
+      "Waiting to continue the plan.",
+    )
+  );
+}
+
+function isControlledStreamPause(error: unknown): boolean {
+  return isAskInputsPause(error) || isPlanPause(error);
 }
 
 export function isAbortError(error: unknown): boolean {
@@ -164,7 +220,13 @@ export async function runLLMStream(params: {
   db: Db;
   write: (s: string) => void;
   extraTools?: unknown[];
+  /** US case-law tools (CourtListener). Kept as the legacy alias. */
   includeResearchTools?: boolean;
+  includeUsResearchTools?: boolean;
+  includeAuResearchTools?: boolean;
+  includeAuEnergyResearchTools?: boolean;
+  includeAuVicResearchTools?: boolean;
+  includeAuCasesResearchTools?: boolean;
   /** Expose ask_inputs only to clients that can render and answer it. */
   includeAskInputs?: boolean;
   /**
@@ -184,9 +246,10 @@ export async function runLLMStream(params: {
   /** Tools executed by the connected client (Word add-in) instead of here. */
   clientTools?: ClientToolsAdapter;
   /**
-   * Tool-loop iteration budget (default 10). Surfaces whose tools are built
-   * around retry round-trips (Word client edits: propose → fail → re-read →
-   * retry) need headroom, or the loop ends before the model's summary.
+   * Tool-loop iteration budget (default 16, last step reserved for writing).
+   * Surfaces whose tools are built around retry round-trips (Word client
+   * edits: propose → fail → re-read → retry) need headroom, or the loop ends
+   * before the model's summary.
    */
   maxIterations?: number;
   buildCitations?: (fullText: string) => unknown[];
@@ -213,6 +276,22 @@ export async function runLLMStream(params: {
    *  here so that the same nonce fences both the system-prompt filenames
    *  (added by buildMessages) and the document bodies returned by tools. */
   nonce?: string;
+  /** Reuse this id so update_plan replaces the card instead of adding one. */
+  planEventId?: string;
+  /** Continuation slices stay on the same response, so they skip the pause line. */
+  suppressPlanPauseContent?: boolean;
+  /**
+   * Word has no plan card and no way to continue a paused turn. Leave this
+   * false there so a question about the open document is answered now.
+   * The web assistant keeps the default.
+   */
+  plans?: boolean;
+  /**
+   * When set, the model is shown only these tools, and a call outside the
+   * set is refused before dispatch. Word uses this so it cannot offer a
+   * web-only action the task pane cannot finish.
+   */
+  allowedToolNames?: ReadonlySet<string>;
 }): Promise<{
   fullText: string;
   events: AssistantEvent[];
@@ -226,6 +305,11 @@ export async function runLLMStream(params: {
     db,
     write: unsafeWrite,
     extraTools,
+    includeUsResearchTools,
+    includeAuResearchTools = false,
+    includeAuEnergyResearchTools = false,
+    includeAuVicResearchTools = false,
+    includeAuCasesResearchTools = false,
     includeResearchTools = true,
     includeAskInputs = true,
     allowDocumentMutation = true,
@@ -244,7 +328,14 @@ export async function runLLMStream(params: {
   } = params;
   const write = (chunk: string) =>
     unsafeWrite(sanitizeAssistantSseChunk(chunk));
-  const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
+  const usResearch = includeUsResearchTools ?? includeResearchTools;
+  const researchTools = [
+    ...(usResearch ? COURTLISTENER_TOOLS : []),
+    ...(includeAuResearchTools ? AU_LEGISLATION_TOOLS : []),
+    ...(includeAuEnergyResearchTools ? AU_ENERGY_TOOLS : []),
+    ...(includeAuVicResearchTools ? AU_VIC_LEGISLATION_TOOLS : []),
+    ...(includeAuCasesResearchTools ? AU_CASE_LAW_TOOLS : []),
+  ];
   const mcpTools = await buildUserMcpTools(userId, db);
   const conversationTools = includeAskInputs
     ? TOOLS
@@ -253,6 +344,7 @@ export async function runLLMStream(params: {
   const advertisedTools = [
     ...baseTools,
     ...mcpTools,
+    ...(microsoftOAuthEnabled() ? OUTLOOK_DRAFT_TOOLS : []),
     ...(extraTools ?? []),
     ...(clientTools?.schemas ?? []),
   ];
@@ -260,13 +352,27 @@ export async function runLLMStream(params: {
   // never shown is a tool it will not plan around. The second half is in
   // `runTools` below, because "not advertised" is not "not callable" — a
   // model can name a tool from memory.
-  const activeTools = allowDocumentMutation
-    ? advertisedTools
-    : withoutDocumentMutatingTools(advertisedTools);
+  const plansEnabled = params.plans !== false;
+  const activeTools = (
+    allowDocumentMutation
+      ? advertisedTools
+      : withoutDocumentMutatingTools(advertisedTools)
+  ).filter((tool) => {
+    const name = (tool as OpenAIToolSchema).function.name;
+    if (!plansEnabled && (name === "create_plan" || name === "update_plan")) {
+      return false;
+    }
+    return !params.allowedToolNames || params.allowedToolNames.has(name);
+  });
 
   // Extract system prompt; pass remaining turns to the adapter as
   // plain user/assistant messages.
-  const rawMsgs = apiMessages as { role: string; content: string | null }[];
+  const rawMsgs = apiMessages as {
+    role: string;
+    content: string | null;
+    files?: readonly unknown[] | null;
+    workflow?: unknown;
+  }[];
   const baseSystemPrompt =
     rawMsgs[0]?.role === "system" ? (rawMsgs[0].content ?? "") : "";
   const memory = await buildMemoryTurn({
@@ -280,18 +386,39 @@ export async function runLLMStream(params: {
   const systemPrompt = memory.systemPrompt;
   const chatMessages: LlmMessage[] = rawMsgs
     .filter((m) => m.role !== "system")
-    .map(
-      (m): LlmMessage => ({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: m.content ?? "",
-      }),
-    )
+    .map((m): LlmMessage => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content ?? "",
+    }))
     // An assistant turn with no text (an error, a cancellation, or a client
     // that keeps prose in events) carries nothing for the model, and Anthropic
     // rejects the entire request over one empty text block.
     .filter((m) => m.role === "user" || m.content.trim().length > 0);
   // Before every real turn: see MemoryTurn for why it goes there.
   if (memory.message) chatMessages.unshift(memory.message);
+  // Claude Opus 5 rejects assistant prefill: a request whose last message is
+  // from the assistant fails before any text is generated. Plan slices replay
+  // a transcript that ends on the assistant turn they are continuing.
+  if (chatMessages[chatMessages.length - 1]?.role === "assistant") {
+    chatMessages.push({ role: "user", content: "Continue." });
+  }
+
+  const hasActivePlan =
+    plansEnabled && messagesHaveActivePlan(chatMessages);
+  const requirePlanFirst =
+    plansEnabled &&
+    turnRequiresPlan(rawMsgs, {
+      hasDocuments: docStore.size > 0,
+    });
+  const requirePlanBeforeMutation = requirePlanFirst;
+  const planSummaryNow = { current: false };
+  const requestedMaxIterations =
+    params.maxIterations ?? DEFAULT_STREAM_MAX_ITERATIONS;
+  const maxIterations = hasActivePlan
+    ? Math.min(requestedMaxIterations, PLAN_SLICE_MAX_ITERATIONS)
+    : requirePlanFirst
+      ? Math.min(requestedMaxIterations, PLAN_FIRST_MAX_ITERATIONS)
+      : requestedMaxIterations;
 
   const events: AssistantEvent[] = [];
   // One assistant turn produces at most one document_versions row per
@@ -306,6 +433,9 @@ export async function runLLMStream(params: {
   const turnReadState: TurnReadState = new Map();
   const courtlistenerTurnState: CourtlistenerTurnState = {
     casesByClusterId: new Map(),
+  };
+  const auLegislationTurnState: AuLegislationTurnState = {
+    titlesByCacheKey: new Map(),
   };
   let fullText = "";
   let iterText = "";
@@ -338,6 +468,7 @@ export async function runLLMStream(params: {
         docIndex,
         courtlistenerTurnState.casesByClusterId,
         docStore,
+        auLegislationTurnState.titlesByCacheKey,
       ),
     );
     emitCitationStreamSnapshot("partial", citations);
@@ -455,9 +586,11 @@ export async function runLLMStream(params: {
       systemPrompt,
       messages: chatMessages,
       tools: activeTools as OpenAIToolSchema[],
-      maxIterations: params.maxIterations ?? 10,
+      maxIterations,
       apiKeys,
-      reasoning: params.reasoning ?? "high",
+      requirePlan: requirePlanFirst,
+      planSummaryNow,
+      reasoning: requirePlanFirst ? "low" : (params.reasoning ?? "high"),
       abortSignal: signal,
       callbacks: {
         onContentDelta: (delta) => {
@@ -509,9 +642,37 @@ export async function runLLMStream(params: {
         // "Tool 'x' is not available." answer below, which every tool_use
         // without a result already gets, so the model is told plainly rather
         // than left waiting on a call that silently did nothing.
-        const permittedCalls = allowDocumentMutation
+        const mutationAllowedCalls = allowDocumentMutation
           ? calls
           : calls.filter((c) => !isDocumentMutatingTool(c.name));
+        const blockedPlanCalls = requirePlanBeforeMutation
+          ? mutationAllowedCalls.filter((c) =>
+              PLAN_FIRST_BLOCKED_TOOLS.has(c.name),
+            )
+          : [];
+        const permittedCalls = mutationAllowedCalls.filter((c) => {
+          if (
+            params.allowedToolNames &&
+            !params.allowedToolNames.has(c.name)
+          ) {
+            return false;
+          }
+          if (
+            !plansEnabled &&
+            (c.name === "create_plan" || c.name === "update_plan")
+          ) {
+            return false;
+          }
+          return (
+            !requirePlanBeforeMutation || !PLAN_FIRST_BLOCKED_TOOLS.has(c.name)
+          );
+        });
+        for (const call of blockedPlanCalls) {
+          clientResultByCallId.set(
+            call.id,
+            JSON.stringify({ error: CREATE_PLAN_REQUIRED_ERROR }),
+          );
+        }
         const serverCalls = clientTools
           ? permittedCalls.filter((c) => !clientTools.owns(c.name))
           : permittedCalls;
@@ -541,10 +702,18 @@ export async function runLLMStream(params: {
           docsReplicated,
           workflowsApplied,
           docsEdited,
+          docsFinalized,
           askInputsEvents,
+          planEvents,
           courtlistenerEvents,
           caseCitationEvents,
+          auLegislationEvents,
+          auEnergyEvents,
+          auVicLegislationEvents,
+          auCaseLawEvents,
+          legislationCitationEvents,
           mcpEvents,
+          outlookEvents,
         } = await runToolCalls(
           toolCalls,
           docStore,
@@ -560,6 +729,10 @@ export async function runLLMStream(params: {
           courtlistenerTurnState,
           apiKeys,
           nonce,
+          auLegislationTurnState,
+          params.planEventId
+            ? { planEventId: params.planEventId }
+            : undefined,
         );
         throwIfAborted(signal);
         for (const r of docsRead) {
@@ -618,22 +791,65 @@ export async function runLLMStream(params: {
             annotations: e.annotations,
           });
         }
+        for (const f of docsFinalized) {
+          events.push({
+            type: "doc_finalized",
+            filename: f.filename,
+            document_id: f.document_id,
+            version_id: f.version_id,
+            version_number: f.version_number,
+            source_document_id: f.source_document_id,
+            source_filename: f.source_filename,
+            download_url: f.download_url,
+            accepted: f.accepted,
+            comments_removed: f.comments_removed,
+          });
+        }
         for (const askInputsEvent of askInputsEvents) {
           write(`data: ${JSON.stringify(askInputsEvent)}\n\n`);
           events.push(askInputsEvent);
         }
+        for (const planEvent of planEvents) {
+          write(`data: ${JSON.stringify(planEvent)}\n\n`);
+          events.push(planEvent);
+        }
         for (const event of courtlistenerEvents) {
+          events.push(event);
+        }
+        for (const event of auLegislationEvents) {
+          events.push(event);
+        }
+        for (const event of auEnergyEvents) {
+          events.push(event);
+        }
+        for (const event of auVicLegislationEvents) {
+          events.push(event);
+        }
+        for (const event of auCaseLawEvents) {
           events.push(event);
         }
         for (const event of mcpEvents) {
           events.push(event);
         }
+        for (const event of outlookEvents) {
+          events.push(event);
+        }
         for (const event of caseCitationEvents) {
+          events.push(event);
+        }
+        for (const event of legislationCitationEvents) {
           events.push(event);
         }
 
         if (askInputsEvents.length > 0) {
           throw new AssistantStreamAskInputsPause();
+        }
+        const latestPlan = planEvents[planEvents.length - 1];
+        if (plansEnabled && latestPlan && planHasPendingItems(latestPlan)) {
+          throw new AssistantStreamPlanPause();
+        }
+        if (latestPlan) {
+          planSummaryNow.current = true;
         }
 
         // Index alignment would break if any tool branch skips its
@@ -655,18 +871,40 @@ export async function runLLMStream(params: {
         return calls.map((c) => ({
           tool_use_id: c.id,
           content:
-            resultByCallId.get(c.id) ??
-            JSON.stringify({
-              error: `Tool '${c.name}' is not available.`,
-            }),
+            planSummaryNow.current &&
+            (c.name === "create_plan" || c.name === "update_plan")
+              ? JSON.stringify({
+                  ok: true,
+                  plan_complete: true,
+                  instruction: PLAN_COMPLETE_SUMMARY,
+                })
+              : (resultByCallId.get(c.id) ??
+                JSON.stringify({
+                  error: `Tool '${c.name}' is not available.`,
+                })),
         }));
       },
     });
   } catch (err) {
-    if (isAskInputsPause(err)) {
-      // The ask_inputs event has already been emitted and persisted in `events`.
-      // Stop this assistant turn here so the model does not add redundant
-      // prose telling the user to answer the picker or attach documents.
+    if (isControlledStreamPause(err)) {
+      // ask_inputs and create_plan / update_plan are intentional pauses.
+      // The events are already in `events`. Stop so the model cannot keep
+      // working the rest of the job in this same turn.
+      if (
+        isPlanPause(err) &&
+        !params.suppressPlanPauseContent &&
+        !events.some(
+          (event) => event.type === "content" && event.text.trim().length > 0,
+        )
+      ) {
+        const contentEvent = {
+          type: "content" as const,
+          text: PLAN_PAUSE_CONTENT,
+        };
+        events.push(contentEvent);
+        write(`data: ${JSON.stringify(contentEvent)}\n\n`);
+        fullText += PLAN_PAUSE_CONTENT;
+      }
     } else if (isAbortError(err)) {
       flushPartialTurn({ emit: false });
       throw new AssistantStreamAbortError(
@@ -691,7 +929,22 @@ export async function runLLMStream(params: {
     }
   }
 
+  // A thinking block can end the stream without reasoning_block_end. Leaving
+  // it in the buffer drops the only thing the model sent, and the row is
+  // then saved empty and hidden on reload.
+  if (iterReasoning) {
+    events.push({ type: "reasoning", text: iterReasoning });
+    write(`data: ${JSON.stringify({ type: "reasoning_block_end" })}\n\n`);
+    iterReasoning = "";
+  }
   flushText();
+
+  const incompleteEvents = withIncompleteTurnEvent(events);
+  if (incompleteEvents.length > events.length) {
+    const extra = incompleteEvents[incompleteEvents.length - 1]!;
+    events.push(extra);
+    write(`data: ${JSON.stringify(extra)}\n\n`);
+  }
 
   // Parse and emit citations from <CITATIONS> block
   const { citations: parsedCitations, diagnostics: citationDiagnostics } =
@@ -707,6 +960,7 @@ export async function runLLMStream(params: {
         docIndex,
         courtlistenerTurnState.casesByClusterId,
         docStore,
+        auLegislationTurnState.titlesByCacheKey,
       ),
     );
     // Server-side quote verification. Fetch each document's extracted source
@@ -732,6 +986,8 @@ export async function runLLMStream(params: {
       getSourceText,
       async (clusterId) =>
         getCachedCaseOpinionTexts(courtlistenerTurnState, clusterId),
+      async (titleId, asAt) =>
+        getCachedLegislationText(auLegislationTurnState, titleId, asAt),
     );
   }
   devLog("[chat/stream] final citations", {

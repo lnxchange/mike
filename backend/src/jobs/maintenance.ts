@@ -1,12 +1,13 @@
 import { createServerSupabase, type Db } from "../lib/supabase";
 import { logError } from "../lib/log";
 import { sweepStaleProcessingDocuments } from "../modules/documents/documents.service";
+import { enqueueMatterBriefsForExistingProjects } from "../modules/memory/memory.service";
 import { sweepStaleGeneratingCells } from "../modules/tabular/tabular.service";
 
 /** Run both sweeps; errors are contained per sweep. */
 export async function runStaleWorkSweep(
     db: Db = createServerSupabase(),
-): Promise<{ documents: number; cells: number }> {
+): Promise<{ documents: number; cells: number; matterBriefs: number }> {
     const documents = await sweepStaleProcessingDocuments(db).catch((err) => {
         logError("stale-sweep", err, { sweep: "documents" });
         return 0;
@@ -15,5 +16,9 @@ export async function runStaleWorkSweep(
         logError("stale-sweep", err, { sweep: "cells" });
         return 0;
     });
-    return { documents, cells };
+    const matterBriefs = await enqueueMatterBriefsForExistingProjects(db).catch((err) => {
+        logError("stale-sweep", err, { sweep: "matter-briefs" });
+        return 0;
+    });
+    return { documents, cells, matterBriefs };
 }

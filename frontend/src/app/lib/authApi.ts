@@ -3,6 +3,7 @@ export interface AuthUser {
     email: string;
     pendingEmail: string | null;
     createdWithGoogle: boolean;
+    microsoftConnected?: boolean;
 }
 
 export interface MfaFactor {
@@ -84,6 +85,24 @@ export async function startGoogleOAuth(next: string) {
     });
 }
 
+export async function getAuthConfig() {
+    return authRequest<{ microsoftEnabled: boolean }>("/config");
+}
+
+export async function startMicrosoftOAuth(
+    next: string,
+    intent?: "link",
+) {
+    return authRequest<{ url: string }>("/oauth", {
+        method: "POST",
+        body: JSON.stringify({
+            provider: "azure",
+            next,
+            ...(intent ? { intent } : {}),
+        }),
+    });
+}
+
 export function startSso(next: string, email: string) {
     return authRequest<{ url: string }>("/oauth", {
         method: "POST",
@@ -92,7 +111,7 @@ export function startSso(next: string, email: string) {
 }
 
 export async function exchangeAuthCode(code: string) {
-    return authRequest<{ user: AuthUser }>("/exchange", {
+    return authRequest<{ user: AuthUser; next?: string }>("/exchange", {
         method: "POST",
         body: JSON.stringify({ code }),
     });

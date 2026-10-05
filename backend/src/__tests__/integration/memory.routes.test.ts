@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   checkProjectAccess: vi.fn(),
+  getOrgRole: vi.fn(),
   ensureMemoryFile: vi.fn(),
   getMemoryCurrent: vi.fn(),
   wipeMemoryFile: vi.fn(),
@@ -29,6 +30,8 @@ vi.mock("../../lib/supabase", () => ({
 
 vi.mock("../../lib/access", () => ({
   checkProjectAccess: (...args: unknown[]) => mocks.checkProjectAccess(...args),
+  getOrgRole: (...args: unknown[]) => mocks.getOrgRole(...args),
+  isOrgAdmin: (role: string | null | undefined) => role === "admin",
 }));
 
 vi.mock("../../lib/memory/files", async (importOriginal) => {
@@ -44,7 +47,7 @@ vi.mock("../../lib/memory/files", async (importOriginal) => {
   };
 });
 
-import { projectMemoryRouter, userMemoryRouter } from "../../modules/memory/memory.routes";
+import { orgMemoryRouter, projectMemoryRouter, userMemoryRouter } from "../../modules/memory/memory.routes";
 import { MemoryRevisionConflictError } from "../../lib/memory/files";
 
 const file = {
@@ -80,6 +83,7 @@ function testApp() {
   app.use(express.json());
   app.use("/user/memory", userMemoryRouter);
   app.use("/projects/:projectId/memory", projectMemoryRouter);
+  app.use("/orgs/:orgId/memory", orgMemoryRouter);
   return app;
 }
 
@@ -101,6 +105,7 @@ beforeEach(() => {
     ok: true,
     projectRole: "owner",
   });
+  mocks.getOrgRole.mockResolvedValue("admin");
 });
 
 describe("scoped memory routes", () => {
@@ -249,6 +254,42 @@ describe("scoped memory routes", () => {
     expect(mocks.wipeMemoryFile).toHaveBeenCalledOnce();
     expect(mocks.wipeMemoryFile).toHaveBeenCalledWith(
       expect.objectContaining({ enabled: false, source: "settings" }),
+    );
+  });
+
+  it("lets org members read memory and reserves writes for admins", async () => {
+    const base = "/orgs/00000000-0000-4000-8000-000000000030/memory";
+    mocks.getOrgRole.mockResolvedValue("member");
+
+    await request(testApp()).get(base).expect(200);
+    expect(mocks.ensureMemoryFile).toHaveBeenCalledWith(
+      expect.anything(),
+      "org",
+      "00000000-0000-4000-8000-000000000030",
+    );
+
+    await request(testApp())
+      .put(base)
+      .send({ content: "house", expected_revision: 2 })
+      .expect(403);
+    await request(testApp())
+      .patch(`${base}/settings`)
+      .send({ enabled: false })
+      .expect(403);
+    expect(mocks.writeMemoryFile).not.toHaveBeenCalled();
+    expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
+
+    mocks.getOrgRole.mockResolvedValue("admin");
+    await request(testApp())
+      .put(base)
+      .send({ content: "house", expected_revision: 2 })
+      .expect(200);
+    expect(mocks.writeMemoryFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "house",
+        expectedRevision: 2,
+        source: "manual",
+      }),
     );
   });
 });

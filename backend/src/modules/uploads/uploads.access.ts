@@ -16,6 +16,10 @@ import {
   creatorScopedAllowed,
   ensureDocAccess,
 } from "../../lib/access";
+import {
+  resolveLibraryActor,
+  resolveLibraryWriteTarget,
+} from "../library/library.service";
 import type { Db } from "../../lib/supabase";
 import type { ParsedUploadSessionRequest } from "./uploads.manifest";
 import {
@@ -87,6 +91,8 @@ export async function validateDestinationAccess(
       return { ok: true };
     }
 
+    const actor = await resolveLibraryActor(db, userId);
+    const libraryKind = destination.library_kind as "file" | "template";
     const folderIds = Array.from(
       new Set(
         [
@@ -95,16 +101,28 @@ export async function validateDestinationAccess(
         ].filter((value): value is string => !!value),
       ),
     );
-    if (!folderIds.length) return { ok: true };
-    const { data, error } = await db
-      .from("library_folders")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("library_kind", destination.library_kind as string)
-      .in("id", folderIds);
-    if (error) return internalFailure(error);
-    if ((data ?? []).length !== folderIds.length) {
-      return failure(404, { detail: "Folder not found" });
+    const primary = await resolveLibraryWriteTarget(db, actor, libraryKind, {
+      folder_id: folderIds[0] ?? null,
+      org_id: (destination.org_id as string | null | undefined) ?? null,
+    });
+    if (!primary.ok) {
+      return primary.failure === "internal"
+        ? internalFailure(primary.error)
+        : failure(primary.status === 403 ? 403 : 404, { detail: primary.detail });
+    }
+    for (const folderId of folderIds.slice(1)) {
+      const next = await resolveLibraryWriteTarget(db, actor, libraryKind, {
+        folder_id: folderId,
+        org_id: primary.data.orgId,
+      });
+      if (!next.ok) {
+        return next.failure === "internal"
+          ? internalFailure(next.error)
+          : failure(next.status === 403 ? 403 : 404, { detail: next.detail });
+      }
+      if (next.data.orgId !== primary.data.orgId) {
+        return failure(400, { detail: "Cannot upload into more than one library" });
+      }
     }
     return { ok: true };
   }

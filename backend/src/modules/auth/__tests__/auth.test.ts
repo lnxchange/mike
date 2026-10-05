@@ -16,6 +16,7 @@ const {
       signInWithPassword: vi.fn(),
       signUp: vi.fn(),
       signInWithOAuth: vi.fn(),
+      linkIdentity: vi.fn(),
       signInWithSSO: vi.fn(),
       exchangeCodeForSession: vi.fn(),
       resetPasswordForEmail: vi.fn(),
@@ -36,17 +37,26 @@ const {
 vi.mock("../../../lib/authSession", () => ({
   createRequestSupabase,
   clearRequestAuthCookies,
-  publicAuthUser: (user: {
-    id: string;
-    email?: string;
-    new_email?: string;
-    app_metadata?: { provider?: string };
-  }) => ({
+  authCookiesAreSecure: () => false,
+  publicAuthUser: (
+    user: {
+      id: string;
+      email?: string;
+      new_email?: string;
+      app_metadata?: { provider?: string };
+    },
+    extras?: { microsoftConnected?: boolean },
+  ) => ({
     id: user.id,
     email: user.email ?? "",
     pendingEmail: user.new_email ?? null,
     createdWithGoogle: user.app_metadata?.provider === "google",
+    microsoftConnected: extras?.microsoftConnected === true,
   }),
+}));
+vi.mock("../../integrations/integrations.service", () => ({
+  isMicrosoftConnected: vi.fn(async () => false),
+  persistProviderSessionTokens: vi.fn(async () => undefined),
 }));
 vi.mock("../../../lib/authHandoff", () => ({
   issueAuthHandoff,
@@ -80,7 +90,12 @@ describe("auth routes", () => {
     process.env.FRONTEND_URL = origin;
     process.env.NODE_ENV = "production";
     delete process.env.WORD_ADDIN_URL;
-    for (const key of ["SSO_ENABLED", "SSO_ALLOWED_DOMAINS"])
+    for (const key of [
+      "SSO_ENABLED",
+      "SSO_ALLOWED_DOMAINS",
+      "MICROSOFT_OAUTH_ENABLED",
+      "ALLOWED_ORIGINS",
+    ])
       delete process.env[key];
     createRequestSupabase.mockReset().mockReturnValue(authClient);
     clearRequestAuthCookies.mockReset();
@@ -124,6 +139,7 @@ describe("auth routes", () => {
         email: user.email,
         pendingEmail: null,
         createdWithGoogle: false,
+        microsoftConnected: false,
       },
     });
     expect(JSON.stringify(response.body)).not.toContain("server-only-token");
@@ -153,6 +169,112 @@ describe("auth routes", () => {
         skipBrowserRedirect: true,
       },
     });
+  });
+
+  it("rejects Microsoft OAuth when the feature is disabled", async () => {
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .send({ provider: "azure" });
+    expect(response.status).toBe(403);
+    expect(authClient.auth.signInWithOAuth).not.toHaveBeenCalled();
+  });
+
+  it("starts Microsoft OAuth with Graph scopes when enabled", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    authClient.auth.signInWithOAuth.mockResolvedValue({
+      data: { url: "https://login.microsoftonline.test/authorize" },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .send({ provider: "azure" });
+
+    expect(response.status).toBe(200);
+    expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "azure",
+      options: {
+        redirectTo: "https://app.example.test/auth/callback",
+        skipBrowserRedirect: true,
+        scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
+      },
+    });
+    const cookies = response.headers["set-cookie"]?.join(" ") ?? "";
+    expect(cookies).toContain("mike-oauth-provider=azure");
+    expect(cookies).toContain(
+      "mike-auth-next=%2Fonboarding%2Fprofile",
+    );
+  });
+
+  it("keeps the Microsoft callback on the browser host, not the Origin alias", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    process.env.ALLOWED_ORIGINS = "https://alias.example.test";
+    authClient.auth.signInWithOAuth.mockResolvedValue({
+      data: {
+        url: "https://login.microsoftonline.test/authorize",
+        flowId: "abc123def456",
+      },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .set("X-Forwarded-Host", "alias.example.test")
+      .set("X-Forwarded-Proto", "https")
+      .send({ provider: "azure", next: "/settings/security" });
+
+    expect(response.status).toBe(200);
+    expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "azure",
+      options: {
+        redirectTo: "https://alias.example.test/auth/callback",
+        skipBrowserRedirect: true,
+        scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
+      },
+    });
+    const cookies = response.headers["set-cookie"]?.join(" ") ?? "";
+    expect(cookies).toContain("mike-pkce-flow=abc123def456");
+    expect(cookies).toContain("mike-auth-next=%2Fsettings%2Fsecurity");
+  });
+
+  it("reconnects Microsoft with a sign-in instead of manual linking", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    authClient.auth.getUser.mockResolvedValue({
+      data: { user },
+      error: null,
+    });
+    authClient.auth.signInWithOAuth.mockResolvedValue({
+      data: { url: "https://login.microsoftonline.test/authorize" },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .send({ provider: "azure", intent: "link", next: "/settings/security" });
+
+    expect(response.status).toBe(200);
+    expect(authClient.auth.linkIdentity).not.toHaveBeenCalled();
+    expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "azure",
+      options: {
+        redirectTo: "https://app.example.test/auth/callback",
+        skipBrowserRedirect: true,
+        scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
+      },
+    });
+  });
+
+  it("reports whether Microsoft login is enabled", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    const response = await request(app)
+      .get("/auth/config")
+      .set("Origin", origin);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ microsoftEnabled: true });
   });
 
   it("disables SSO initiation by default", async () => {
@@ -375,12 +497,37 @@ describe("auth routes", () => {
           email: user.email,
           pendingEmail: null,
           createdWithGoogle: false,
+          microsoftConnected: false,
         },
       });
       expect(JSON.stringify(response.body)).not.toContain("mfa-access-token");
       expect(JSON.stringify(response.body)).not.toContain("mfa-refresh-token");
     },
   );
+
+  it("exchanges the Microsoft code with the flow that started it", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    authClient.auth.exchangeCodeForSession.mockResolvedValue({
+      data: { user, session },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/exchange")
+      .set("Origin", origin)
+      .set(
+        "Cookie",
+        "mike-pkce-flow=abc123def456; mike-auth-next=%2Fsettings%2Fsecurity",
+      )
+      .send({ code: "oauth-code" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.next).toBe("/settings/security");
+    expect(authClient.auth.exchangeCodeForSession).toHaveBeenCalledWith(
+      "oauth-code",
+      { flowId: "abc123def456" },
+    );
+  });
 
   it("exchanges Word OAuth sessions for an opaque handoff ticket", async () => {
     process.env.WORD_ADDIN_URL = wordOrigin;
@@ -436,6 +583,7 @@ describe("auth routes", () => {
         email: user.email,
         pendingEmail: null,
         createdWithGoogle: false,
+        microsoftConnected: false,
       },
     });
     expect(JSON.stringify(response.body)).not.toContain("handoff-access-token");

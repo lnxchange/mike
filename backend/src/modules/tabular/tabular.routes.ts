@@ -745,6 +745,10 @@ tabularRouter.post("/:reviewId/chat", requireAuth, asyncRoute(async (req, res) =
             write,
             extraTools: TABULAR_TOOLS,
             includeResearchTools: false,
+            includeAuResearchTools: false,
+            includeAuEnergyResearchTools: false,
+            includeAuVicResearchTools: false,
+            includeAuCasesResearchTools: false,
             tabularStore,
             buildCitations: (text) =>
                 extractTabularAnnotations(text, tabularStore),
@@ -805,7 +809,9 @@ tabularRouter.post("/:reviewId/chat", requireAuth, asyncRoute(async (req, res) =
             assistantSaved &&
             !persistedEvents.some(
                 (event) =>
-                    event.type === "ask_inputs" || event.type === "error",
+                    event.type === "ask_inputs" ||
+                    event.type === "plan" ||
+                    event.type === "error",
             )
         ) {
             const scheduled = await scheduleMemoryConsolidation({

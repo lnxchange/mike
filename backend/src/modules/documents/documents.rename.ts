@@ -12,7 +12,11 @@ import {
 
 type RenameScope =
   | { kind: "project"; projectId: string }
-  | { kind: "library"; libraryKind: "file" | "template" };
+  | {
+      kind: "library";
+      libraryKind: "file" | "template";
+      orgId?: string | null;
+    };
 
 type RenameArgs = {
   userId: string;
@@ -40,7 +44,10 @@ function scopedDocumentQuery(db: Db, args: RenameArgs, touch = false) {
   if (args.scope.kind === "project") {
     return query.eq("project_id", args.scope.projectId);
   }
-  query = query.eq("user_id", args.userId).is("project_id", null);
+  query = query.is("project_id", null);
+  query = args.scope.orgId
+    ? query.eq("org_id", args.scope.orgId)
+    : query.eq("user_id", args.userId).is("org_id", null);
   return args.scope.libraryKind === "file"
     ? query.or("library_kind.eq.file,library_kind.is.null")
     : query.eq("library_kind", args.scope.libraryKind);

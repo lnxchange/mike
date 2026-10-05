@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { PanelLeft } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { authCallbackPathFromSearch } from "@/app/lib/authRedirects";
 import { ChatHistoryProvider } from "@/app/contexts/ChatHistoryContext";
 import { SidebarContext } from "@/app/contexts/SidebarContext";
 import { PageChromeContext } from "@/app/contexts/PageChromeContext";
@@ -100,6 +101,11 @@ export default function MikeLayout({
     const sidebarValue = useMemo(() => ({ setSidebarOpen }), [setSidebarOpen]);
 
     useEffect(() => {
+        const handoff = authCallbackPathFromSearch(window.location.search);
+        if (handoff) {
+            router.replace(handoff);
+            return;
+        }
         if (!authLoading && !isAuthenticated) {
             router.push("/login");
         }

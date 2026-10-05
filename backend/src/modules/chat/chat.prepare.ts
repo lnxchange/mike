@@ -13,6 +13,11 @@
 // DB preparation live here. `prepareChatStream` returns the prepared data the
 // route needs to run the stream; it does not stream.
 import { type Db } from "../../lib/supabase";
+import { withAuExecutionBlocksPrompt } from "../../lib/auExecutionBlocks";
+import {
+    createLegalSourceStore,
+    persistLegalSourceUploads,
+} from "../../lib/legalSourceStore";
 import { buildDocContext, buildMessages, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, generateSpotlightNonce, type AskInputsResponseRequest, type ChatMessage } from "./engine/index";
 import { getUserModelSettings, resolveUserChatSelection } from "../user/user.service";
 import { checkProjectAccess, projectHasSharedAudience, resolveContentOrgId } from "../../lib/access";
@@ -57,6 +62,10 @@ export type PreparedChatStream = {
     apiMessages: ReturnType<typeof buildMessages>;
     workflowStore: Awaited<ReturnType<typeof buildWorkflowStore>>;
     legalResearchUs: boolean;
+    legalResearchAu: boolean;
+    legalResearchAuEnergy: boolean;
+    legalResearchAuVic: boolean;
+    legalResearchAuCases: boolean;
     apiKeys: Awaited<ReturnType<typeof getUserModelSettings>>["api_keys"];
     titleModel: Awaited<
         ReturnType<typeof getUserModelSettings>
@@ -340,6 +349,25 @@ export async function prepareChatStream(
             db,
             chatId,
         );
+        try {
+            await persistLegalSourceUploads({
+                store: createLegalSourceStore(db, {
+                    userId,
+                    projectId: resolvedProjectId,
+                }),
+                items: await collectLegalSourceAskItems(
+                    db,
+                    chatId,
+                    args.askInputsResponse,
+                ),
+                documents: Object.values(docIndex).map((info) => ({
+                    filename: info.filename,
+                    versionId: info.version_id,
+                })),
+            });
+        } catch {
+            console.warn("[legal-source] persist uploads failed", { chatId });
+        }
         const docAvailability = Object.entries(docIndex).map(([doc_id, info]) => ({
             doc_id,
             filename: info.filename,
@@ -357,6 +385,10 @@ export async function prepareChatStream(
         const {
             api_keys: apiKeys,
             legal_research_us: legalResearchUs,
+            legal_research_au: legalResearchAu,
+            legal_research_au_energy: legalResearchAuEnergy,
+            legal_research_au_vic: legalResearchAuVic,
+            legal_research_au_cases: legalResearchAuCases,
             title_model: titleModel,
             personalisation,
         } = modelSettings;
@@ -367,9 +399,18 @@ export async function prepareChatStream(
         const apiMessages = buildMessages(
             enrichedMessages,
             docAvailability,
-            personalisationPrompt || undefined,
+            withAuExecutionBlocksPrompt(
+                personalisationPrompt || undefined,
+                personalisation?.jurisdiction,
+            ),
             undefined,
-            legalResearchUs,
+            {
+                us: legalResearchUs,
+                au: legalResearchAu,
+                energy: legalResearchAuEnergy,
+                vic: legalResearchAuVic,
+                cases: legalResearchAuCases,
+            },
             nonce,
         );
 
@@ -393,6 +434,10 @@ export async function prepareChatStream(
                 apiMessages,
                 workflowStore,
                 legalResearchUs,
+                legalResearchAu,
+                legalResearchAuEnergy,
+                legalResearchAuVic,
+                legalResearchAuCases,
                 apiKeys,
                 titleModel,
                 selectedModel,
@@ -417,4 +462,50 @@ export async function prepareChatStream(
         }
         throw error;
     }
+}
+
+async function collectLegalSourceAskItems(
+    db: Db,
+    chatId: string,
+    current: AskInputsResponseRequest | null,
+): Promise<
+    Array<{
+        id: string;
+        kind?: string;
+        filenames?: string[];
+        skipped?: boolean;
+    }>
+> {
+    const items: Array<{
+        id: string;
+        kind?: string;
+        filenames?: string[];
+        skipped?: boolean;
+    }> = [];
+    if (current?.responses) {
+        items.push(...current.responses);
+    }
+    const { data: rows } = await db
+        .from("chat_messages")
+        .select("content")
+        .eq("chat_id", chatId)
+        .eq("role", "assistant");
+    for (const row of rows ?? []) {
+        const content = (row as { content?: unknown }).content;
+        if (!Array.isArray(content)) continue;
+        for (const event of content as Record<string, unknown>[]) {
+            if (event?.type !== "ask_inputs_response") continue;
+            const responses = Array.isArray(event.responses)
+                ? event.responses
+                : [];
+            for (const response of responses) {
+                if (!response || typeof response !== "object") continue;
+                const id = (response as { id?: unknown }).id;
+                if (typeof id === "string") {
+                    items.push(response as { id: string });
+                }
+            }
+        }
+    }
+    return items;
 }

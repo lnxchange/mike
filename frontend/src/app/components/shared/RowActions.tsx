@@ -31,8 +31,15 @@ import {
 } from "@/app/components/ui/liquid-dropdown";
 import { cn } from "@/app/lib/utils";
 import { LIQUID_GLASS_HOVER_CLASS } from "@/app/components/ui/liquid-surface";
+import { appConfig } from "@/config";
 
 export { CLOSE_ROW_ACTIONS_EVENT, closeRowActionMenus };
+
+// "CM number" reads as "Edit CM No.", "Matter number" as "Edit Matter No.".
+const REFERENCE_SHORT = appConfig.terminology.referenceNumber.replace(
+    /\s+number$/i,
+    "",
+);
 
 export type RowActionMenuSurfaceProps = ComponentPropsWithoutRef<"div">;
 
@@ -156,7 +163,7 @@ export const RowActionMenuItems = forwardRef<
                     className={ROW_ACTION_ITEM_CLASS}
                 >
                     <Hash className="h-3.5 w-3.5" />
-                    Edit CM No.
+                    Edit {REFERENCE_SHORT} No.
                 </LiquidDropdownButton>
             )}
             {onDownload && (

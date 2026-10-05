@@ -3,6 +3,11 @@
 import { useEffect, useState } from "react";
 import { API_BASE } from "@/app/lib/mikeApi";
 import { authenticatedFetch } from "@/app/lib/authEvents";
+import {
+    DOCUMENT_FETCH_TIMEOUT_MS,
+    DOCUMENT_LOAD_FAILED_MESSAGE,
+    DOCUMENT_LOAD_TIMEOUT_MESSAGE,
+} from "@/app/lib/documentViewerTimeout";
 
 /**
  * /display returns PDF bytes (when the active version has a PDF rendition),
@@ -24,6 +29,18 @@ function isSpreadsheetContentType(contentType: string): boolean {
     );
 }
 
+function isPdfMagic(buffer: ArrayBuffer): boolean {
+    const head = new Uint8Array(buffer.slice(0, 5));
+    return (
+        head.length >= 5 &&
+        head[0] === 0x25 &&
+        head[1] === 0x50 &&
+        head[2] === 0x44 &&
+        head[3] === 0x46 &&
+        head[4] === 0x2d
+    );
+}
+
 export function useFetchSingleDoc(
     documentId: string | null | undefined,
     versionId?: string | null,
@@ -42,6 +59,10 @@ export function useFetchSingleDoc(
             return;
         }
         const controller = new AbortController();
+        const timeoutId = window.setTimeout(
+            () => controller.abort(),
+            DOCUMENT_FETCH_TIMEOUT_MS,
+        );
 
         setLoading(true);
         setError(null);
@@ -58,34 +79,51 @@ export function useFetchSingleDoc(
                 const response = await authenticatedFetch(
                     displayUrl ??
                         `${API_BASE}/single-documents/${documentId}/display${qs}`,
-                    { credentials: "include", signal: controller.signal },
+                    {
+                        credentials: "include",
+                        cache: "no-store",
+                        signal: controller.signal,
+                    },
                 );
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 if (cancelled) return;
 
                 const contentType = response.headers.get("content-type") ?? "";
-                if (contentType.includes("application/pdf")) {
-                    const buffer = await response.arrayBuffer();
-                    if (!cancelled) setResult({ type: "pdf", buffer });
+                const buffer = await response.arrayBuffer();
+                if (cancelled) return;
+                if (contentType.includes("application/pdf") || isPdfMagic(buffer)) {
+                    if (!isPdfMagic(buffer)) {
+                        throw new Error("HTTP 200 returned a non-PDF body");
+                    }
+                    setResult({ type: "pdf", buffer });
                 } else if (isSpreadsheetContentType(contentType)) {
-                    const buffer = await response.arrayBuffer();
-                    if (!cancelled) setResult({ type: "spreadsheet", buffer });
+                    setResult({ type: "spreadsheet", buffer });
+                } else if (
+                    contentType.includes("json") ||
+                    contentType.includes("html") ||
+                    contentType.startsWith("text/")
+                ) {
+                    throw new Error("HTTP 200 returned a non-document body");
                 } else {
-                    // Drain the body so the connection is reusable, but the
-                    // bytes are useless to PDF/spreadsheet viewers. Callers
-                    // should route DOC/DOCX files to DocxView directly.
-                    await response.arrayBuffer().catch(() => {});
-                    if (!cancelled) setResult({ type: "docx" });
+                    setResult({ type: "docx" });
                 }
             } catch {
-                if (!cancelled) setError("Failed to load document.");
+                if (!cancelled) {
+                    setError(
+                        controller.signal.aborted
+                            ? DOCUMENT_LOAD_TIMEOUT_MESSAGE
+                            : DOCUMENT_LOAD_FAILED_MESSAGE,
+                    );
+                }
             } finally {
+                window.clearTimeout(timeoutId);
                 if (!cancelled) setLoading(false);
             }
         })();
 
         return () => {
             cancelled = true;
+            window.clearTimeout(timeoutId);
             controller.abort();
         };
     }, [displayUrl, documentId, versionId, refetchKey]);

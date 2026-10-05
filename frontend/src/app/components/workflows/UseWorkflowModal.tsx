@@ -23,6 +23,9 @@ import { NoModelsWarningPopup } from "../popups/NoModelsWarningPopup";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { isModelAvailable } from "@/app/lib/modelAvailability";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 interface Props {
     workflow: Workflow | null;
@@ -262,13 +265,16 @@ export function UseWorkflowModal({ workflow, onClose, skipSelect = false }: Prop
         wf.metadata.type === "assistant"
             ? [
                   { value: "workspace" as const, label: "Assistant" },
-                  { value: "project" as const, label: "Project assistant" },
+                  {
+                      value: "project" as const,
+                      label: `${t.project} assistant`,
+                  },
               ]
             : [
                   { value: "workspace" as const, label: "Tabular reviews" },
                   {
                       value: "project" as const,
-                      label: "Project tabular reviews",
+                      label: `${t.project} tabular reviews`,
                   },
               ];
 
@@ -398,7 +404,9 @@ export function UseWorkflowModal({ workflow, onClose, skipSelect = false }: Prop
 
                         {inProject && (
                             <div>
-                                <FieldLabel htmlFor="workflow-project">Project</FieldLabel>
+                                <FieldLabel htmlFor="workflow-project">
+                                    {t.project}
+                                </FieldLabel>
                                 <ModalSelect
                                     id="workflow-project"
                                     value={selectedProjectId ?? ""}
@@ -412,10 +420,10 @@ export function UseWorkflowModal({ workflow, onClose, skipSelect = false }: Prop
                                     }}
                                     placeholder={
                                         dirLoading
-                                            ? "Loading projects..."
+                                            ? `Loading ${t.projectsLower}...`
                                             : projects.length
-                                              ? "Select project..."
-                                              : "No projects found"
+                                              ? `Select ${t.projectLower}...`
+                                              : `No ${t.projectsLower} found`
                                     }
                                     disabled={dirLoading || projects.length === 0}
                                 />

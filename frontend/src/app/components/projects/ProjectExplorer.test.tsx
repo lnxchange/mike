@@ -48,6 +48,27 @@ describe("ProjectExplorer uploads", () => {
     });
 });
 
+describe("ProjectExplorer empty state", () => {
+    it("says SharePoint files are still processing", () => {
+        render(
+            <ProjectExplorer
+                documents={[]}
+                onDocClick={vi.fn()}
+                sharepointIngest={{ expected: 3, ready: 0 }}
+            />,
+        );
+
+        expect(
+            screen.getByText(
+                "Syncing from SharePoint, 0 of 3 ready",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText("No documents in this project."),
+        ).toBeNull();
+    });
+});
+
 describe("ProjectExplorer actions", () => {
     it("downloads a document from its context menu without opening it", () => {
         const document = { id: "doc-1", filename: "Draft.docx", file_type: "docx", folder_id: null } as Document;

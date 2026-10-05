@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../storage", () => ({
     assertStorageConfigured: vi.fn(),
     deleteFile: vi.fn(async () => {}),
+    downloadFile: vi.fn(async () => null),
     listFiles: vi.fn(async () => [] as string[]),
     // Kept real: cleanup must delete the exact key the
     // document.precompute_text job writes, so a fake would defeat the point

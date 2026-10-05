@@ -104,6 +104,9 @@ export function createRequestSupabase(
         return parseCookieHeader(req.headers.cookie ?? "");
       },
       setAll(cookiesToSet, responseHeaders) {
+        // A late auth event can fire after the handler has already replied.
+        // Writing then throws and can fail the Microsoft code exchange.
+        if (res.headersSent) return;
         for (const { name, value, options } of cookiesToSet) {
           appendCookie(res, name, value, {
             ...options,
@@ -129,13 +132,18 @@ export interface PublicAuthUser {
   email: string;
   pendingEmail: string | null;
   createdWithGoogle: boolean;
+  microsoftConnected: boolean;
 }
 
-export function publicAuthUser(user: User): PublicAuthUser {
+export function publicAuthUser(
+  user: User,
+  extras?: { microsoftConnected?: boolean },
+): PublicAuthUser {
   return {
     id: user.id,
     email: user.email ?? "",
     pendingEmail: user.new_email ?? null,
     createdWithGoogle: user.app_metadata?.provider === "google",
+    microsoftConnected: extras?.microsoftConnected === true,
   };
 }

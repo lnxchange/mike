@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
+import { useSuspendBackdropWhileSelecting } from "@/shared/ui/suspendBackdropWhileSelecting";
 import { AuthProvider } from "@/app/contexts/AuthContext";
 import { UserProfileProvider } from "@/app/contexts/UserProfileContext";
 import { MfaLoginGate } from "@/app/components/shared/MfaLoginGate";
@@ -8,6 +9,7 @@ import { FullScreenLoader } from "@/app/components/shared/FullScreenLoader";
 import { OnboardingGate } from "@/app/components/auth/OnboardingGate";
 
 export function Providers({ children }: { children: React.ReactNode }) {
+    useSuspendBackdropWhileSelecting();
     return (
         <AuthProvider>
             <UserProfileProvider>

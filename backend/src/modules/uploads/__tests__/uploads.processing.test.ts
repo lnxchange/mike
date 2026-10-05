@@ -295,6 +295,265 @@ describe("upload processing", () => {
     });
   });
 
+  it("writes the external reference onto the document and marks V1 as a sync", async () => {
+    const external = {
+      provider: "sharepoint" as const,
+      drive_id: "b!drive",
+      item_id: "01ITEM",
+      ctag: "c:{guid},1",
+      web_url: "https://contoso.sharepoint.com/sites/x/contract.pdf",
+    };
+    const db = scriptedDb([
+      // projects.org_id lookup for the destination project
+      { data: { org_id: "88888888-8888-4888-8888-888888888888" }, error: null },
+      // documents lookup by external item (none yet)
+      { data: null, error: null },
+      // documents.upsert
+      { error: null },
+      // upload_session_files marker
+      { error: null },
+      // documents.update -> ready
+      {
+        data: {
+          id: baseFile.resource_id,
+          user_id: baseSession.user_id,
+          folder_id: null,
+          library_folder_id: null,
+          external_item_id: external.item_id,
+        },
+        error: null,
+      },
+    ]);
+
+    await processUploadFile(
+      db as never,
+      {
+        ...baseSession,
+        destination: {
+          scope: "project",
+          project_id: "77777777-7777-4777-8777-777777777777",
+        },
+      },
+      { ...baseFile, client_meta: { external } },
+    );
+
+    const upsert = db.calls.find(
+      (call) => call.table === "documents" && call.operation === "upsert",
+    );
+    expect(upsert?.payload).toMatchObject({
+      external_provider: "sharepoint",
+      external_item_id: "01ITEM",
+      external_ctag: "c:{guid},1",
+      external_web_url: external.web_url,
+    });
+    expect(db.rpc).toHaveBeenCalledWith(
+      "create_document_version",
+      expect.objectContaining({
+        p_version: expect.objectContaining({ source: "sharepoint_sync" }),
+      }),
+    );
+  });
+
+  it("writes email list fields from the upload manifest", async () => {
+    const email = {
+      subject: "s155 notice",
+      from: "accc@example.gov.au",
+      to: "yule@attune.legal",
+      received_at: "2026-03-01T03:00:00.000Z",
+    };
+    const db = scriptedDb([
+      { data: { org_id: "88888888-8888-4888-8888-888888888888" }, error: null },
+      { error: null },
+      { error: null },
+      {
+        data: {
+          id: baseFile.resource_id,
+          user_id: baseSession.user_id,
+          folder_id: null,
+          library_folder_id: null,
+          email_subject: email.subject,
+        },
+        error: null,
+      },
+    ]);
+
+    await processUploadFile(
+      db as never,
+      {
+        ...baseSession,
+        destination: {
+          scope: "project",
+          project_id: "77777777-7777-4777-8777-777777777777",
+        },
+      },
+      { ...baseFile, client_meta: { email } },
+    );
+
+    const upsert = db.calls.find(
+      (call) => call.table === "documents" && call.operation === "upsert",
+    );
+    expect(upsert?.payload).toMatchObject({
+      email_subject: "s155 notice",
+      email_from: "accc@example.gov.au",
+      email_to: "yule@attune.legal",
+      email_received_at: "2026-03-01T03:00:00.000Z",
+    });
+  });
+
+  it("leaves the external columns alone for an ordinary upload", async () => {
+    const db = scriptedDb([
+      { error: null },
+      { error: null },
+      {
+        data: {
+          id: baseFile.resource_id,
+          user_id: baseSession.user_id,
+          folder_id: null,
+          library_folder_id: null,
+        },
+        error: null,
+      },
+    ]);
+
+    await processUploadFile(db as never, baseSession, baseFile);
+
+    const upsert = db.calls.find(
+      (call) => call.table === "documents" && call.operation === "upsert",
+    );
+    expect(upsert?.payload).not.toHaveProperty("external_item_id");
+    expect(db.rpc).toHaveBeenCalledWith(
+      "create_document_version",
+      expect.objectContaining({
+        p_version: expect.objectContaining({ source: "upload" }),
+      }),
+    );
+  });
+
+  it("moves the document's change tag forward when a synced item becomes a new version", async () => {
+    const documentId = "55555555-5555-4555-8555-555555555555";
+    const external = {
+      provider: "sharepoint" as const,
+      drive_id: "b!drive",
+      item_id: "01ITEM",
+      ctag: "c:{guid},2",
+    };
+    const db = fakeDb();
+
+    await processUploadFile(
+      db as never,
+      {
+        ...baseSession,
+        purpose: "document_version_create",
+        destination: { document_id: documentId },
+      },
+      { ...baseFile, client_meta: { external } },
+    );
+
+    expect(db.rpc).toHaveBeenCalledWith(
+      "create_document_version",
+      expect.objectContaining({
+        p_document_id: documentId,
+        p_version: expect.objectContaining({ source: "sharepoint_sync" }),
+      }),
+    );
+    expect(db.from).toHaveBeenCalledWith("documents");
+  });
+
+  it("adopts an already-mirrored SharePoint item with the same ctag", async () => {
+    const existingId = "55555555-5555-4555-8555-555555555555";
+    const external = {
+      provider: "sharepoint" as const,
+      drive_id: "b!drive",
+      item_id: "01ITEM",
+      ctag: '"c:{guid},1"',
+    };
+    const db = scriptedDb([
+      { data: { org_id: "88888888-8888-4888-8888-888888888888" }, error: null },
+      {
+        data: {
+          id: existingId,
+          project_id: "77777777-7777-4777-8777-777777777777",
+          external_item_id: external.item_id,
+          external_ctag: "c:{guid},1",
+        },
+        error: null,
+      },
+    ]);
+
+    const result = await processUploadFile(
+      db as never,
+      {
+        ...baseSession,
+        destination: {
+          scope: "project",
+          project_id: "77777777-7777-4777-8777-777777777777",
+        },
+      },
+      { ...baseFile, client_meta: { external } },
+    );
+
+    expect(result).toMatchObject({ id: existingId, filename: baseFile.filename });
+    expect(
+      db.calls.some(
+        (call) => call.table === "documents" && call.operation === "upsert",
+      ),
+    ).toBe(false);
+    expect(db.rpc).not.toHaveBeenCalled();
+    expect(mocks.copyFile).not.toHaveBeenCalled();
+  });
+
+  it("turns an already-mirrored SharePoint item with a new ctag into a version", async () => {
+    const existingId = "55555555-5555-4555-8555-555555555555";
+    const external = {
+      provider: "sharepoint" as const,
+      drive_id: "b!drive",
+      item_id: "01ITEM",
+      ctag: "c:{guid},2",
+    };
+    const db = scriptedDb([
+      { data: { org_id: "88888888-8888-4888-8888-888888888888" }, error: null },
+      {
+        data: {
+          id: existingId,
+          project_id: "77777777-7777-4777-8777-777777777777",
+          external_item_id: external.item_id,
+          external_ctag: "c:{guid},1",
+        },
+        error: null,
+      },
+      { error: null },
+    ]);
+
+    const result = await processUploadFile(
+      db as never,
+      {
+        ...baseSession,
+        destination: {
+          scope: "project",
+          project_id: "77777777-7777-4777-8777-777777777777",
+        },
+      },
+      { ...baseFile, client_meta: { external } },
+    );
+
+    expect(
+      db.calls.some(
+        (call) => call.table === "documents" && call.operation === "upsert",
+      ),
+    ).toBe(false);
+    expect(db.rpc).toHaveBeenCalledWith(
+      "create_document_version",
+      expect.objectContaining({
+        p_document_id: existingId,
+        p_version: expect.objectContaining({ source: "sharepoint_sync" }),
+      }),
+    );
+    expect(result).toMatchObject({
+      filename: baseFile.filename,
+      source: "sharepoint_sync",
+    });
+  });
+
   it("converts Office files from temporary paths and streams the PDF upload", async () => {
     const officeFile = {
       ...baseFile,

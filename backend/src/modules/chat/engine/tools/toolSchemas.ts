@@ -10,13 +10,15 @@
  * rewrite. See `allowDocumentMutation` in ../streaming.ts.
  *
  * Everything else in the base set — read_document, find_in_document,
- * list_documents, fetch_documents, ask_inputs, the workflow and research
- * tools — only reads, so a collaborator who may talk in the thread keeps the
- * whole conversational surface.
+ * list_documents, fetch_documents, ask_inputs, create_plan, update_plan, the
+ * workflow and research tools — only reads, so a collaborator who may talk
+ * in the thread keeps the whole conversational surface.
  */
 export const DOCUMENT_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "edit_document",
+  "comment_document",
   "replicate_document",
+  "finalize_document",
   "generate_docx",
   "generate_excel",
   "generate_ppt",
@@ -28,7 +30,9 @@ function toolName(tool: unknown): string | null {
   return typeof fn?.name === "string" ? fn.name : null;
 }
 
-export function isDocumentMutatingTool(name: string | null | undefined): boolean {
+export function isDocumentMutatingTool(
+  name: string | null | undefined,
+): boolean {
   return !!name && DOCUMENT_MUTATING_TOOL_NAMES.has(name);
 }
 
@@ -132,6 +136,31 @@ export const WORKFLOW_TOOLS = [
 ];
 
 export const TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_library",
+      description:
+        "Search the caller's Library shelves (personal Files/Templates plus every organisation they belong to). Use this to find a letterhead, precedent, or other Library Template before drafting. Results are registered in this chat so you can read_document or replicate_document them. Library Templates are immutable: copy with replicate_document before editing. Do not use generate_docx when a matching template exists.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Filename search, for example letterhead, NDA, or privacy policy.",
+          },
+          kind: {
+            type: "string",
+            enum: ["template", "file"],
+            description:
+              "Which shelf to search. Defaults to template (the firm or personal Templates shelf).",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -249,6 +278,88 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "create_plan",
+      description:
+        "Record the remaining work as a short ordered plan, then stop this response. Use this on a review, a selected workflow, a chat that already has documents, or any request that is not a short question. Read only enough to name the steps. Each item is one short sentence naming a part of the response, including what you still need to read. After this call, do not review, explain, draft, copy, edit, or generate documents in the same response.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Short plan title shown to the user.",
+          },
+          items: {
+            type: "array",
+            minItems: 2,
+            maxItems: 12,
+            description:
+              "Ordered remaining steps. At most 8. Each content is one short sentence.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description:
+                    "Stable short ID for this step, unique within the plan.",
+                },
+                content: {
+                  type: "string",
+                  description: "One concrete step in plain language.",
+                },
+              },
+              required: ["id", "content"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_plan",
+      description:
+        "Replace the active plan after finishing one slice of work. Send the full updated list. Mark finished items completed, the current item in_progress, and later items pending. Then stop this response.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Short plan title shown to the user.",
+          },
+          items: {
+            type: "array",
+            minItems: 1,
+            maxItems: 12,
+            description: "Full updated plan, not only the changed rows.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "Stable short ID from the existing plan.",
+                },
+                content: {
+                  type: "string",
+                  description: "One concrete step in plain language.",
+                },
+                status: {
+                  type: "string",
+                  enum: ["pending", "in_progress", "completed"],
+                },
+              },
+              required: ["id", "content", "status"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_document",
       description:
         "Read the full text content of an available document. Always call this before answering questions about, summarising, citing from, or editing a document, but call it at most once per document/version in a single response. After this returns, use the prior tool result or find_in_document for targeted checks instead of reading the same document/version again.",
@@ -324,7 +435,7 @@ export const TOOLS = [
           sections: {
             type: "array",
             description:
-              "List of document sections. Each section may contain a heading, prose content, or a table.",
+              "List of document sections. Each section may contain a heading, prose content, a table, or Australian execution blocks.",
             items: {
               type: "object",
               properties: {
@@ -364,8 +475,64 @@ export const TOOLS = [
                       description:
                         "Array of rows, each row is an array of cell strings matching the headers order",
                     },
+                    borders: {
+                      type: "boolean",
+                      description:
+                        "Set to false for a borderless table. Required for Australian execution blocks if you emit them as a table instead of executionBlocks.",
+                    },
                   },
                   required: ["headers", "rows"],
+                },
+                executionBlocks: {
+                  type: "array",
+                  description:
+                    "Australian execution blocks for a document that will be signed. One object per signing party. Renders as a borderless two-column table. Do not hand-draft signature lines when this is available.",
+                  items: {
+                    type: "object",
+                    properties: {
+                      party: {
+                        type: "string",
+                        enum: [
+                          "company",
+                          "company_sole_director",
+                          "company_two_directors",
+                          "individual",
+                          "partnership_authorised",
+                          "partnership_individuals",
+                          "company_trustee",
+                          "company_trustee_sole_director",
+                          "company_trustee_two_directors",
+                          "individual_trustee",
+                          "individual_trustees_multiple",
+                        ],
+                        description:
+                          "Signing party type. Company default is the s126 authorised signatory block.",
+                      },
+                      id: {
+                        type: "string",
+                        enum: [
+                          "01",
+                          "02",
+                          "03",
+                          "04",
+                          "05",
+                          "06",
+                          "07",
+                          "08",
+                          "09",
+                          "10",
+                          "11",
+                        ],
+                        description:
+                          "Optional explicit block id. Prefer party so the selection rules choose the block.",
+                      },
+                      values: {
+                        type: "object",
+                        description:
+                          "Known # token replacements (companyName, authorisedSignatoryName, directorName, trustName, and the other named placeholders). Leave signature, Date, and witness fields blank.",
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -471,7 +638,7 @@ export const TOOLS = [
     function: {
       name: "edit_document",
       description:
-        "Propose edits to a user-attached .docx as tracked changes. Each edit is a precise, minimal substitution of specific words/characters, NOT a whole-line or paragraph replacement. Use read_document first unless this same document/version has already been read in the current response. Anchor each edit with short before/after context so it can be located unambiguously. Returns per-edit annotations the UI will render as Accept/Reject cards and a download link to the edited document.",
+        "Propose edits to a user-attached .docx as tracked changes attributed to the signed-in user's display name. Each edit is a precise, minimal substitution of specific words/characters, NOT a whole-line or paragraph replacement. Use read_document first unless this same document/version has already been read in the current response. Anchor each edit with short before/after context so it can be located unambiguously. An edit inside an existing tracked insertion keeps that author's markup on the unchanged text and adds only the new change under the signed-in user. Returns per-edit annotations the UI will render as Accept/Reject cards, the author name Word will show, and a download link to the edited document.",
       parameters: {
         type: "object",
         properties: {
@@ -515,6 +682,80 @@ export const TOOLS = [
           },
         },
         required: ["doc_id", "edits"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "comment_document",
+      description:
+        "Add Word review comments (comment bubbles) to a .docx, or reply to an existing comment. Each new comment is anchored to an exact passage and shows in Word's review pane. Use read_document first: its TRACKED CHANGES section lists each open comment with its id, author, date, anchor, and bubble text. To reply, set parent_id to that id and omit the anchor. Do not use this to change clause wording; use edit_document for tracked changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          doc_id: {
+            type: "string",
+            description: "Document slug (e.g. 'doc-0').",
+          },
+          comments: {
+            type: "array",
+            description: "Comments to add. At most 20.",
+            items: {
+              type: "object",
+              properties: {
+                anchor: {
+                  type: "string",
+                  description:
+                    "Exact passage the bubble sits on, copied from the document body, within a single paragraph. Omit when parent_id is set.",
+                },
+                context_before: {
+                  type: "string",
+                  description:
+                    "~40 characters immediately before the anchor, to disambiguate.",
+                },
+                context_after: {
+                  type: "string",
+                  description: "~40 characters immediately after the anchor.",
+                },
+                text: {
+                  type: "string",
+                  description: "The comment bubble text.",
+                },
+                parent_id: {
+                  type: "string",
+                  description:
+                    "Id of an existing comment to reply to, from the read_document comment list. A reply does not need an anchor.",
+                },
+              },
+              required: ["text"],
+            },
+          },
+        },
+        required: ["doc_id", "comments"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "finalize_document",
+      description:
+        "Accept every tracked change in a .docx and remove its comments, saving the result as a new clean document beside the source (the source keeps its redline). Use this for an execution-ready or clean version. To produce a markup that shows only your own changes on top of the other side's draft, call finalize_document on their draft first, then edit_document on the clean copy. read_document lists the pending changes in a TRACKED CHANGES section so you can see what will be accepted. Returns the new doc_id for read_document and edit_document.",
+      parameters: {
+        type: "object",
+        properties: {
+          doc_id: {
+            type: "string",
+            description: "Chat-local ID of the marked-up .docx (e.g. 'doc-0').",
+          },
+          new_filename: {
+            type: "string",
+            description:
+              "Filename for the clean copy. Defaults to the source name with ' (clean)' appended. The .docx extension is forced.",
+          },
+        },
+        required: ["doc_id"],
       },
     },
   },

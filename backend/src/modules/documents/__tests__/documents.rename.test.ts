@@ -19,7 +19,23 @@ const args = {
   filename: "Renamed",
   scope: { kind: "project" as const, projectId: "project" },
 };
-const doc = { id: "doc", current_version_id: "v2" };
+const doc = {
+  id: "doc",
+  current_version_id: "v2",
+  user_id: "actor",
+  org_id: null,
+};
+const personalLibraryActor = {
+  userId: "actor",
+  sources: [
+    {
+      id: null,
+      label: "Personal",
+      access_role: "owner" as const,
+      org_role: null,
+    },
+  ],
+};
 function happyDb(
   storedFilename = "Renamed.pdf",
   currentFilename = "Original.pdf",
@@ -69,6 +85,7 @@ describe("shared document rename", () => {
         : [
             ["eq", "user_id", "actor"],
             ["is", "project_id", null],
+            ["is", "org_id", null],
             scope.libraryKind === "file"
               ? ["or", "library_kind.eq.file,library_kind.is.null"]
               : ["eq", "library_kind", "template"],
@@ -190,7 +207,21 @@ describe("shared document rename", () => {
 
   it("returns the stored filename and preserves the different caller response shapes", async () => {
     const project = happyDb("Stored.pdf", "Original.pdf", true);
-    const library = happyDb("Stored.pdf");
+    const library = scriptedDb([
+      { table: "documents", data: doc },
+      { table: "documents", data: doc },
+      { table: "document_versions", data: { filename: "Original.pdf" } },
+      {
+        table: "documents",
+        op: "update",
+        data: { ...doc, library_folder_id: "folder" },
+      },
+      {
+        table: "document_versions",
+        op: "update",
+        data: { filename: "Stored.pdf" },
+      },
+    ]);
     expect(
       await renameProjectDocument(project.db, {
         ...args,
@@ -200,7 +231,7 @@ describe("shared document rename", () => {
     expect(
       await renameLibraryDocument(
         library.db,
-        "actor",
+        personalLibraryActor,
         "file",
         "doc",
         "Renamed",

@@ -139,12 +139,26 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       detail:
         "shared_with is no longer supported; use the project access endpoints.",
     });
-  const { name, cm_number, practice, org_id, memory_enabled } = req.body as {
+  const {
+    name,
+    cm_number,
+    practice,
+    org_id,
+    memory_enabled,
+    client_name,
+    description,
+    zoho_deal_id,
+    sharepoint_folder_url,
+  } = req.body as {
     name: string;
     cm_number?: string;
     practice?: string;
     org_id?: string | null;
     memory_enabled?: boolean;
+    client_name?: string;
+    description?: string;
+    zoho_deal_id?: string;
+    sharepoint_folder_url?: string;
   };
   const db = createServerSupabase();
 
@@ -155,6 +169,10 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     practice,
     org_id,
     memory_enabled,
+    client_name,
+    description,
+    zoho_deal_id,
+    sharepoint_folder_url,
   });
   if (!result.ok) {
     if (result.kind === "db_error")
@@ -356,6 +374,8 @@ projectsRouter.patch("/:projectId", requireAuth, asyncRoute(async (req, res) => 
   if (!result.ok) {
     if (result.kind === "forbidden")
       return void res.status(403).json({ detail: result.detail });
+    if (result.kind === "validation")
+      return void res.status(400).json({ detail: result.detail });
     if (result.kind === "db_error")
       return void sendInternalError(res, result.error);
     return void res.status(404).json({ detail: "Project not found" });
@@ -392,6 +412,7 @@ projectsRouter.get("/:projectId/documents", requireAuth, asyncRoute(async (req, 
     projectId,
     userId,
     userEmail,
+    lite: req.query.for === "sync",
   });
   if (!result.ok)
     return void res.status(404).json({ detail: "Project not found" });

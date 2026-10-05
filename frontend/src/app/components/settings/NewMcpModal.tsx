@@ -29,7 +29,10 @@ export type NewMcpStep = "form" | "working" | "auth" | "success";
 const CONNECTOR_PRESETS: ReadonlyArray<{
     name: string;
     serverUrl: string;
-}> = [{ name: "Slack", serverUrl: "https://mcp.slack.com/mcp" }];
+}> = [
+    { name: "Slack", serverUrl: "https://mcp.slack.com/mcp" },
+    { name: "Exa", serverUrl: "https://mcp.exa.ai/mcp" },
+];
 
 interface NewMcpModalProps {
     open: boolean;

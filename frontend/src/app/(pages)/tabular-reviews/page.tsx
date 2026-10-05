@@ -59,13 +59,16 @@ import {
 } from "@/app/hooks/usePaginatedTabularReviews";
 import { deleteTabularReviewsWithConcurrency } from "@/app/lib/deleteTabularReviewsWithConcurrency";
 import { useQueryParamTab } from "@/app/hooks/useQueryParamTab";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 type ReviewScope = TabularReviewScope;
 type ReviewSortKey = "name" | "columns" | "documents" | "created";
 
 const REVIEW_SCOPES: { id: ReviewScope; label: string }[] = [
     { id: "all", label: "All" },
-    { id: "in-project", label: "In Project" },
+    { id: "in-project", label: `In ${t.project}` },
     { id: "standalone", label: "Standalone" },
 ];
 const REVIEW_SCOPE_IDS = REVIEW_SCOPES.map((scope) => scope.id);
@@ -437,9 +440,9 @@ export default function TabularReviewsPage() {
 
     const projectFilterButton = (
         <TableFilters
-            label="Filter by project"
+            label={`Filter by ${t.projectLower}`}
             value={projectFilter}
-            allLabel="All Projects"
+            allLabel={`All ${t.projects}`}
             options={projects.map((project) => ({
                 value: project.id,
                 label: project.name,
@@ -592,7 +595,7 @@ export default function TabularReviewsPage() {
                         </TableHeaderCell>
                         <TableHeaderCell className="w-52">
                             <div className="flex items-center gap-1">
-                                <span>Project</span>
+                                <span>{t.project}</span>
                                 {!loading && projectFilterButton}
                             </div>
                         </TableHeaderCell>

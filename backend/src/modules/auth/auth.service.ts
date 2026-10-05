@@ -14,6 +14,7 @@
 import { z } from "zod";
 import type { Session, SupabaseClient, User } from "@supabase/supabase-js";
 import { consumeAuthHandoff, issueAuthHandoff } from "../../lib/authHandoff";
+import { MICROSOFT_GRAPH_SCOPES } from "../../lib/microsoftOAuth";
 
 // ---------------------------------------------------------------------------
 // Request payload schemas
@@ -121,6 +122,34 @@ export function startGoogleOAuth(client: SupabaseClient, redirectTo: string) {
   });
 }
 
+export function startMicrosoftOAuth(
+  client: SupabaseClient,
+  redirectTo: string,
+) {
+  return client.auth.signInWithOAuth({
+    provider: "azure",
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+      scopes: MICROSOFT_GRAPH_SCOPES,
+    },
+  });
+}
+
+export function linkMicrosoftIdentity(
+  client: SupabaseClient,
+  redirectTo: string,
+) {
+  return client.auth.linkIdentity({
+    provider: "azure",
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+      scopes: MICROSOFT_GRAPH_SCOPES,
+    },
+  });
+}
+
 export const ssoRequestSchema = z.object({
   provider: z.literal("sso"),
   email: z.string().trim().toLowerCase().email().max(320),
@@ -137,8 +166,15 @@ export function startSsoSignIn(
   });
 }
 
-export function exchangeCodeForSession(client: SupabaseClient, code: string) {
-  return client.auth.exchangeCodeForSession(code);
+export function exchangeCodeForSession(
+  client: SupabaseClient,
+  code: string,
+  flowId?: string,
+) {
+  return client.auth.exchangeCodeForSession(
+    code,
+    flowId ? { flowId } : undefined,
+  );
 }
 
 /** Mint a one-shot ticket the Word add-in trades for a cookie session. */

@@ -1,9 +1,10 @@
 # Scoped memory
 
-Mike can maintain one private Markdown file named `memory.md` for a user and
-one shared Markdown file for each project. Memory is optional, inspectable, and
-editable. It is reference context for later conversations; it is not a source
-of authorization, instructions, or citations.
+Mike can maintain one private Markdown file named `memory.md` for a user,
+one shared Markdown file for each project, and one shared Markdown file for
+each organization. Memory is optional, inspectable, and editable. It is
+reference context for later conversations; it is not a source of
+authorization, instructions, or citations.
 
 Memory has two separate paths:
 
@@ -23,12 +24,14 @@ the answer being shown to the user.
    live model runs. This prevents a curator for an older turn from committing
    while someone is still talking in the same conversation.
 2. **Relevant memory is loaded.** Private conversations may receive the active
-   user's app memory. Project conversations may also receive project memory.
-   Shared-audience conversations never receive private app memory.
+   user's app memory. Project conversations may also receive project memory,
+   and org memory when the project belongs to an organization. Shared-audience
+   conversations never receive private app memory.
 3. **Memory is fenced as data.** The files are placed in the earliest synthetic
    user message, inside randomized delimiters, and accompanied by a system
    policy that says memory is untrusted reference material. Current chat input
-   outranks project memory, and project memory outranks app memory.
+   outranks project memory, project memory outranks org memory, and org
+   memory outranks app memory.
 4. **The answer is persisted.** Curation is considered only after a terminal
    assistant response has been saved successfully. Cancelled responses,
    failures, and unanswered `ask_inputs` pauses release their lease without
@@ -63,10 +66,13 @@ the answer being shown to the user.
 - Project memory belongs to the project. Members with `project.view` can read
   it, members with `content.edit` can edit it, and members with
   `access.manage` can enable or destructively disable it.
-- Both scopes are on by default: a new account's app memory is enabled when
-  the account is created, and a new project's shared memory is enabled unless
-  its creator clears the toggle. Turning either off is destructive — see
-  "Disable, wipe, and deletion".
+- Org memory belongs to the organization. Any org member can read it; only
+  org admins can edit, enable, or disable it. It is not curated from chats.
+- App and project scopes are on by default: a new account's app memory is
+  enabled when the account is created, and a new project's shared memory is
+  enabled unless its creator clears the toggle. A new organization also
+  receives an empty enabled org memory file. Turning a scope off is
+  destructive. See "Disable, wipe, and deletion".
 - Standalone main chats and durable Word add-in chats may update app memory.
   Chats and tabular reviews in a private personal project may update both app
   and project memory. A project is private only while it has no organization
@@ -76,15 +82,34 @@ the answer being shown to the user.
   memory.
 - A project curator runs separately and never receives app memory. This
   prevents private app context from being copied into project memory.
-- When facts conflict, the current conversation wins over project memory, and
-  project memory wins over app memory.
+- When facts conflict, the current conversation wins over project memory,
+  project memory wins over org memory, and org memory wins over app memory.
 - Shared-audience model calls never receive a participant's private app memory.
-  Project conversations may receive the project's shared memory only. This is
-  a data boundary rather than a prompt-only confidentiality instruction.
+  Project conversations may receive the project's shared memory and, when the
+  project belongs to an organization, that organization's memory. This is a
+  data boundary rather than a prompt-only confidentiality instruction.
 
 The live model receives enabled memory in an earliest synthetic user message,
 delimited as untrusted data. A system policy states that memory cannot grant
-permissions, change policy, or trigger tools by itself.
+permissions, change policy, or trigger tools by itself. When project memory
+contains a "Where the matter sits" section, that is a file note from the
+latest correspondence, not the text of an instrument.
+
+## Matter status from correspondence
+
+Project memory can also carry a sync-owned block written by a background
+pass, not by the live chat and not by the curator.
+
+After a project email becomes ready, after a Zoho/SharePoint pull, or when
+an existing matter still has no status block, a `memory.matter_brief` job
+reads the latest email thread (not a single `.eml` in isolation), writes a
+short as-at note, lists the working files named in that thread, and appends
+a grouped index of counts and latest files. Chat transcripts never enter
+that block. The curator must copy the fenced `<!-- matter-status:start -->`
+section verbatim; the server also restores it if a curator write drops it.
+
+The status note is refreshed when a newer email arrives. It is a place to
+pick the matter up from, not a substitute for opening the current drafts.
 
 ## User experience and controls
 
@@ -211,6 +236,9 @@ Configuration:
   Automatic mode uses the model selected for the conversation.
 - `MEMORY_CURATOR_MODEL` optionally enforces a deployment-wide curator model
   and takes precedence over the user's preference.
+- `MEMORY_MATTER_BRIEF_MODEL` optionally selects the model for the email-only
+  matter-status pass. If unset, the curator override or the project owner's
+  memory/chat model is used.
 
 Operational logs contain sanitized identifiers and outcomes only. Queue
 payloads contain IDs and cursors, not transcripts, credentials, or memory

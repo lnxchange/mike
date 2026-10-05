@@ -181,4 +181,73 @@ describe("chat input prompts", () => {
         ]);
         expect(attachment.project_id).toBeNull();
     });
+
+    it("shows Continue when the latest assistant message has an unfinished plan", async () => {
+        const onContinue = vi.fn();
+        render(
+            input({
+                onContinue,
+                messages: [
+                    { role: "user", content: "Please process this new job." },
+                    {
+                        id: "assistant-1",
+                        role: "assistant",
+                        content: "",
+                        events: [
+                            {
+                                type: "plan",
+                                event_id: "plan-1",
+                                title: "New job request",
+                                items: [
+                                    {
+                                        id: "read",
+                                        content: "Read the emails",
+                                        status: "in_progress",
+                                    },
+                                    {
+                                        id: "review",
+                                        content: "Review the terms",
+                                        status: "pending",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }),
+        );
+        expect(screen.getByText("Regular composer")).toBeVisible();
+        fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+        expect(onContinue).toHaveBeenCalledOnce();
+    });
+
+    it("hides Continue while a plan run is still in progress", () => {
+        render(
+            input({
+                messages: [
+                    { role: "user", content: "Please process this new job." },
+                    {
+                        id: "assistant-1",
+                        role: "assistant",
+                        content: "",
+                        events: [
+                            {
+                                type: "plan",
+                                event_id: "plan-1",
+                                title: "New job request",
+                                items: [
+                                    {
+                                        id: "read",
+                                        content: "Read the emails",
+                                        status: "in_progress",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }),
+        );
+        expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    });
 });

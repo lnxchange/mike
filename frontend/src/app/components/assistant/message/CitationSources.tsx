@@ -22,6 +22,9 @@ function citationSourceKey(annotation: Citation): string {
     if (annotation.kind === "case") {
         return `case:${annotation.cluster_id}`;
     }
+    if (annotation.kind === "legislation") {
+        return `legislation:${annotation.title_id}:${annotation.as_at ?? "latest"}`;
+    }
     return `document:${annotation.document_id}`;
 }
 
@@ -31,6 +34,9 @@ function citationSourceLabel(annotation: Citation): string {
         const citation = annotation.citation?.trim();
         if (caseName && citation) return `${caseName}, ${citation}`;
         return caseName || citation || `Case ${annotation.cluster_id}`;
+    }
+    if (annotation.kind === "legislation") {
+        return annotation.name?.trim() || annotation.title_id;
     }
     return annotation.filename;
 }
@@ -44,10 +50,14 @@ export function citationTooltip(annotation: Citation): string {
 }
 
 function CitationSourceIcon({ annotation }: { annotation: Citation }) {
-    if (annotation.kind === "case") {
+    if (annotation.kind === "case" || annotation.kind === "legislation") {
         return (
             <Image
-                src="/icons/legal-sources/case-law.svg"
+                src={
+                    annotation.kind === "case"
+                        ? "/icons/legal-sources/case-law.svg"
+                        : "/icons/legal-sources/legislation.svg"
+                }
                 alt=""
                 aria-hidden="true"
                 width={14}

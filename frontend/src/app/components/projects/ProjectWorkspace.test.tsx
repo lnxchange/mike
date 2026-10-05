@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getProject } from "@/app/lib/mikeApi";
 import {
+    ProjectSectionToolbar,
     ProjectWorkspaceProvider,
     useProjectWorkspace,
 } from "./ProjectWorkspace";
@@ -15,11 +17,45 @@ vi.mock("@/app/lib/mikeApi", () => ({
     createTabularReview: vi.fn(),
     deleteProject: vi.fn(),
     getProject: vi.fn(() => new Promise(() => {})),
+    getProjectAccess: vi.fn(),
     getProjectPeople: vi.fn(),
     listProjectChats: vi.fn(),
+    pullZohoMatter: vi.fn(),
     setProjectMemoryEnabled: vi.fn(),
     updateProject: vi.fn(),
 }));
+
+const matterSync = vi.hoisted(() => ({
+    status: null as {
+        found: true;
+        status: "Syncing";
+        matterNumber: string | null;
+        matterName: string | null;
+        documentCount: number;
+        remaining: number;
+        lastSyncAt: string | null;
+        lastChangeAt: string | null;
+        lastError: string | null;
+        matterId?: string | null;
+        sharepointFolderUrl?: string | null;
+    } | null,
+}));
+
+vi.mock("@/app/hooks/useMatterSyncStatus", () => ({
+    useMatterSyncStatus: () => ({
+        status: matterSync.status,
+        loaded: true,
+        refresh: vi.fn(),
+    }),
+}));
+
+vi.mock("@/config", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@/config")>();
+    const { librisColleagueProfile } = await import(
+        "@/config/profiles/libris-colleague"
+    );
+    return { ...actual, appConfig: librisColleagueProfile };
+});
 
 vi.mock("@/app/contexts/AuthContext", () => ({
     useAuth: () => ({ user: { id: "user-1", email: "user@example.com" } }),
@@ -71,6 +107,20 @@ function RegisterUploadAction() {
 }
 
 describe("ProjectWorkspaceProvider", () => {
+    beforeEach(() => {
+        matterSync.status = null;
+        window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+            matches: true,
+            media: query,
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn(),
+        }));
+    });
+
     it("keeps document upload actions registered on direct project load", async () => {
         render(
             <ProjectWorkspaceProvider projectId="project-1">
@@ -81,5 +131,116 @@ describe("ProjectWorkspaceProvider", () => {
         expect(
             await screen.findByRole("button", { name: "Upload" }),
         ).toBeEnabled();
+    });
+
+    it("shows Zoho and SharePoint pills next to the section tabs", async () => {
+        vi.mocked(getProject).mockResolvedValue({
+            id: "project-1",
+            user_id: "user-1",
+            name: "ACCC - s155 Notice and Enforcement",
+            cm_number: "242814",
+            zoho_deal_id: "deal-1",
+            sharepoint_folder_url:
+                "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+            practice: null,
+            memory_enabled: true,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+        });
+
+        render(
+            <ProjectWorkspaceProvider projectId="project-1">
+                <ProjectSectionToolbar />
+            </ProjectWorkspaceProvider>,
+        );
+
+        expect(
+            await screen.findByRole("link", { name: "Zoho" }),
+        ).toHaveAttribute(
+            "href",
+            "https://crm.zoho.com/crm/org684713976/tab/Potentials/deal-1",
+        );
+        expect(screen.getByRole("link", { name: "SharePoint" })).toHaveAttribute(
+            "href",
+            "https://attunelegal.sharepoint.com/sites/AttuneLegal/matter",
+        );
+        expect(screen.getByRole("button", { name: "Documents" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Chats" })).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Tabular Reviews" }),
+        ).toBeInTheDocument();
+    });
+
+    it("hides Zoho and SharePoint pills when the matter has no links", async () => {
+        vi.mocked(getProject).mockResolvedValue({
+            id: "project-1",
+            user_id: "user-1",
+            name: "Manual matter",
+            cm_number: null,
+            practice: null,
+            memory_enabled: true,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+        });
+
+        render(
+            <ProjectWorkspaceProvider projectId="project-1">
+                <ProjectSectionToolbar />
+            </ProjectWorkspaceProvider>,
+        );
+
+        expect(
+            await screen.findByRole("button", { name: "Documents" }),
+        ).toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "Zoho" })).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("link", { name: "SharePoint" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("shows the pills once sync status fills links the project row lacked", async () => {
+        vi.mocked(getProject).mockResolvedValue({
+            id: "project-1",
+            user_id: "user-1",
+            name: "ACCC - s155 Notice and Enforcement",
+            cm_number: "242814",
+            zoho_deal_id: null,
+            sharepoint_folder_url: null,
+            practice: null,
+            memory_enabled: true,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+        });
+        matterSync.status = {
+            found: true,
+            status: "Syncing",
+            matterNumber: "242814",
+            matterName: "ACCC - s155 Notice and Enforcement",
+            documentCount: 34,
+            remaining: 86,
+            lastSyncAt: null,
+            lastChangeAt: null,
+            lastError: null,
+            matterId: "3849704000030080744",
+            sharepointFolderUrl:
+                "https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared%20Documents/Clients/Blue%20NRG/23-0011%20-%20ACCC",
+        };
+
+        render(
+            <ProjectWorkspaceProvider projectId="project-1">
+                <ProjectSectionToolbar />
+            </ProjectWorkspaceProvider>,
+        );
+
+        expect(
+            await screen.findByRole("link", { name: "Zoho" }),
+        ).toHaveAttribute(
+            "href",
+            "https://crm.zoho.com/crm/org684713976/tab/Potentials/3849704000030080744",
+        );
+        expect(screen.getByRole("link", { name: "SharePoint" })).toHaveAttribute(
+            "href",
+            "https://attunelegal.sharepoint.com/sites/AttuneLegal/Shared%20Documents/Clients/Blue%20NRG/23-0011%20-%20ACCC",
+        );
     });
 });

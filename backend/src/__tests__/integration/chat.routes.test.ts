@@ -48,6 +48,11 @@ const {
         // the eq/not/order/limit chain genuinely applied (a mini query
         // engine), so tests can prove which assistant row a query picks.
         assistantMessageRows: null as Record<string, unknown>[] | null,
+        // When set, claim_chat_turn reports another turn holding the chat.
+        turnInProgress: null as {
+            assistantMessageId: string;
+            startedAt: string;
+        } | null,
     },
 }));
 
@@ -229,6 +234,22 @@ function mockSupabase() {
     from: vi.fn((table: string) => makeQuery(table)),
     rpc: vi.fn((name: string, args: unknown) => {
       dbRpcCalls.push({ name, args });
+      if (name === "claim_chat_turn") {
+        const busy = dbControl.turnInProgress;
+        return Promise.resolve({
+          data: busy
+            ? [
+                {
+                  claimed: false,
+                  active_turn_id: "turn-existing",
+                  active_turn_message_id: busy.assistantMessageId,
+                  active_turn_started_at: busy.startedAt,
+                },
+              ]
+            : [{ claimed: true }],
+          error: null,
+        });
+      }
       return Promise.resolve({
         data: name.startsWith("append_chat_") ? "appended" : null,
         error: null,
@@ -292,6 +313,10 @@ vi.mock("../../modules/chat/engine/index", async (importOriginal) => {
 vi.mock("../../modules/user/user.settings", () => ({
     getUserModelSettings: vi.fn(async () => ({
         legal_research_us: false,
+        legal_research_au: false,
+        legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
         title_model: "test-model",
         tabular_model: "test-model",
         last_selected_chat_model: null,
@@ -354,11 +379,77 @@ describe("POST /chat — streaming endpoint", () => {
         dbControl.terminalUpdateGate = null;
         dbControl.wordChatMissing = false;
         dbControl.assistantMessageRows = null;
+        dbControl.turnInProgress = null;
         runLLMStream.mockResolvedValue({
             fullText: "hi there",
             events: [],
             citations: [],
         });
+    });
+
+    it("claims the chat for the turn and releases it when the stream ends", async () => {
+        const res = await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        const claim = dbRpcCalls.find((call) => call.name === "claim_chat_turn");
+        const release = dbRpcCalls.find(
+            (call) => call.name === "release_chat_turn",
+        );
+        expect(claim).toBeDefined();
+        expect(release).toBeDefined();
+        const claimArgs = claim!.args as Record<string, unknown>;
+        const releaseArgs = release!.args as Record<string, unknown>;
+        expect(claimArgs.p_chat_id).toBe("chat-1");
+        expect(typeof claimArgs.p_turn_id).toBe("string");
+        expect(claimArgs.p_assistant_message_id).toBe(
+            findAssistantReservation()!.value &&
+                (findAssistantReservation()!.value as { id: string }).id,
+        );
+        expect(releaseArgs.p_turn_id).toBe(claimArgs.p_turn_id);
+        expect(dbRpcCalls.indexOf(claim!)).toBeLessThan(
+            dbRpcCalls.indexOf(release!),
+        );
+    });
+
+    it("answers 409 turn_in_progress and discards the new user row while a turn holds the chat", async () => {
+        dbControl.turnInProgress = {
+            assistantMessageId: "asst-running",
+            startedAt: "2026-09-20T07:08:49.000Z",
+        };
+
+        const res = await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send({ ...VALID_BODY, chat_id: "chat-1" });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({
+            code: "turn_in_progress",
+            detail: "A reply is still being written in this chat.",
+            assistant_message_id: "asst-running",
+            started_at: "2026-09-20T07:08:49.000Z",
+        });
+        expect(runLLMStream).not.toHaveBeenCalled();
+        expect(findAssistantReservation()).toBeUndefined();
+        const mockedCreate = vi.mocked(createServerSupabase);
+        const dbs = mockedCreate.mock.results.map((r) => r.value as {
+            from: ReturnType<typeof vi.fn>;
+        });
+        const deleteCalled = dbs.some((db) =>
+            db.from.mock.results.some(
+                (r) =>
+                    (r.value as { delete: ReturnType<typeof vi.fn> }).delete.mock
+                        .calls.length > 0,
+            ),
+        );
+        expect(deleteCalled).toBe(true);
+        expect(
+            dbRpcCalls.some((call) => call.name === "release_chat_turn"),
+        ).toBe(false);
+        expect(releaseMemoryConversationTurn).toHaveBeenCalled();
     });
 
     it("streams SSE with a chat_id event on the happy path", async () => {
@@ -517,6 +608,10 @@ describe("POST /chat — streaming endpoint", () => {
         const userSettings = await import("../../modules/user/user.settings.js");
         vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
             legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             title_model: null,
             memory_curator_model: null,
             last_selected_reasoning_level: null,
@@ -746,6 +841,10 @@ describe("POST /chat — streaming endpoint", () => {
         const userSettings = await import("../../modules/user/user.settings.js");
         vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
             legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             title_model: null,
             memory_curator_model: null,
             last_selected_reasoning_level: null,
@@ -1019,6 +1118,10 @@ describe("POST /chat — streaming endpoint", () => {
             content: expect.arrayContaining([
                 { type: "content", text: "partial" },
                 { type: "content", text: "Cancelled by user." },
+                expect.objectContaining({
+                    type: "error",
+                    safe_to_display: true,
+                }),
             ]),
         });
     expect(releaseMemoryConversationTurn).toHaveBeenCalledWith({
@@ -1296,6 +1399,10 @@ describe("POST /chat — streaming endpoint", () => {
             tabular_model: "test-model",
             last_selected_chat_model: null,
             legal_research_us: true,
+            legal_research_au: true,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             api_keys: {
                 gemini: "test-key",
                 courtlistener: "configured-but-unused",
@@ -1316,12 +1423,59 @@ describe("POST /chat — streaming endpoint", () => {
         expect(buildMessagesCall[4]).toBe(false);
         expect(buildMessagesCall[6]).toBe("replace");
         expect(runLLMStream).toHaveBeenCalledWith(
-            expect.objectContaining({ includeResearchTools: false }),
+            expect.objectContaining({
+                includeResearchTools: false,
+                includeAuResearchTools: false,
+                includeAuEnergyResearchTools: false,
+                includeAuVicResearchTools: false,
+                includeAuCasesResearchTools: false,
+            }),
         );
         const streamArgs = runLLMStream.mock.calls[0]?.[0] as {
             apiKeys?: { courtlistener?: string };
         };
         expect(streamArgs.apiKeys?.courtlistener).toBeUndefined();
+    });
+
+    it("passes independent US and AU research flags into chat", async () => {
+        const chatLib = await import("../../modules/chat/engine/index.js");
+        const userSettings = await import("../../modules/user/user.settings.js");
+        vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
+            title_model: "test-model",
+            memory_curator_model: null,
+            last_selected_reasoning_level: null,
+            tabular_model: "test-model",
+            last_selected_chat_model: null,
+            legal_research_us: false,
+            legal_research_au: true,
+            legal_research_au_energy: true,
+            legal_research_au_vic: true,
+            legal_research_au_cases: true,
+            api_keys: { gemini: "test-key" },
+        });
+
+        const res = await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        expect(vi.mocked(chatLib.buildMessages).mock.calls[0]?.[4]).toEqual({
+            us: false,
+            au: true,
+            energy: true,
+            vic: true,
+            cases: true,
+        });
+        expect(runLLMStream).toHaveBeenCalledWith(
+            expect.objectContaining({
+                includeUsResearchTools: false,
+                includeAuResearchTools: true,
+                includeAuEnergyResearchTools: true,
+                includeAuVicResearchTools: true,
+                includeAuCasesResearchTools: true,
+            }),
+        );
     });
 });
 
@@ -1662,6 +1816,10 @@ async function seedResolvableModel() {
     const userSettings = await import("../../modules/user/user.settings.js");
     vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
         legal_research_us: false,
+        legal_research_au: false,
+        legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
         title_model: null,
         memory_curator_model: null,
         last_selected_reasoning_level: null,
@@ -2141,6 +2299,169 @@ describe("chat grants, deletion and roster", () => {
         // The creator is always Owner; is_owner separately records provenance.
         expect(creator.body.access_role).toBe("owner");
         expect(creator.body.is_owner).toBe(true);
+    });
+
+    it("shows a running turn as one assistant row with status running on GET /chat/:chatId", async () => {
+        const now = new Date().toISOString();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: {
+                        project_id: null,
+                        org_id: null,
+                        active_turn_id: "turn-1",
+                        active_turn_message_id: "asst-running",
+                        active_turn_started_at: now,
+                        active_turn_heartbeat_at: now,
+                    },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(200);
+        expect(res.body.messages).toEqual([
+            expect.objectContaining({
+                id: "asst-running",
+                role: "assistant",
+                content: null,
+                status: "running",
+                started_at: now,
+            }),
+        ]);
+    });
+
+    it("hides a running turn whose heartbeat has gone stale", async () => {
+        const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: {
+                        project_id: null,
+                        org_id: null,
+                        active_turn_id: "turn-1",
+                        active_turn_message_id: "asst-running",
+                        active_turn_started_at: stale,
+                        active_turn_heartbeat_at: stale,
+                    },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(200);
+        expect(res.body.messages).toEqual([]);
+    });
+
+    it("records a cancel request for a running turn", async () => {
+        const db = makeRbacDb(null, "u1", {
+            chat: { project_id: null, org_id: null },
+        });
+        db.rpc.mockImplementation((fn: string, args: unknown) => {
+            rbacRpcCalls.push({ fn, args });
+            return Promise.resolve({
+                data:
+                    fn === "request_chat_turn_cancel"
+                        ? [{ requested: true, turn_id: "turn-1" }]
+                        : [],
+                error: null,
+            });
+        });
+        mockedCreate.mockImplementation(() => db as never);
+
+        const res = await request(app)
+            .post("/chat/chat-1/turns/asst-running/cancel")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(202);
+        expect(res.body).toEqual({ cancelled: true });
+        expect(rbacRpcCalls).toContainEqual({
+            fn: "request_chat_turn_cancel",
+            args: {
+                p_chat_id: "chat-1",
+                p_assistant_message_id: "asst-running",
+            },
+        });
+    });
+
+    it("answers 202 finished when asked to reattach to a turn that is over", async () => {
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: { project_id: null, org_id: null },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1/turns/asst-gone/stream")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(202);
+        expect(res.body).toEqual({ status: "finished" });
+    });
+
+    it("replays recorded frames and tails a turn this process is running", async () => {
+        const registry = await import("../../modules/chat/chat.turnRegistry.js");
+        registry.resetTurnRegistryForTests();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: { project_id: null, org_id: null },
+                }) as never,
+        );
+        const turn = registry.startRunningTurn({
+            turnId: "turn-live",
+            chatId: "chat-1",
+            assistantMessageId: "asst-live",
+            userId: "u1",
+        });
+        registry.recordTurnFrame(turn, 'data: {"type":"chat_id","chatId":"chat-1"}\n\n');
+        registry.recordTurnFrame(turn, 'data: {"type":"content","text":"Part one"}\n\n');
+
+        const pending = request(app)
+            .get("/chat/chat-1/turns/asst-live/stream")
+            .set("Authorization", "Bearer test");
+        // Let the route attach before the turn produces more.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        registry.recordTurnFrame(turn, 'data: {"type":"content","text":" and two"}\n\n');
+        registry.recordTurnFrame(turn, "data: [DONE]\n\n");
+        registry.finishRunningTurn(turn);
+
+        const res = await pending;
+        expect(res.status).toBe(200);
+        expect(res.headers["content-type"]).toContain("text/event-stream");
+        expect(res.text).toContain('"text":"Part one"');
+        expect(res.text).toContain('"text":" and two"');
+        expect(res.text).toContain("[DONE]");
+        registry.resetTurnRegistryForTests();
+    });
+
+    it("answers 202 running when the lease points at a turn this process is not running", async () => {
+        const now = new Date().toISOString();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb(null, "u1", {
+                    chat: {
+                        project_id: null,
+                        org_id: null,
+                        active_turn_id: "turn-1",
+                        active_turn_message_id: "asst-elsewhere",
+                        active_turn_started_at: now,
+                        active_turn_heartbeat_at: now,
+                    },
+                }) as never,
+        );
+
+        const res = await request(app)
+            .get("/chat/chat-1/turns/asst-elsewhere/stream")
+            .set("Authorization", "Bearer test");
+
+        expect(res.status).toBe(202);
+        expect(res.body).toEqual({ status: "running" });
     });
 
     it("returns the creator and direct-grant roster from GET /chat/:chatId/people", async () => {

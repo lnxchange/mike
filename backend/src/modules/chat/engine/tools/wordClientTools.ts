@@ -25,6 +25,7 @@ import type { AssistantEvent, ClientToolsAdapter } from "../streaming";
 
 export const APPLY_WORD_EDITS_TOOL_NAME = "apply_word_edits";
 export const READ_ACTIVE_DOCUMENT_TOOL_NAME = "read_active_document";
+export const COMMENT_ACTIVE_DOCUMENT_TOOL_NAME = "comment_active_document";
 
 /**
  * Mirrors the add-in's per-edit outcome, minus Word-internal fields.
@@ -184,9 +185,55 @@ export const WORD_CLIENT_TOOLS: OpenAIToolSchema[] = [
         "response. Use this after apply_word_edits when you need to verify " +
         "or continue working with the updated text — the active-word-document " +
         "snapshot from read_document does not reflect edits made during this " +
-        "response. It also works as the first read of the document when no " +
-        "snapshot is listed under AVAILABLE DOCUMENTS.",
+        "response. It also returns the text of each Word review comment. It " +
+        "works as the first read of the document when no snapshot is listed " +
+        "under AVAILABLE DOCUMENTS.",
       parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: COMMENT_ACTIVE_DOCUMENT_TOOL_NAME,
+      description:
+        "Add Word review comments to the active document open in Microsoft " +
+        "Word, or reply to an existing comment thread. Each new comment is a " +
+        "real comment bubble anchored to an exact passage. Read the document " +
+        "first: the COMMENTS section lists each bubble's id, author, anchor, " +
+        "and text. To reply, set parent_id to that id. This does not change " +
+        "wording; use apply_word_edits for tracked changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          comments: {
+            type: "array",
+            minItems: 1,
+            maxItems: 20,
+            items: {
+              type: "object",
+              properties: {
+                anchor: {
+                  type: "string",
+                  description:
+                    "Exact passage the bubble sits on, copied from one " +
+                    "paragraph. Omit when parent_id is set.",
+                },
+                text: {
+                  type: "string",
+                  description: "The comment bubble text.",
+                },
+                parent_id: {
+                  type: "string",
+                  description:
+                    "Id of an existing comment to reply to, from the COMMENTS section.",
+                },
+              },
+              required: ["text"],
+            },
+          },
+        },
+        required: ["comments"],
+      },
     },
   },
 ];
@@ -777,6 +824,79 @@ export function createWordClientToolsAdapter(params: {
     };
   };
 
+  const executeCommentActiveDocument = async (
+    call: NormalizedToolCall,
+  ): Promise<{ content: string; events: AssistantEvent[] }> => {
+    const raw = call.input.comments;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      return {
+        content: JSON.stringify({ error: "comments must be a non-empty array" }),
+        events: [],
+      };
+    }
+    if (raw.length > 20) {
+      return {
+        content: JSON.stringify({
+          error: "Too many comments in one call (max 20).",
+        }),
+        events: [],
+      };
+    }
+    const comments: { anchor?: string; text: string; parent_id?: string }[] = [];
+    for (const [index, row] of raw.entries()) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        return {
+          content: JSON.stringify({ error: `comments[${index}] must be an object` }),
+          events: [],
+        };
+      }
+      const item = row as Record<string, unknown>;
+      if (typeof item.text !== "string" || !item.text.trim()) {
+        return {
+          content: JSON.stringify({
+            error: `comments[${index}].text must be a non-empty string`,
+          }),
+          events: [],
+        };
+      }
+      const anchor = typeof item.anchor === "string" ? item.anchor : "";
+      const parentId = typeof item.parent_id === "string" ? item.parent_id : "";
+      if (!parentId && !anchor.trim()) {
+        return {
+          content: JSON.stringify({
+            error: `comments[${index}] needs an anchor, or a parent_id to reply to`,
+          }),
+          events: [],
+        };
+      }
+      if (/[\n\r]/.test(anchor)) {
+        return {
+          content: JSON.stringify({
+            error: `comments[${index}].anchor must stay within a single paragraph`,
+          }),
+          events: [],
+        };
+      }
+      comments.push({
+        text: item.text.trim(),
+        ...(anchor ? { anchor } : {}),
+        ...(parentId ? { parent_id: parentId } : {}),
+      });
+    }
+    const clientResult = await forwardCall(call, { comments }, CLIENT_TOOL_RESULT_TIMEOUT_MS);
+    const record =
+      clientResult && typeof clientResult === "object" && !Array.isArray(clientResult)
+        ? (clientResult as Record<string, unknown>)
+        : {};
+    if (typeof record.error === "string" && record.error && !Array.isArray(record.comments)) {
+      return {
+        content: JSON.stringify({ error: record.error.slice(0, MAX_CLIENT_ERROR_CHARS) }),
+        events: [],
+      };
+    }
+    return { content: JSON.stringify(record), events: [] };
+  };
+
   const executeReadActiveDocument = async (
     call: NormalizedToolCall,
   ): Promise<{ content: string; events: AssistantEvent[] }> => {
@@ -892,6 +1012,9 @@ export function createWordClientToolsAdapter(params: {
       }
       if (call.name === READ_ACTIVE_DOCUMENT_TOOL_NAME) {
         return executeReadActiveDocument(call);
+      }
+      if (call.name === COMMENT_ACTIVE_DOCUMENT_TOOL_NAME) {
+        return executeCommentActiveDocument(call);
       }
       return {
         content: JSON.stringify({

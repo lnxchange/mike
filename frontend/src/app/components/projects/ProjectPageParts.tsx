@@ -7,6 +7,7 @@ import {
     Loader2,
     Pencil,
     Plus,
+    RefreshCw,
     Trash2,
     Users,
 } from "lucide-react";
@@ -18,9 +19,15 @@ import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
 import type { Project } from "@/app/components/shared/types";
 import type { DocumentVersion } from "@/app/lib/mikeApi";
 import { RowActions } from "@/app/components/shared/RowActions";
-import { HeaderActionsMenu } from "@/app/components/shared/HeaderActionsMenu";
+import {
+    HeaderActionsMenu,
+    type HeaderActionsMenuItem,
+} from "@/app/components/shared/HeaderActionsMenu";
 import { DocumentUploadMenu } from "@/app/components/shared/DocumentUploadMenu";
 import { tableTreeCellStyle } from "@/app/components/shared/TablePrimitive";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 export type ProjectWorkspaceSection =
     | "documents"
@@ -46,8 +53,14 @@ export function formatBytes(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function formatDate(iso: string) {
-    return new Date(iso).toLocaleDateString(undefined, {
+export function formatDate(iso: string | null | undefined) {
+    if (iso == null || iso === "") return "";
+    const date = new Date(iso);
+    const time = date.getTime();
+    // Virtual source folders and other missing timestamps must not render as
+    // Unix epoch (1 January 1970).
+    if (!Number.isFinite(time) || time === 0) return "";
+    return date.toLocaleDateString(undefined, {
         day: "numeric",
         month: "short",
         year: "numeric",
@@ -379,11 +392,23 @@ export function ProjectPageHeader({
     onUploadFiles,
     onUploadFolder,
     documentFolderBreadcrumbs,
+    matterSync,
 }: {
     project: Project | null;
     search: string;
     activeSection: ProjectWorkspaceSection;
     creatingReview: boolean;
+    /**
+     * SharePoint sync state for a matter pulled from Zoho. Absent when the
+     * deployment has no matter sync or this project is not enrolled; the
+     * header then shows nothing and offers no "Sync now".
+     */
+    matterSync?: {
+        /** Plain-text line under the title, or null while unknown. */
+        statusLine: string | null;
+        onSyncNow: () => void;
+        syncing: boolean;
+    } | null;
     /** Whether the caller holds access.manage on this project. */
     canManageProject: boolean;
     /**
@@ -443,84 +468,103 @@ export function ProjectPageHeader({
                   }
                 : null;
 
+    const menuItems: HeaderActionsMenuItem[] = [
+        {
+            label: canManageProject ? "Edit details" : "View details",
+            icon: Pencil,
+            onSelect: onOpenDetails,
+            disabled: !roleKnown,
+        },
+        {
+            label: "Memory",
+            icon: Brain,
+            onSelect: onOpenMemory,
+            disabled: !roleKnown,
+        },
+        ...(matterSync
+            ? [
+                  {
+                      label: "Sync now",
+                      icon: RefreshCw,
+                      onSelect: matterSync.onSyncNow,
+                      disabled: !roleKnown || matterSync.syncing,
+                  } satisfies HeaderActionsMenuItem,
+              ]
+            : []),
+        {
+            // Kept visible below admin so the refusal can name someone who
+            // can lift it; disabled only while the role itself is still
+            // unknown.
+            label: "Delete",
+            icon: Trash2,
+            onSelect: onDeleteProject,
+            variant: "danger",
+            disabled: !roleKnown,
+        },
+    ];
+
     return (
-        <PageHeader
-            breadcrumbs={[
-                {
-                    label: "Projects",
-                    onClick: onBackToProjects,
-                    title: "Back to Projects",
-                },
-                {
-                    ...(project
-                        ? {
-                              label: project.name,
-                              onClick: onProjectRoot,
-                              title: "Back to project documents",
-                          }
-                        : {
-                              loading: true,
-                              skeletonClassName: "w-40",
-                          }),
-                },
-                ...(activeSection === "assistant"
-                    ? [{ label: "Chats" }]
-                    : activeSection === "reviews"
-                      ? [{ label: "Tabular Reviews" }]
-                      : (documentFolderBreadcrumbs ?? [])),
-            ]}
-            actionGroups={[
-                [
+        <div className="shrink-0">
+            <PageHeader
+                breadcrumbs={[
                     {
-                        type: "search",
-                        value: search,
-                        onChange: onSearchChange,
-                        placeholder: "Search…",
+                        label: t.projects,
+                        onClick: onBackToProjects,
+                        title: `Back to ${t.projects}`,
                     },
                     {
-                        onClick: onOpenAccess,
-                        iconOnly: true,
-                        title: "Access",
-                        icon: <Users className="h-4 w-4" />,
+                        ...(project
+                            ? {
+                                  label: project.name,
+                                  onClick: onProjectRoot,
+                                  title: `Back to ${t.projectLower} documents`,
+                              }
+                            : {
+                                  loading: true,
+                                  skeletonClassName: "w-40",
+                              }),
                     },
-                    {
-                        type: "custom",
-                        render: (
-                            <HeaderActionsMenu
-                                items={[
-                                    {
-                                        label: canManageProject
-                                            ? "Edit details"
-                                            : "View details",
-                                        icon: Pencil,
-                                        onSelect: onOpenDetails,
-                                        disabled: !roleKnown,
-                                    },
-                                    {
-                                        label: "Memory",
-                                        icon: Brain,
-                                        onSelect: onOpenMemory,
-                                        disabled: !roleKnown,
-                                    },
-                                    {
-                                        // Kept visible below admin so the
-                                        // refusal can name someone who can
-                                        // lift it; disabled only while the
-                                        // role itself is still unknown.
-                                        label: "Delete",
-                                        icon: Trash2,
-                                        onSelect: onDeleteProject,
-                                        variant: "danger",
-                                        disabled: !roleKnown,
-                                    },
-                                ]}
-                            />
-                        ),
-                    },
-                ],
-                [sectionAction],
-            ]}
-        />
+                    ...(activeSection === "assistant"
+                        ? [{ label: "Chats" }]
+                        : activeSection === "reviews"
+                          ? [{ label: "Tabular Reviews" }]
+                          : (documentFolderBreadcrumbs ?? [])),
+                ]}
+                actionGroups={[
+                    [
+                        {
+                            type: "search",
+                            value: search,
+                            onChange: onSearchChange,
+                            placeholder: "Search…",
+                        },
+                        {
+                            onClick: onOpenAccess,
+                            iconOnly: true,
+                            title: "Access",
+                            icon: <Users className="h-4 w-4" />,
+                        },
+                        {
+                            type: "custom",
+                            render: <HeaderActionsMenu items={menuItems} />,
+                        },
+                    ],
+                    [sectionAction],
+                ]}
+            />
+            {/* Sync progress sits under the title, in the header's own gutter, so
+                it reads as part of the matter's identity rather than a toast.
+                Hidden entirely until the status is known: the breadcrumb
+                skeleton already covers the loading window. */}
+            {project && matterSync?.statusLine ? (
+                <p
+                    aria-live="polite"
+                    className="mx-4 -mt-4 pb-3 text-xs text-gray-500 md:mx-8"
+                >
+                    {matterSync.statusLine}
+                </p>
+            ) : null}
+        </div>
     );
 }
 

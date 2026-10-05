@@ -63,6 +63,7 @@ import {
     partitionSupportedDocumentFiles,
     SUPPORTED_DOCUMENT_ACCEPT,
 } from "@/app/lib/documentUploadValidation";
+import { isExpandableUploadFilename } from "@/shared/api/uploadSessionClient";
 import {
     collectDroppedDocumentUploadEntries,
     dataTransferHasDirectory,
@@ -100,6 +101,7 @@ import {
 import { DocumentSidePanel } from "@/app/components/shared/DocumentSidePanel";
 import { TableLoadMoreRow } from "@/app/components/shared/TableLoadMoreRow";
 import { LibrarySkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
+import type { MatterSyncFile, MatterSyncFileStage } from "@/app/lib/matterSync";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import {
@@ -128,6 +130,18 @@ import {
 const ASYNC_ZIP_THRESHOLD = 10;
 const DOC_TABLE_STICKY_CELL_CLASS = "table-sticky-cell";
 
+/** Rows whose list metadata may still be catching up after a large-matter join. */
+export function documentNeedsMetadataRefresh(doc: {
+    status: string;
+    filename: string;
+}): boolean {
+    return (
+        doc.status === "pending" ||
+        doc.status === "processing" ||
+        (doc.status === "ready" && doc.filename === "Untitled document")
+    );
+}
+
 export type DocTableFolder = ProjectFolder | LibraryFolder;
 export type DocTableFolderBreadcrumb = {
     id: string;
@@ -142,7 +156,16 @@ export interface DocTableSelectionActions {
     onDelete: () => Promise<void>;
 }
 
-export type DocumentSortKey = "name" | "size" | "version" | "created" | "updated";
+export type DocumentSortKey =
+    | "name"
+    | "size"
+    | "version"
+    | "created"
+    | "updated"
+    | "arrived"
+    | "from"
+    | "to"
+    | "subject";
 
 export type DocumentSort = {
     key: DocumentSortKey;
@@ -166,7 +189,113 @@ const SORT_KEY_LABELS: Record<DocumentSortKey, string> = {
     version: "Version",
     created: "Created",
     updated: "Updated",
+    arrived: "Arrived",
+    from: "From",
+    to: "To",
+    subject: "Subject",
 };
+
+export function documentHasEmailMeta(doc: Document): boolean {
+    return Boolean(
+        doc.email_subject?.trim() ||
+            doc.email_from?.trim() ||
+            doc.email_to?.trim() ||
+            doc.email_received_at,
+    );
+}
+
+function EmailEmptyCell() {
+    return <span className="text-gray-300">—</span>;
+}
+
+function EmailMetaHeaderCells({
+    show,
+    arrivedFilter,
+    fromFilter,
+    toFilter,
+    subjectFilter,
+}: {
+    show: boolean;
+    arrivedFilter?: ReactNode;
+    fromFilter?: ReactNode;
+    toFilter?: ReactNode;
+    subjectFilter?: ReactNode;
+}) {
+    if (!show) return null;
+    return (
+        <>
+            <TableHeaderCell className="flex w-32 items-center gap-1">
+                <span>Arrived</span>
+                {arrivedFilter}
+            </TableHeaderCell>
+            <TableHeaderCell className="flex w-40 items-center gap-1">
+                <span>From</span>
+                {fromFilter}
+            </TableHeaderCell>
+            <TableHeaderCell className="flex w-40 items-center gap-1">
+                <span>To</span>
+                {toFilter}
+            </TableHeaderCell>
+            <TableHeaderCell className="flex w-48 items-center gap-1">
+                <span>Subject</span>
+                {subjectFilter}
+            </TableHeaderCell>
+        </>
+    );
+}
+
+function EmailMetaSkeletonCells({ show }: { show: boolean }) {
+    if (!show) return null;
+    return (
+        <>
+            <div className="w-32 shrink-0">
+                <div className="h-3 w-16 rounded bg-gray-100 animate-pulse" />
+            </div>
+            <div className="w-40 shrink-0">
+                <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
+            </div>
+            <div className="w-40 shrink-0">
+                <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
+            </div>
+            <div className="w-48 shrink-0">
+                <div className="h-3 w-24 rounded bg-gray-100 animate-pulse" />
+            </div>
+        </>
+    );
+}
+
+function EmailMetaCells({
+    doc,
+    show,
+}: {
+    doc?: Pick<
+        Document,
+        "email_subject" | "email_from" | "email_to" | "email_received_at"
+    >;
+    show: boolean;
+}) {
+    if (!show) return null;
+    return (
+        <>
+            <div className="w-32 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_received_at ? (
+                    formatDate(doc.email_received_at)
+                ) : (
+                    <EmailEmptyCell />
+                )}
+            </div>
+            <div className="w-40 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_from?.trim() || <EmailEmptyCell />}
+            </div>
+            <div className="w-40 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_to?.trim() || <EmailEmptyCell />}
+            </div>
+            <div className="w-48 shrink-0 truncate text-xs text-gray-500">
+                {doc?.email_subject?.trim() || <EmailEmptyCell />}
+            </div>
+        </>
+    );
+}
 
 interface DocTableOperations {
     uploadDocument: (
@@ -208,6 +337,14 @@ interface DocTableProps {
     search: string;
     operations: DocTableOperations;
     emptyStateTitle: string;
+    emptyStateDescription?: string;
+    hideEmptyStateAction?: boolean;
+    /**
+     * SharePoint files Railway has not finished. Rendered as rows with a
+     * staged bar, and they keep the upload empty state from showing.
+     */
+    syncFiles?: MatterSyncFile[];
+    emptyFolderMessage?: string;
     renderAddDocumentsModal?: (
         open: boolean,
         onClose: () => void,
@@ -256,6 +393,13 @@ interface DocTableProps {
     documentTypeOptions?: TableFilterOption<string>[];
     autoLoadOnScroll?: boolean;
     defaultSort?: DocumentSort | null;
+    /**
+     * Files handed over by another screen (the New Project dialog) to upload
+     * into this collection's root as soon as the table is ready. Consumed
+     * once; `onHandoffUploadFilesConsumed` fires when they have been taken.
+     */
+    handoffUploadFiles?: File[];
+    onHandoffUploadFilesConsumed?: () => void;
 }
 
 function documentTypeValue(doc: Document): string {
@@ -274,11 +418,30 @@ function dateTimeValue(value: string | null | undefined): number {
     return Number.isFinite(time) ? time : 0;
 }
 
+function isVirtualFolder(
+    folder: DocTableFolder | null | undefined,
+): boolean {
+    return !!folder && "virtual" in folder && folder.virtual === true;
+}
+
+function folderCreatedAt(folder: DocTableFolder): string | null {
+    return isVirtualFolder(folder) ? null : folder.created_at;
+}
+
+function folderUpdatedAt(folder: DocTableFolder): string | null {
+    if (isVirtualFolder(folder)) return null;
+    return folder.updated_at ?? folder.created_at;
+}
+
 function documentVersionNumber(doc: Document): number | null {
     return doc.active_version_number ?? doc.latest_version_number ?? null;
 }
 
-function ProjectTableLoadingHeader() {
+function ProjectTableLoadingHeader({
+    showEmailColumns = false,
+}: {
+    showEmailColumns?: boolean;
+}) {
     return (
         <TableHeaderRow className="pr-3">
             <TableStickyCell
@@ -297,6 +460,7 @@ function ProjectTableLoadingHeader() {
             <TableHeaderCell className="flex w-20 items-center gap-1">
                 <span>Version</span>
             </TableHeaderCell>
+            <EmailMetaHeaderCells show={showEmailColumns} />
             <TableHeaderCell className="flex w-32 items-center gap-1">
                 <span>Created</span>
             </TableHeaderCell>
@@ -308,7 +472,11 @@ function ProjectTableLoadingHeader() {
     );
 }
 
-function ProjectTableLoading() {
+function ProjectTableLoading({
+    showEmailColumns = false,
+}: {
+    showEmailColumns?: boolean;
+}) {
     return (
         <div className="flex-1 flex flex-col min-h-0">
             {[1, 2, 3, 4, 5].map((i) => (
@@ -332,6 +500,7 @@ function ProjectTableLoading() {
                     <div className="w-20 shrink-0">
                         <div className="h-3 w-5 rounded bg-gray-100 animate-pulse" />
                     </div>
+                    <EmailMetaSkeletonCells show={showEmailColumns} />
                     <div className="w-32 shrink-0">
                         <div className="h-3 w-16 rounded bg-gray-100 animate-pulse" />
                     </div>
@@ -343,6 +512,57 @@ function ProjectTableLoading() {
             ))}
         </div>
     );
+}
+
+function syncStageLabel(stage: MatterSyncFileStage): string {
+    if (stage === "queued") return "Queued";
+    if (stage === "uploaded") return "Uploaded";
+    if (stage === "processing") return "Processing";
+    return "Failed";
+}
+
+function syncStageFraction(stage: MatterSyncFileStage): number {
+    if (stage === "queued") return 0.15;
+    if (stage === "uploaded") return 0.4;
+    if (stage === "processing") return 0.7;
+    return 1;
+}
+
+function SyncFileProgress({ stage }: { stage: MatterSyncFileStage }) {
+    const percent = Math.round(syncStageFraction(stage) * 100);
+    return (
+        <span
+            className="ml-3 inline-flex w-16 shrink-0"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+            aria-label={syncStageLabel(stage)}
+        >
+            <span className="h-1 w-full overflow-hidden rounded-full bg-gray-200">
+                <span
+                    className={`block h-full rounded-full ${
+                        stage === "error" ? "bg-red-500" : "bg-gray-600"
+                    } ${stage === "processing" ? "animate-pulse" : ""}`}
+                    style={{ width: `${percent}%` }}
+                />
+            </span>
+        </span>
+    );
+}
+
+function syncFilesForFolder(
+    files: MatterSyncFile[],
+    folderId: string | null,
+    knownFolderIds: Set<string>,
+): MatterSyncFile[] {
+    return files.filter((file) => {
+        const placed =
+            file.folderId && knownFolderIds.has(file.folderId)
+                ? file.folderId
+                : null;
+        return placed === folderId;
+    });
 }
 
 function UploadingTrailingLabel() {
@@ -368,6 +588,10 @@ export function DocTable({
     search,
     operations,
     emptyStateTitle,
+    emptyStateDescription,
+    hideEmptyStateAction = false,
+    syncFiles = [],
+    emptyFolderMessage,
     renderAddDocumentsModal,
     onAddDocumentsActionChange,
     onUploadFilesActionChange,
@@ -396,6 +620,8 @@ export function DocTable({
     documentTypeOptions,
     autoLoadOnScroll = false,
     defaultSort = null,
+    handoffUploadFiles,
+    onHandoffUploadFilesConsumed,
 }: DocTableProps) {
     const [addDocsOpen, setAddDocsOpen] = useState(false);
     const { user } = useAuth();
@@ -414,6 +640,8 @@ export function DocTable({
     const [typeFilter, setTypeFilter] = useState<string | null>(null);
     const [sort, setSort] = useState<DocumentSort | null>(null);
     const serverQueryActive = serverDocuments !== null;
+    const docs = serverDocuments ?? documents;
+    const showEmailColumns = docs.some(documentHasEmailMeta);
     const documentUploadInputRef = useRef<HTMLInputElement>(null);
     const directoryUploadInputRef = useRef<HTMLInputElement>(null);
     const tableRootRef = useRef<HTMLDivElement>(null);
@@ -942,9 +1170,7 @@ export function DocTable({
     // Poll documents stuck in deferred conversion until the backend marks
     // them "ready"/"error" (async conversion flips status server-side)
     useEffect(() => {
-        const converting = documents.filter(
-            (d) => d.status === "pending" || d.status === "processing",
-        );
+        const converting = documents.filter(documentNeedsMetadataRefresh);
         if (converting.length === 0) return;
 
         let cancelled = false;
@@ -1746,7 +1972,24 @@ export function DocTable({
                 );
             }
             handleDocsSelected(uploaded);
-            const failedCount = supportedEntries.length - uploaded.length;
+            // Emails and archives come back "completed" with no document of
+            // their own: the server filed their contents as separate
+            // documents. Refetch so those appear, and do not count them as
+            // failures just because the outcome carried no result.
+            const expandedCompleted =
+                batchOutcomes?.some(
+                    (outcome) =>
+                        outcome.status === "completed" &&
+                        isExpandableUploadFilename(outcome.filename),
+                ) ?? false;
+            if (expandedCompleted) {
+                await operations.refreshCollection().catch(() => undefined);
+            }
+            const failedCount = batchOutcomes
+                ? folderFailureOutcomes.length +
+                  batchOutcomes.filter((outcome) => outcome.status !== "completed")
+                      .length
+                : supportedEntries.length - uploaded.length;
             if (failedCount > 0) {
                 setCollectionActionWarning(
                     failedUploadMessage([
@@ -1781,6 +2024,19 @@ export function DocTable({
             baseFolderId,
         );
     }
+
+    // Files handed over from the New Project dialog. The parent only passes
+    // them once the caller's role is known, so the capability check inside
+    // the upload flow sees a real answer rather than "unknown".
+    const handleDropCollectionFilesRef = useRef(handleDropCollectionFiles);
+    handleDropCollectionFilesRef.current = handleDropCollectionFiles;
+    const handoffConsumedRef = useRef(false);
+    useEffect(() => {
+        if (!handoffUploadFiles?.length || handoffConsumedRef.current) return;
+        handoffConsumedRef.current = true;
+        onHandoffUploadFilesConsumed?.();
+        void handleDropCollectionFilesRef.current(handoffUploadFiles, null);
+    }, [handoffUploadFiles, onHandoffUploadFilesConsumed]);
 
     async function handleDroppedCollectionDataTransfer(
         dataTransfer: DataTransfer,
@@ -2156,10 +2412,26 @@ export function DocTable({
                 </div>
                 <div className="w-24 shrink-0 text-xs text-gray-300">{statusLabel}</div>
                 <div className="w-20 shrink-0 text-xs text-gray-300">—</div>
+                <EmailMetaCells show={showEmailColumns} />
                 <div className="w-32 shrink-0 text-xs text-gray-300">—</div>
                 <div className="w-32 shrink-0 text-xs text-gray-300">—</div>
                 <div className="w-8 shrink-0" />
             </div>
+        );
+    }
+
+    function renderSyncFileRows(depth: number, parentFolderId: string | null) {
+        const knownFolderIds = new Set(folders.map((folder) => folder.id));
+        return syncFilesForFolder(syncFiles, parentFolderId, knownFolderIds).map(
+            (file) =>
+                renderDocumentActivityRow({
+                    key: `sync-file-${file.id}`,
+                    filename: file.filename,
+                    fileType: null,
+                    depth,
+                    statusLabel: syncStageLabel(file.stage),
+                    nameTrailingLabel: <SyncFileProgress stage={file.stage} />,
+                }),
         );
     }
 
@@ -2214,7 +2486,11 @@ export function DocTable({
         return [...directRows, ...folderRows];
     }
 
-    const effectiveSort = sort ?? defaultSort;
+    const effectiveSort =
+        sort ??
+        (showEmailColumns
+            ? { key: "arrived" as const, direction: "desc" as const }
+            : defaultSort);
 
     const foldersByParentId = useMemo(() => {
         const byParentId = new Map<string | null, DocTableFolder[]>();
@@ -2506,8 +2782,8 @@ export function DocTable({
                 ...childFolders.map((folder) => ({
                     key: `folder:${folder.id}`,
                     name: folder.name,
-                    createdAt: folder.created_at,
-                    updatedAt: folder.updated_at ?? folder.created_at,
+                    createdAt: folderCreatedAt(folder),
+                    updatedAt: folderUpdatedAt(folder),
                     fallbackGroup: 1,
                 })),
             ]
@@ -2533,10 +2809,10 @@ export function DocTable({
                             ? a.name.localeCompare(b.name)
                             : difference * combinedDirection;
                     }
-                    return (
-                        a.fallbackGroup - b.fallbackGroup ||
-                        a.name.localeCompare(b.name)
-                    );
+                    // Size, version, and correspondence fields apply to
+                    // documents only. Keep the filteredDocs order and leave
+                    // folders after that group.
+                    return a.fallbackGroup - b.fallbackGroup;
                 })
                 .map((row, index) => [row.key, index + 1]),
         );
@@ -2544,6 +2820,7 @@ export function DocTable({
 
         return (
             <div className="flex flex-col">
+                {renderSyncFileRows(depth, parentId)}
                 {renderUploadingDocumentRows(depth, parentId)}
                 {childDocs.map((doc) => {
                     const docName = doc.filename;
@@ -2704,6 +2981,7 @@ export function DocTable({
                                                     <span className="text-gray-300 pl-1">—</span>
                                                 )}
                                             </div>
+                                            <EmailMetaCells doc={doc} show={showEmailColumns} />
                                             <div className="w-32 shrink-0 text-xs text-gray-500 truncate">
                                                 {doc.created_at ? (
                                                     formatDate(doc.created_at)
@@ -3010,22 +3288,31 @@ export function DocTable({
                                                 onClick={(e) => e.stopPropagation()}
                                             />
                                         ) : (
-                                            <span className="text-xs text-gray-800 truncate">{folder.name}</span>
+                                            <>
+                                                <span className="text-xs text-gray-800 truncate">{folder.name}</span>
+                                                {"source_label" in folder &&
+                                                folder.source_label &&
+                                                !("virtual" in folder && folder.virtual) ? (
+                                                    <span className="ml-2 shrink-0 text-xs text-gray-500">
+                                                        {folder.source_label}
+                                                    </span>
+                                                ) : null}
+                                            </>
                                         )}
                                     </div>
                                 </div>
                                 <div className="ml-auto w-20 shrink-0 text-xs text-gray-300">—</div>
                                 <div className="w-24 shrink-0 text-xs text-gray-300">—</div>
                                 <div className="w-20 shrink-0 text-xs text-gray-300">—</div>
+                                <EmailMetaCells show={showEmailColumns} />
                                 <div className="w-32 shrink-0 truncate text-xs text-gray-500">
-                                    {formatDate(folder.created_at)}
+                                    {formatDate(folderCreatedAt(folder)) || "—"}
                                 </div>
                                 <div className="w-32 shrink-0 truncate text-xs text-gray-500">
-                                    {formatDate(
-                                        folder.updated_at ?? folder.created_at,
-                                    )}
+                                    {formatDate(folderUpdatedAt(folder)) || "—"}
                                 </div>
                                 <div className="w-8 shrink-0 flex justify-end" onClick={(e) => e.stopPropagation()}>
+                                    {"virtual" in folder && folder.virtual ? null : (
                                     <RowActions
                                         onView={() => openFolderView(folder.id)}
                                         viewLabel="Open"
@@ -3035,6 +3322,7 @@ export function DocTable({
                                         }}
                                         onDelete={() => requestDeleteFolder(folder.id)}
                                     />
+                                    )}
                                 </div>
                             </div>
                             {isExpanded && renderLevel(folder.id, depth + 1)}
@@ -3051,7 +3339,6 @@ export function DocTable({
 
     // ── Loading skeleton ──────────────────────────────────────────────────────
 
-    const docs = serverDocuments ?? documents;
     const downloadDoc = useCallback(async (docId: string) => {
         const { url, filename } = await getDocumentUrl(docId);
         const a = document.createElement("a");
@@ -3490,7 +3777,9 @@ export function DocTable({
     }
 
     const filteredDocs = useMemo(() => {
-        if (serverQueryActive) return docs;
+        if (serverQueryActive) {
+            return docs;
+        }
 
         const rows = docs
             .filter((doc) => !q || doc.filename.toLowerCase().includes(q))
@@ -3517,6 +3806,25 @@ export function DocTable({
                 return (dateTimeValue(a.updated_at) - dateTimeValue(b.updated_at)) * multiplier;
             }
 
+            if (effectiveSort.key === "arrived") {
+                const byArrived =
+                    dateTimeValue(a.email_received_at) - dateTimeValue(b.email_received_at);
+                if (byArrived !== 0) return byArrived * multiplier;
+                return (dateTimeValue(a.created_at) - dateTimeValue(b.created_at)) * multiplier;
+            }
+
+            if (effectiveSort.key === "from") {
+                return (a.email_from ?? "").localeCompare(b.email_from ?? "") * multiplier;
+            }
+
+            if (effectiveSort.key === "to") {
+                return (a.email_to ?? "").localeCompare(b.email_to ?? "") * multiplier;
+            }
+
+            if (effectiveSort.key === "subject") {
+                return (a.email_subject ?? "").localeCompare(b.email_subject ?? "") * multiplier;
+            }
+
             return a.filename.localeCompare(b.filename) * multiplier;
         });
     }, [docs, effectiveSort, enableHeaderFilters, q, serverQueryActive, typeFilter]);
@@ -3526,6 +3834,10 @@ export function DocTable({
                 upload.parentFolderId === viewedFolderId &&
                 upload.entries.length > 0,
         );
+    const knownSyncFolderIds = new Set(folders.map((folder) => folder.id));
+    const hasVisibleSyncFiles =
+        syncFilesForFolder(syncFiles, viewedFolderId, knownSyncFolderIds)
+            .length > 0;
     const viewedFolderIsEmpty =
         !!viewedFolder &&
         !loadingChildFolderIds.has(viewedFolder.id) &&
@@ -3534,11 +3846,16 @@ export function DocTable({
             (folder) => folder.parent_folder_id === viewedFolder.id,
         ) &&
         creatingFolderIn !== viewedFolder.id &&
-        !hasVisibleCollectionUpload;
+        !hasVisibleCollectionUpload &&
+        !hasVisibleSyncFiles;
 
     const nameSortDirection = effectiveSort?.key === "name" ? effectiveSort.direction : null;
     const sizeSortDirection = effectiveSort?.key === "size" ? effectiveSort.direction : null;
     const versionSortDirection = effectiveSort?.key === "version" ? effectiveSort.direction : null;
+    const arrivedSortDirection = effectiveSort?.key === "arrived" ? effectiveSort.direction : null;
+    const fromSortDirection = effectiveSort?.key === "from" ? effectiveSort.direction : null;
+    const toSortDirection = effectiveSort?.key === "to" ? effectiveSort.direction : null;
+    const subjectSortDirection = effectiveSort?.key === "subject" ? effectiveSort.direction : null;
     const createdSortDirection = effectiveSort?.key === "created" ? effectiveSort.direction : null;
     const updatedSortDirection = effectiveSort?.key === "updated" ? effectiveSort.direction : null;
     const resetSortLabel = defaultSort
@@ -3603,6 +3920,46 @@ export function DocTable({
             widthClassName="w-40"
             options={SORT_OPTIONS}
             onChange={(direction) => handleSortChange("updated", direction)}
+        />
+    ) : null;
+    const arrivedFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by arrived date"
+            value={arrivedSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("arrived", direction)}
+        />
+    ) : null;
+    const fromFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by from"
+            value={fromSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("from", direction)}
+        />
+    ) : null;
+    const toFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by to"
+            value={toSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("to", direction)}
+        />
+    ) : null;
+    const subjectFilterButton = enableHeaderFilters ? (
+        <TableFilters
+            label="Sort by subject"
+            value={subjectSortDirection}
+            allLabel={resetSortLabel}
+            widthClassName="w-40"
+            options={SORT_OPTIONS}
+            onChange={(direction) => handleSortChange("subject", direction)}
         />
     ) : null;
 
@@ -4018,7 +4375,7 @@ export function DocTable({
                 }
                 header={
                     loading || (serverQueryActive && serverQueryLoading) ? (
-                        <ProjectTableLoadingHeader />
+                        <ProjectTableLoadingHeader showEmailColumns={showEmailColumns} />
                     ) : (
                         <TableHeaderRow className="pr-3">
                             <TableStickyCell header widthClassName={DOC_NAME_COL_W}>
@@ -4055,6 +4412,13 @@ export function DocTable({
                                 <span>Version</span>
                                 {versionFilterButton}
                             </TableHeaderCell>
+                            <EmailMetaHeaderCells
+                                show={showEmailColumns}
+                                arrivedFilter={arrivedFilterButton}
+                                fromFilter={fromFilterButton}
+                                toFilter={toFilterButton}
+                                subjectFilter={subjectFilterButton}
+                            />
                             <TableHeaderCell className="flex w-32 items-center gap-1">
                                 <span>Created</span>
                                 {createdFilterButton}
@@ -4069,7 +4433,7 @@ export function DocTable({
                 }
             >
                 {loading || (serverQueryActive && serverQueryLoading) ? (
-                    <ProjectTableLoading />
+                    <ProjectTableLoading showEmailColumns={showEmailColumns} />
                 ) : (
                     <div className="flex-1 flex flex-col min-h-0">
                         <div
@@ -4105,38 +4469,55 @@ export function DocTable({
                             {viewedFolderIsEmpty ? (
                                 <div className="flex flex-1 items-center justify-center py-24 text-center">
                                     <p className="text-sm text-gray-400">
-                                        Empty folder
+                                        {isVirtualFolder(viewedFolder) &&
+                                        emptyFolderMessage
+                                            ? emptyFolderMessage
+                                            : "Empty folder"}
                                     </p>
                                 </div>
                             ) : docs.length === 0 &&
                             (serverQueryActive || folders.length === 0) &&
                             creatingFolderIn === undefined &&
-                            !hasVisibleCollectionUpload ? (
+                            !hasVisibleCollectionUpload &&
+                            !hasVisibleSyncFiles ? (
                                 serverQueryActive ? (
                                     <div className="flex-1 flex flex-col items-center justify-center py-24 text-center">
                                         <p className="text-sm text-gray-400">No matches found</p>
                                     </div>
                                 ) : (
                                     <div
-                                        onClick={openAddDocuments}
-                                        className="flex flex-1 cursor-pointer"
+                                        onClick={
+                                            hideEmptyStateAction
+                                                ? undefined
+                                                : openAddDocuments
+                                        }
+                                        className={
+                                            hideEmptyStateAction
+                                                ? "flex flex-1"
+                                                : "flex flex-1 cursor-pointer"
+                                        }
                                     >
                                         <TableEmptyState>
                                             <EmptyState
                                                 icon={<LibrarySkeuoIcon />}
                                                 title={emptyStateTitle}
-                                                description="Upload documents or drop files and folders here"
+                                                description={
+                                                    emptyStateDescription ??
+                                                    "Upload documents or drop files and folders here"
+                                                }
                                                 action={
-                                                    <PillButtonUI
-                                                        tone="black"
-                                                        size="sm"
-                                                        onClick={(event) => {
-                                                            event.stopPropagation();
-                                                            openAddDocuments();
-                                                        }}
-                                                    >
-                                                        Upload
-                                                    </PillButtonUI>
+                                                    hideEmptyStateAction ? undefined : (
+                                                        <PillButtonUI
+                                                            tone="black"
+                                                            size="sm"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                openAddDocuments();
+                                                            }}
+                                                        >
+                                                            Upload
+                                                        </PillButtonUI>
+                                                    )
                                                 }
                                             />
                                         </TableEmptyState>
@@ -4182,6 +4563,7 @@ export function DocTable({
                                     {/* Search: flat list; no search: folder tree */}
                                     {q ? (
                                         <>
+                                            {renderSyncFileRows(0, viewedFolderId)}
                                             {renderUploadingDocumentRows(
                                                 0,
                                                 viewedFolderId,
@@ -4306,9 +4688,16 @@ export function DocTable({
                                                                             }
                                                                         />
                                                                     ) : (
-                                                                        <span className="text-xs text-gray-800 truncate">
-                                                                            {docName}
-                                                                        </span>
+                                                                        <>
+                                                                            <span className="text-xs text-gray-800 truncate">
+                                                                                {docName}
+                                                                            </span>
+                                                                            {doc.source_label ? (
+                                                                                <span className="ml-2 shrink-0 text-xs text-gray-500">
+                                                                                    {doc.source_label}
+                                                                                </span>
+                                                                            ) : null}
+                                                                        </>
                                                                     )}
                                                                 </div>
                                                             </div>
@@ -4344,6 +4733,7 @@ export function DocTable({
                                                                     <span className="text-gray-300 pl-1">—</span>
                                                                 )}
                                                             </div>
+                                                            <EmailMetaCells doc={doc} show={showEmailColumns} />
                                                             <div className="w-32 shrink-0 text-xs text-gray-500 truncate">
                                                                 {doc.created_at ? (
                                                                     formatDate(doc.created_at)

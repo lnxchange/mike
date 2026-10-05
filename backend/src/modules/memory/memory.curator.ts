@@ -10,6 +10,7 @@ import { can } from "../../lib/permissions";
 import { getUserModelSettings } from "../user/user.service";
 import { DbJobDeferredError, type Db, type DbJob } from "../../lib/dbq/types";
 import { ensureMemoryFile, getMemoryCurrent, MemoryConversationNotQuietError, MemoryDisabledError, MemoryEpochSupersededError, MemoryJobSupersededError, writeMemoryFile, type MemoryFileRow, type MemoryScope, type MemorySurface } from "../../lib/memory/files";
+import { preserveMatterStatusSection } from "../../lib/memory/matterStatus";
 
 const TRANSCRIPT_MESSAGE_LIMIT = 120;
 const TRANSCRIPT_CHARACTER_LIMIT = 48_000;
@@ -618,7 +619,7 @@ export async function runMemoryCuratorScope(
   const scopePolicy =
     args.file.scope === "user"
       ? `This is app-wide memory for one user. Keep only durable, cross-project user facts, explicit preferences, recurring working conventions, and stable personal context directly supported by that user's words. Never copy project-specific or client-confidential matter facts into app memory.`
-      : `This is shared project memory. Keep only durable matter facts, definitions, participant roles, explicit decisions, and working conventions that will help project members later. Do not store unrelated personal preferences. Assume every project member can read the result.`;
+      : `This is shared project memory. Keep only durable matter facts, definitions, participant roles, explicit decisions, and working conventions that will help project members later. Do not store unrelated personal preferences. Assume every project member can read the result. A fenced block bounded by <!-- matter-status:start --> and <!-- matter-status:end --> is written from the latest email thread by a separate pass. Copy that block into the replacement verbatim and do not edit it. Never write or replace a "Where the matter sits" section from this conversation. Chat is not evidence of what passed between the parties.`;
   let written: Awaited<ReturnType<typeof writeMemoryFile>> | null = null;
   let terminalReason: CuratorScopeOutcome["reason"] | null = null;
   let invalidCalls = 0;
@@ -717,7 +718,10 @@ export async function runMemoryCuratorScope(
             written = await services.write({
               db: args.db,
               file: args.file,
-              content: markdown,
+              content:
+                args.file.scope === "project"
+                  ? preserveMatterStatusSection(args.current.content, markdown)
+                  : markdown,
               expectedRevision: args.current.revision,
               source: "curator",
               updatedBy: args.actorUserId,
