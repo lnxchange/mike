@@ -166,8 +166,15 @@ export function startSsoSignIn(
   });
 }
 
-export function exchangeCodeForSession(client: SupabaseClient, code: string) {
-  return client.auth.exchangeCodeForSession(code);
+export function exchangeCodeForSession(
+  client: SupabaseClient,
+  code: string,
+  flowId?: string,
+) {
+  return client.auth.exchangeCodeForSession(
+    code,
+    flowId ? { flowId } : undefined,
+  );
 }
 
 /** Mint a one-shot ticket the Word add-in trades for a cookie session. */

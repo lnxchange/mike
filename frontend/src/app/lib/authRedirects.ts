@@ -3,6 +3,7 @@ const AUTH_REDIRECT_PATHS = new Set([
     "/login",
     "/reset-password",
     "/settings",
+    "/settings/security",
     "/onboarding/profile",
     "/onboarding/practice",
 ]);

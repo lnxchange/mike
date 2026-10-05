@@ -17,7 +17,10 @@ import {
 import { microsoftOAuthEnabled } from "../../lib/microsoftOAuth";
 import { ssoConfiguration, ssoDomainSchema } from "../../lib/ssoConfig";
 import { sendInternalError } from "../../lib/httpError";
-import { requestOriginIsWordAddin } from "../../lib/origins";
+import {
+  requestOriginIsTrusted,
+  requestOriginIsWordAddin,
+} from "../../lib/origins";
 import { createServerSupabase } from "../../lib/supabase";
 import { requireAuth } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
@@ -38,6 +41,7 @@ import {
   enrollMfaFactor,
   exchangeCodeForSession,
   exchangeSchema,
+  safeNext,
   factorSchema,
   friendlyNameSchema,
   handoffSchema,
@@ -79,6 +83,35 @@ function callbackUrl(
   path = "/auth/callback",
 ): string {
   return buildCallbackUrl(requestOrigin(req), next, fallback, path);
+}
+
+/**
+ * The host that will store the PKCE cookie. The browser's Host is that host.
+ * The Origin header can name a different alias, and a callback on the other
+ * alias cannot see the cookie.
+ */
+function browserOrigin(req: Request): string {
+  const forwardedHost = req.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const forwardedProto =
+    req.get("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
+  if (
+    forwardedHost &&
+    !forwardedHost.includes("/") &&
+    !/[\s@]/.test(forwardedHost)
+  ) {
+    try {
+      const origin = new URL(`${forwardedProto}://${forwardedHost}`).origin;
+      if (requestOriginIsTrusted(origin)) return origin;
+    } catch {
+      // Not a usable host. Fall back to the Origin header.
+    }
+  }
+  return requestOrigin(req);
+}
+
+/** No query string: GoTrue matches the redirect allow list against the whole URL. */
+function microsoftWebCallback(req: Request): string {
+  return new URL("/auth/callback", browserOrigin(req)).toString();
 }
 
 function authError(
@@ -125,6 +158,9 @@ function invalidBody(res: Response) {
 }
 
 const OAUTH_PROVIDER_COOKIE = "mike-oauth-provider";
+const PKCE_FLOW_COOKIE = "mike-pkce-flow";
+const AUTH_NEXT_COOKIE = "mike-auth-next";
+const FLOW_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
 function setOAuthProviderCookie(
   req: Request,
@@ -138,13 +174,55 @@ function setOAuthProviderCookie(
   );
 }
 
-function readOAuthProviderCookie(req: Request): string | null {
+function readNamedCookie(req: Request, name: string): string | null {
   const raw = req.headers.cookie ?? "";
   const match = raw
     .split(";")
     .map((part) => part.trim())
-    .find((part) => part.startsWith(`${OAUTH_PROVIDER_COOKIE}=`));
-  return match ? match.slice(OAUTH_PROVIDER_COOKIE.length + 1) : null;
+    .find((part) => part.startsWith(`${name}=`));
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match.slice(name.length + 1));
+  } catch {
+    return null;
+  }
+}
+
+function readOAuthProviderCookie(req: Request): string | null {
+  return readNamedCookie(req, OAUTH_PROVIDER_COOKIE);
+}
+
+function appendNamedCookie(
+  req: Request,
+  res: Response,
+  name: string,
+  value: string,
+  maxAge: number,
+) {
+  const wordAddin = requestOriginIsWordAddin(req.get("origin"));
+  res.append(
+    "Set-Cookie",
+    `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=${wordAddin ? "None" : "Lax"}${wordAddin || authCookiesAreSecure() ? "; Secure" : ""}; Max-Age=${maxAge}`,
+  );
+}
+
+function setPkceFlowCookie(req: Request, res: Response, flowId: string) {
+  appendNamedCookie(req, res, PKCE_FLOW_COOKIE, flowId, flowId ? 600 : 0);
+}
+
+function readPkceFlowCookie(req: Request): string | undefined {
+  const flowId = readNamedCookie(req, PKCE_FLOW_COOKIE);
+  return flowId && FLOW_ID_PATTERN.test(flowId) ? flowId : undefined;
+}
+
+function setAuthNextCookie(req: Request, res: Response, next: string) {
+  appendNamedCookie(req, res, AUTH_NEXT_COOKIE, next, next ? 600 : 0);
+}
+
+function readAuthNextCookie(req: Request): string | undefined {
+  const next = readNamedCookie(req, AUTH_NEXT_COOKIE);
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return undefined;
+  return next;
 }
 
 async function serializeAuthUser(user: User) {
@@ -277,14 +355,18 @@ authRouter.post("/oauth", asyncRoute(async (req, res) => {
     }
     try {
       const client = createRequestSupabase(req, res);
-      const redirectTo = callbackUrl(
-        req,
-        req.body?.next,
-        "/onboarding/profile",
-        req.body?.callbackPath === "/oauth-dialog.html"
-          ? "/oauth-dialog.html"
-          : "/auth/callback",
-      );
+      const wordDialog = req.body?.callbackPath === "/oauth-dialog.html";
+      // The web callback is a bare URL. A `next` query makes GoTrue treat the
+      // address as unlisted and send the browser to the other site alias,
+      // which does not have this sign-in's PKCE cookie.
+      const redirectTo = wordDialog
+        ? callbackUrl(
+            req,
+            req.body?.next,
+            "/onboarding/profile",
+            "/oauth-dialog.html",
+          )
+        : microsoftWebCallback(req);
       if (req.body?.intent === "link") {
         const { data: current } = await client.auth.getUser();
         if (!current.user) {
@@ -301,6 +383,17 @@ authRouter.post("/oauth", asyncRoute(async (req, res) => {
       const { data, error } = await startMicrosoftOAuth(client, redirectTo);
       if (error || !data.url) return authError(res, error);
       setOAuthProviderCookie(req, res, "azure");
+      if (!wordDialog) {
+        setAuthNextCookie(
+          req,
+          res,
+          safeNext(req.body?.next, "/onboarding/profile"),
+        );
+      }
+      const flowId = (data as { flowId?: unknown }).flowId;
+      if (typeof flowId === "string" && FLOW_ID_PATTERN.test(flowId)) {
+        setPkceFlowCookie(req, res, flowId);
+      }
       res.json({ url: data.url });
     } catch (error) {
       authError(res, error);
@@ -334,10 +427,13 @@ authRouter.post("/exchange", asyncRoute(async (req, res) => {
   if (!parsed.success) return invalidBody(res);
   try {
     const client = createRequestSupabase(req, res);
+    const flowId = readPkceFlowCookie(req);
     const { data, error } = await exchangeCodeForSession(
       client,
       parsed.data.code,
+      flowId,
     );
+    setPkceFlowCookie(req, res, "");
     if (error || !data.user || !data.session) return authError(res, error);
     if (readOAuthProviderCookie(req) === "azure") {
       await persistProviderSessionTokens(
@@ -364,7 +460,12 @@ authRouter.post("/exchange", asyncRoute(async (req, res) => {
       res.json({ handoffTicket });
       return;
     }
-    res.json({ user: await serializeAuthUser(data.user) });
+    const next = readAuthNextCookie(req);
+    setAuthNextCookie(req, res, "");
+    res.json({
+      user: await serializeAuthUser(data.user),
+      ...(next ? { next } : {}),
+    });
   } catch (error) {
     authError(res, error);
   }

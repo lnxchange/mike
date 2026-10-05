@@ -73,12 +73,10 @@ describe("same-origin API gateway", () => {
         expect(forwardedHeaders.get("x-forwarded-host")).toBe(
             "app.example.test",
         );
-        expect(response.headers.get("set-cookie")).toContain(
-            "__Host-mike-session=one",
-        );
-        expect(response.headers.get("set-cookie")).toContain(
-            "__Host-mike-session.1=two",
-        );
+        expect(response.headers.getSetCookie()).toEqual([
+            "__Host-mike-session=one; Path=/; Secure; HttpOnly",
+            "__Host-mike-session.1=two; Path=/; Secure; HttpOnly",
+        ]);
         expect(response.headers.get("cache-control")).toBe("private, no-store");
         expect(response.headers.get("etag")).toBeNull();
     });

@@ -94,6 +94,7 @@ describe("auth routes", () => {
       "SSO_ENABLED",
       "SSO_ALLOWED_DOMAINS",
       "MICROSOFT_OAUTH_ENABLED",
+      "ALLOWED_ORIGINS",
     ])
       delete process.env[key];
     createRequestSupabase.mockReset().mockReturnValue(authClient);
@@ -195,15 +196,48 @@ describe("auth routes", () => {
     expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
       provider: "azure",
       options: {
-        redirectTo:
-          "https://app.example.test/auth/callback?next=%2Fonboarding%2Fprofile",
+        redirectTo: "https://app.example.test/auth/callback",
         skipBrowserRedirect: true,
         scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
       },
     });
-    expect(response.headers["set-cookie"]?.join(" ") ?? "").toContain(
-      "mike-oauth-provider=azure",
+    const cookies = response.headers["set-cookie"]?.join(" ") ?? "";
+    expect(cookies).toContain("mike-oauth-provider=azure");
+    expect(cookies).toContain(
+      "mike-auth-next=%2Fonboarding%2Fprofile",
     );
+  });
+
+  it("keeps the Microsoft callback on the browser host, not the Origin alias", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    process.env.ALLOWED_ORIGINS = "https://alias.example.test";
+    authClient.auth.signInWithOAuth.mockResolvedValue({
+      data: {
+        url: "https://login.microsoftonline.test/authorize",
+        flowId: "abc123def456",
+      },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/oauth")
+      .set("Origin", origin)
+      .set("X-Forwarded-Host", "alias.example.test")
+      .set("X-Forwarded-Proto", "https")
+      .send({ provider: "azure", next: "/settings/security" });
+
+    expect(response.status).toBe(200);
+    expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "azure",
+      options: {
+        redirectTo: "https://alias.example.test/auth/callback",
+        skipBrowserRedirect: true,
+        scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
+      },
+    });
+    const cookies = response.headers["set-cookie"]?.join(" ") ?? "";
+    expect(cookies).toContain("mike-pkce-flow=abc123def456");
+    expect(cookies).toContain("mike-auth-next=%2Fsettings%2Fsecurity");
   });
 
   it("reconnects Microsoft with a sign-in instead of manual linking", async () => {
@@ -227,8 +261,7 @@ describe("auth routes", () => {
     expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
       provider: "azure",
       options: {
-        redirectTo:
-          "https://app.example.test/auth/callback?next=%2Fsettings%2Fsecurity",
+        redirectTo: "https://app.example.test/auth/callback",
         skipBrowserRedirect: true,
         scopes: "openid profile email offline_access User.Read Mail.ReadWrite",
       },
@@ -471,6 +504,30 @@ describe("auth routes", () => {
       expect(JSON.stringify(response.body)).not.toContain("mfa-refresh-token");
     },
   );
+
+  it("exchanges the Microsoft code with the flow that started it", async () => {
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    authClient.auth.exchangeCodeForSession.mockResolvedValue({
+      data: { user, session },
+      error: null,
+    });
+
+    const response = await request(app)
+      .post("/auth/exchange")
+      .set("Origin", origin)
+      .set(
+        "Cookie",
+        "mike-pkce-flow=abc123def456; mike-auth-next=%2Fsettings%2Fsecurity",
+      )
+      .send({ code: "oauth-code" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.next).toBe("/settings/security");
+    expect(authClient.auth.exchangeCodeForSession).toHaveBeenCalledWith(
+      "oauth-code",
+      { flowId: "abc123def456" },
+    );
+  });
 
   it("exchanges Word OAuth sessions for an opaque handoff ticket", async () => {
     process.env.WORD_ADDIN_URL = wordOrigin;

@@ -68,12 +68,21 @@ async function proxy(request: NextRequest, context: RouteContext) {
         responseHeaders.delete("etag");
         responseHeaders.delete("last-modified");
         responseHeaders.set("cache-control", "private, no-store");
+        // Copying upstream headers can fold several Set-Cookie lines into one.
+        // The browser then drops the Microsoft login proof, and the callback
+        // reports the confirmation link as invalid.
+        const setCookies = upstream.headers.getSetCookie();
+        responseHeaders.delete("set-cookie");
 
-        return new Response(upstream.body, {
+        const response = new Response(upstream.body, {
             status: upstream.status,
             statusText: upstream.statusText,
             headers: responseHeaders,
         });
+        for (const cookie of setCookies) {
+            response.headers.append("set-cookie", cookie);
+        }
+        return response;
     } catch (error) {
         console.error("[api-gateway] upstream request failed", {
             path: requestPath,

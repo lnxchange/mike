@@ -11,6 +11,16 @@ import { authErrorDescription, safeAuthNext } from "@/app/lib/authRedirects";
 import { exchangeAuthCode, getAuthSession } from "@/app/lib/authApi";
 import { useAuth } from "@/app/contexts/AuthContext";
 
+const exchangeInFlight = new Map<string, ReturnType<typeof exchangeAuthCode>>();
+
+function exchangeAuthCodeOnce(code: string) {
+    const existing = exchangeInFlight.get(code);
+    if (existing) return existing;
+    const pending = exchangeAuthCode(code);
+    exchangeInFlight.set(code, pending);
+    return pending;
+}
+
 function AuthCallbackContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -39,9 +49,11 @@ function AuthCallbackContent() {
             }
 
             const code = searchParams.get("code");
+            let next = searchParams.get("next");
             if (code) {
                 try {
-                    await exchangeAuthCode(code);
+                    const exchanged = await exchangeAuthCodeOnce(code);
+                    if (exchanged.next) next = exchanged.next;
                     await refreshSession();
                 } catch {
                     setError("This confirmation link is invalid or has expired.");
@@ -64,7 +76,7 @@ function AuthCallbackContent() {
             }
 
             if (!cancelled) {
-                router.replace(safeAuthNext(searchParams.get("next")));
+                router.replace(safeAuthNext(next));
             }
         }
 

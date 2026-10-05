@@ -111,7 +111,7 @@ export function startSso(next: string, email: string) {
 }
 
 export async function exchangeAuthCode(code: string) {
-    return authRequest<{ user: AuthUser }>("/exchange", {
+    return authRequest<{ user: AuthUser; next?: string }>("/exchange", {
         method: "POST",
         body: JSON.stringify({ code }),
     });

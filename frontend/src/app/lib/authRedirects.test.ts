@@ -19,6 +19,7 @@ describe("safeAuthNext", () => {
         );
         expect(safeAuthNext("/reset-password")).toBe("/reset-password");
         expect(safeAuthNext("/onboarding/profile")).toBe("/onboarding/profile");
+        expect(safeAuthNext("/settings/security")).toBe("/settings/security");
     });
 
     it.each([

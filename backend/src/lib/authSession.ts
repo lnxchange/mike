@@ -104,6 +104,9 @@ export function createRequestSupabase(
         return parseCookieHeader(req.headers.cookie ?? "");
       },
       setAll(cookiesToSet, responseHeaders) {
+        // A late auth event can fire after the handler has already replied.
+        // Writing then throws and can fail the Microsoft code exchange.
+        if (res.headersSent) return;
         for (const { name, value, options } of cookiesToSet) {
           appendCookie(res, name, value, {
             ...options,
