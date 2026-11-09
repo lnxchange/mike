@@ -7,6 +7,21 @@ const { updatePersonalisation } = vi.hoisted(() => ({
   updatePersonalisation: vi.fn(),
 }));
 
+vi.mock("@/app/lib/mikeApi", () => ({
+  getCustomInstructions: vi.fn(async () => ({ content: "" })),
+  saveCustomInstructions: vi.fn(async () => ({ content: "" })),
+  getResponseStyle: vi.fn(async () => ({
+    verbosity: "balanced",
+    formatting: "balanced",
+    tone: "balanced",
+  })),
+  saveResponseStyle: vi.fn(async () => ({
+    verbosity: "balanced",
+    formatting: "balanced",
+    tone: "balanced",
+  })),
+}));
+
 vi.mock("@/app/contexts/UserProfileContext", () => ({
   useUserProfile: () => ({
     profile: {

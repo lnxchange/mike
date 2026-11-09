@@ -1372,4 +1372,65 @@ describe("user.routes", () => {
             expect(res.body.code).toBe("mfa_verification_required");
         });
     });
+
+    describe("response voice", () => {
+        it("rejects custom instructions over 8000 characters", async () => {
+            const res = await request(app)
+                .put("/user/custom-instructions")
+                .set(...AUTH)
+                .send({ content: "a".repeat(8001) });
+
+            expect(res.status).toBe(400);
+            expect(res.body.detail).toMatch(/8000/);
+        });
+
+        it("reads custom instructions as empty when the column is missing", async () => {
+            supabaseState.tables.user_profiles = {
+                data: null,
+                error: {
+                    code: "42703",
+                    message:
+                        "column user_profiles.custom_instructions does not exist",
+                },
+            };
+
+            const res = await request(app)
+                .get("/user/custom-instructions")
+                .set(...AUTH);
+
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual({ content: "" });
+        });
+
+        it("rejects an unknown response style value", async () => {
+            const res = await request(app)
+                .patch("/user/response-style")
+                .set(...AUTH)
+                .send({ verbosity: "loud" });
+
+            expect(res.status).toBe(400);
+            expect(res.body.detail).toMatch(/verbosity/);
+        });
+
+        it("reads response style as the default when the column is missing", async () => {
+            supabaseState.tables.user_profiles = {
+                data: null,
+                error: {
+                    code: "42703",
+                    message: "column user_profiles.response_style does not exist",
+                },
+            };
+
+            const res = await request(app)
+                .get("/user/response-style")
+                .set(...AUTH);
+
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual({
+                verbosity: "balanced",
+                formatting: "balanced",
+                tone: "balanced",
+            });
+        });
+    });
 });

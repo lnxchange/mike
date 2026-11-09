@@ -18,6 +18,16 @@ import type { DocStore } from "../../modules/chat/engine/types";
 
 const TEST_ACTIVE_WORD_DOCUMENT_NAME = "Contract.docx";
 
+/** Enough of a database for the legal-source lookup a tool turn always starts. */
+function idleDb() {
+    const chain: Record<string, unknown> = {};
+    for (const method of ["select", "eq", "limit", "order"]) {
+        chain[method] = () => chain;
+    }
+    chain.maybeSingle = async () => ({ data: null, error: null });
+    return { from: () => chain } as never;
+}
+
 // ---------------------------------------------------------------------------
 // parseOptionalDocumentContext — request parsing for POST /chat's
 // `document_context` field (sent by the Word add-in)
@@ -663,7 +673,7 @@ describe("active Word document context", () => {
             ],
             store,
             "user-1",
-            {} as never,
+            idleDb(),
             () => undefined,
             undefined,
             undefined,
@@ -719,7 +729,7 @@ describe("active Word document context", () => {
             ],
             store,
             "user-1",
-            {} as never,
+            idleDb(),
             (line) => writes.push(line),
             undefined,
             undefined,

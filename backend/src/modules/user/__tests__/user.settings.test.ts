@@ -22,12 +22,36 @@ vi.mock("../../../lib/supabase", () => ({ createServerSupabase: vi.fn() }));
 import { getUserModelSettings } from "../user.settings";
 
 function profileDb(row: Record<string, unknown> | null) {
-    const chain: Record<string, unknown> = {};
-    for (const method of ["from", "select", "eq"]) {
-        chain[method] = vi.fn(() => chain);
-    }
-    chain.single = vi.fn(async () => ({ data: row, error: null }));
-    return chain as never;
+    return {
+        from() {
+            let selected = "";
+            const chain: Record<string, unknown> = {};
+            chain.select = vi.fn((cols: string) => {
+                selected = String(cols);
+                return chain;
+            });
+            chain.eq = vi.fn(() => chain);
+            chain.single = vi.fn(async () => ({ data: row, error: null }));
+            chain.maybeSingle = vi.fn(async () => {
+                if (selected.includes("custom_instructions")) {
+                    return {
+                        data: {
+                            custom_instructions: row?.custom_instructions ?? "",
+                        },
+                        error: null,
+                    };
+                }
+                if (selected.includes("response_style")) {
+                    return {
+                        data: { response_style: row?.response_style ?? {} },
+                        error: null,
+                    };
+                }
+                return { data: row, error: null };
+            });
+            return chain;
+        },
+    } as never;
 }
 
 const NO_KEYS = {
@@ -73,6 +97,12 @@ describe("getUserModelSettings router-model allowlist", () => {
             practiceSetting: "private_practice",
             professionalTitle: "Partner",
             practiceAreas: ["Litigation"],
+            customInstructions: "",
+            responseStyle: {
+                verbosity: "balanced",
+                formatting: "balanced",
+                tone: "balanced",
+            },
         });
     });
 
@@ -136,12 +166,28 @@ function retryingProfileDb(
     second: { data: unknown; error: unknown },
 ) {
     const results = [first, second];
-    const chain: Record<string, unknown> = {};
-    for (const method of ["from", "select", "eq"]) {
-        chain[method] = vi.fn(() => chain);
-    }
-    chain.single = vi.fn(async () => results.shift() ?? second);
-    return chain as never;
+    return {
+        from() {
+            let selected = "";
+            const chain: Record<string, unknown> = {};
+            chain.select = vi.fn((cols: string) => {
+                selected = String(cols);
+                return chain;
+            });
+            chain.eq = vi.fn(() => chain);
+            chain.single = vi.fn(async () => results.shift() ?? second);
+            chain.maybeSingle = vi.fn(async () => ({
+                data: null,
+                error: {
+                    code: "42703",
+                    message: selected.includes("response_style")
+                        ? "column user_profiles.response_style does not exist"
+                        : "column user_profiles.custom_instructions does not exist",
+                },
+            }));
+            return chain;
+        },
+    } as never;
 }
 
 describe("getUserModelSettings on an un-migrated database", () => {

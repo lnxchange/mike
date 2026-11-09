@@ -11,6 +11,7 @@ import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import { recordAudit } from "../../lib/audit";
 import { sendInternalError } from "../../lib/httpError";
+import { sendServiceFailure } from "../../lib/serviceResult";
 import { dbJobsEnabled } from "../../lib/dbq/runner";
 import { buildContentDisposition } from "../../lib/storage";
 import { normalizeApiKeyProvider } from "./user.apiKeyStore";
@@ -39,6 +40,8 @@ import {
     exportUserChats,
     exportUserTabularReviews,
     getApiKeyStatus,
+    getCustomInstructions,
+    getResponseStyle,
     getMcpConnector,
     getUserExportStatus,
     getUserProfile,
@@ -49,15 +52,19 @@ import {
     recordPasswordSet,
     refreshMcpConnectorTools,
     saveApiKey,
+    saveCustomInstructions,
+    saveResponseStyle,
     setMcpToolEnabled,
     setMfaOnLogin,
     startMcpConnectorOAuth,
     startUserExport,
     updateMcpConnector,
     updateUserProfile,
+    validateCustomInstructionsPayload,
     validateExportRequest,
     validateOnboardingPayload,
     validateProfilePayload,
+    validateResponseStylePayload,
 } from "./user.service";
 
 export const userRouter = Router();
@@ -220,6 +227,50 @@ userRouter.post(
         res.status(204).send();
     }),
 );
+
+// GET /user/custom-instructions
+userRouter.get("/custom-instructions", requireAuth, asyncRoute(async (_req, res) => {
+    const userId = res.locals.userId as string;
+    const result = await getCustomInstructions(createServerSupabase(), userId);
+    if (!result.ok) return void sendServiceFailure(res, result);
+    res.json(result.data);
+}));
+
+// PUT /user/custom-instructions
+userRouter.put("/custom-instructions", requireAuth, asyncRoute(async (req, res) => {
+    const parsed = validateCustomInstructionsPayload(req.body);
+    if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
+    const userId = res.locals.userId as string;
+    const result = await saveCustomInstructions(
+        createServerSupabase(),
+        userId,
+        parsed.content,
+    );
+    if (!result.ok) return void sendServiceFailure(res, result);
+    res.json(result.data);
+}));
+
+// GET /user/response-style
+userRouter.get("/response-style", requireAuth, asyncRoute(async (_req, res) => {
+    const userId = res.locals.userId as string;
+    const result = await getResponseStyle(createServerSupabase(), userId);
+    if (!result.ok) return void sendServiceFailure(res, result);
+    res.json(result.data);
+}));
+
+// PATCH /user/response-style
+userRouter.patch("/response-style", requireAuth, asyncRoute(async (req, res) => {
+    const parsed = validateResponseStylePayload(req.body);
+    if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
+    const userId = res.locals.userId as string;
+    const result = await saveResponseStyle(
+        createServerSupabase(),
+        userId,
+        parsed.update,
+    );
+    if (!result.ok) return void sendServiceFailure(res, result);
+    res.json(result.data);
+}));
 
 // GET /user/profile
 userRouter.get("/profile", requireAuth, asyncRoute(async (_req, res) => {

@@ -10,6 +10,12 @@ import {
     normalizeReasoningLevel,
 } from "../../lib/modelSelection";
 import { resolveLegalResearchAu } from "./user.profile.serialization";
+import { loadCustomInstructions } from "./user.customInstructions";
+import {
+    DEFAULT_RESPONSE_STYLE,
+    loadResponseStyle,
+    type ResponseStyle,
+} from "./user.responseStyle";
 
 export type UserModelSettings = {
     /** Explicit override; null means derive the title model from the chat. */
@@ -35,6 +41,8 @@ export type UserModelSettings = {
         practiceSetting: string | null;
         professionalTitle: string | null;
         practiceAreas: string[];
+        customInstructions?: string;
+        responseStyle?: ResponseStyle;
     };
 };
 
@@ -43,7 +51,8 @@ export async function getUserModelSettings(
     db?: Db,
 ): Promise<UserModelSettings> {
     const client = db ?? createServerSupabase();
-    const [profileResult, api_keys, routerModels] = await Promise.all([
+    const [profileResult, api_keys, routerModels, customInstructions, responseStyle] =
+        await Promise.all([
         client
             .from("user_profiles")
             .select(
@@ -53,6 +62,8 @@ export async function getUserModelSettings(
             .single(),
         getStoredUserApiKeys(userId, client),
         getAllUserRouterModels(userId, client),
+        loadCustomInstructions(client, userId),
+        loadResponseStyle(client, userId),
     ]);
     let data = profileResult.data;
     let profileError = profileResult.error;
@@ -268,6 +279,8 @@ export async function getUserModelSettings(
                       (area): area is string => typeof area === "string",
                   )
                 : [],
+            customInstructions,
+            responseStyle: responseStyle ?? DEFAULT_RESPONSE_STYLE,
         },
         api_keys,
     };

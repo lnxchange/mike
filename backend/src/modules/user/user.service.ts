@@ -102,6 +102,20 @@ export {
     persistLastSelectedReasoningLevel,
     type UserModelSettings,
 } from "./user.settings";
+
+export {
+    getCustomInstructions,
+    saveCustomInstructions,
+    validateCustomInstructionsPayload,
+    type CustomInstructions,
+} from "./user.customInstructions";
+
+export {
+    getResponseStyle,
+    saveResponseStyle,
+    validateResponseStylePayload,
+    type ResponseStyle,
+} from "./user.responseStyle";
 export {
     getUserApiKeys,
     getUserApiKeyStatus,

@@ -440,6 +440,40 @@ export async function saveOutlookSignature(
     });
 }
 
+export type ResponseStyle = {
+    verbosity: "concise" | "balanced" | "detailed";
+    formatting: "balanced" | "less" | "more";
+    tone: "formal" | "balanced" | "plain";
+};
+
+export async function getCustomInstructions(): Promise<{ content: string }> {
+    return apiRequest<{ content: string }>("/user/custom-instructions");
+}
+
+export async function saveCustomInstructions(
+    content: string,
+): Promise<{ content: string }> {
+    return apiRequest<{ content: string }>("/user/custom-instructions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+    });
+}
+
+export async function getResponseStyle(): Promise<ResponseStyle> {
+    return apiRequest<ResponseStyle>("/user/response-style");
+}
+
+export async function saveResponseStyle(
+    update: Partial<ResponseStyle>,
+): Promise<ResponseStyle> {
+    return apiRequest<ResponseStyle>("/user/response-style", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
+    });
+}
+
 export async function refreshOutlookSignature(): Promise<OutlookSignatureRecord> {
     return apiRequest<OutlookSignatureRecord>("/integrations/outlook-signature/refresh", {
         method: "POST",

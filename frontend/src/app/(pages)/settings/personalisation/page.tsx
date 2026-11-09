@@ -10,6 +10,7 @@ import {
   usePersonalisationFields,
 } from "@/app/components/settings/PersonalisationFields";
 import { SettingsPersonalisationFields } from "@/app/components/settings/SettingsPersonalisationFields";
+import { ResponseVoiceSection } from "@/app/components/settings/ResponseVoiceSection";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import type { PersonalisationDetails } from "@/app/lib/mikeApi";
@@ -190,6 +191,7 @@ function PersonalisationForm({
           )}
         </SettingsCard>
       </section>
+      <ResponseVoiceSection />
     </div>
   );
 }
