@@ -139,6 +139,25 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "delegate",
+      description:
+        "Hand the current plan item to a subagent. Use this only after a plan exists, for one task that needs a lot of reading or research. The subagent returns a brief. You still write the answer.",
+      parameters: {
+        type: "object",
+        properties: {
+          task: {
+            type: "string",
+            description:
+              "A self-contained task. Name documents by doc_id, state the question, and say what the brief should return.",
+          },
+        },
+        required: ["task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "find_documents",
       description:
         "Find a literal phrase in stored document text. Scope is project (the current project), library (Library Files), templates (Library Templates), or document (one document already in this chat). Matching is case-insensitive. Returns one excerpt per matching document, a doc_id for read_document or find_in_document, and next_offset. Pending or failed extraction means an empty result does not prove the phrase is absent.",

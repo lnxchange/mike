@@ -127,6 +127,23 @@ beforeEach(() => {
 });
 
 describe("runLLMStream document-mutation gating", () => {
+  it("offers delegate only after a plan is active", async () => {
+    await runLLMStream({ ...baseParams() });
+    expect(advertisedToolNames()).not.toContain("delegate");
+
+    streamChatWithTools.mockClear();
+    await runLLMStream({
+      ...baseParams(),
+      apiMessages: [
+        {
+          role: "user",
+          content: "Continue\n[Active plan]\n- pending: Read the lease",
+        },
+      ],
+    });
+    expect(advertisedToolNames()).toContain("delegate");
+  });
+
   it("treats an SDK-wrapped ask-input pause as a successful turn", async () => {
     const askInputsEvent = {
       type: "ask_inputs" as const,

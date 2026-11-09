@@ -42,6 +42,7 @@ export const PLAN_FIRST_BLOCKED_TOOLS: ReadonlySet<string> = new Set([
   "apply_word_edits",
   "comment_active_document",
   "comment_document",
+  "delegate",
 ]);
 
 export const ACTIVE_PLAN_MARKER = "[Active plan]";

@@ -1936,6 +1936,16 @@ export function useAssistantChat({
             continue;
           }
 
+          if (data.type === "delegation") {
+            const title =
+              typeof data.title === "string" ? data.title.trim() : "";
+            const status = data.status === "finished" ? "finished" : "started";
+            if (title) {
+              pushEvent({ type: "delegation", status, title });
+            }
+            continue;
+          }
+
           if (data.type === "plan") {
             const eventId =
               typeof data.event_id === "string" ? data.event_id.trim() : "";

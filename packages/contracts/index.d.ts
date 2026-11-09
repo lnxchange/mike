@@ -130,6 +130,12 @@ export type PlanEvent = {
   items: PlanItem[];
 };
 
+export type DelegationEvent = {
+  type: "delegation";
+  status: "started" | "finished";
+  title: string;
+};
+
 export type AskInputResponseItem =
   | {
       id: string;
@@ -416,6 +422,7 @@ export type AssistantEvent =
   | { type: "reasoning"; text: string }
   | AskInputsEvent
   | PlanEvent
+  | DelegationEvent
   | {
       type: "ask_inputs_response";
       assistant_message_id: string;

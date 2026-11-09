@@ -418,6 +418,14 @@ export function AssistantMessage({
         const showConnector =
             nextEvent !== undefined && nextEvent.type !== "content";
 
+        if (event.type === "delegation") {
+            return (
+                <p key={globalIdx} className="text-sm text-gray-600">
+                    {event.status === "finished" ? "Finished" : "Working on"}:{" "}
+                    {event.title}
+                </p>
+            );
+        }
         if (event.type === "reasoning") {
             return (
                 <ReasoningBlock
