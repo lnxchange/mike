@@ -180,14 +180,14 @@ export const WORD_CLIENT_TOOLS: OpenAIToolSchema[] = [
     function: {
       name: READ_ACTIVE_DOCUMENT_TOOL_NAME,
       description:
-        "Read the active Word document's current text live from the user's " +
-        "Word session, including tracked changes applied earlier in this " +
-        "response. Use this after apply_word_edits when you need to verify " +
-        "or continue working with the updated text — the active-word-document " +
-        "snapshot from read_document does not reflect edits made during this " +
-        "response. It also returns the text of each Word review comment. It " +
-        "works as the first read of the document when no snapshot is listed " +
-        "under AVAILABLE DOCUMENTS.",
+        "Read the active Word document live from the user's Word session, " +
+        "including pending tracked changes (author, kind, and text) and the " +
+        "text of each review comment. The body alone is the current text and " +
+        "is not evidence the document is clean. Use this after apply_word_edits " +
+        "when you need to verify or continue working with the updated text — " +
+        "the active-word-document snapshot from read_document does not reflect " +
+        "edits made during this response. It works as the first read when no " +
+        "snapshot is listed under AVAILABLE DOCUMENTS.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -199,7 +199,7 @@ export const WORD_CLIENT_TOOLS: OpenAIToolSchema[] = [
         "Add Word review comments to the active document open in Microsoft " +
         "Word, or reply to an existing comment thread. Each new comment is a " +
         "real comment bubble anchored to an exact passage. Read the document " +
-        "first: the COMMENTS section lists each bubble's id, author, anchor, " +
+        "first: the TRACKED CHANGES section lists each bubble's id, author, anchor, " +
         "and text. To reply, set parent_id to that id. This does not change " +
         "wording; use apply_word_edits for tracked changes.",
       parameters: {
@@ -225,7 +225,7 @@ export const WORD_CLIENT_TOOLS: OpenAIToolSchema[] = [
                 parent_id: {
                   type: "string",
                   description:
-                    "Id of an existing comment to reply to, from the COMMENTS section.",
+                    "Id of an existing comment to reply to, from the TRACKED CHANGES section.",
                 },
               },
               required: ["text"],

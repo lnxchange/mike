@@ -26,6 +26,7 @@ export default function AssistantChatPage() {
         attachToTurn,
         continuePlan,
         resumeIdlePlan,
+        stageOutlookDraft,
         setMessages,
         cancel,
     } = useAssistantChat({
@@ -120,6 +121,7 @@ export default function AssistantChatPage() {
             handleChat={handleChat}
             cancel={cancel}
             continuePlan={continuePlan}
+            onStageOutlookDraft={stageOutlookDraft}
             canSend={canSend}
             accessResolved={accessResolved}
         />

@@ -19,9 +19,12 @@ import {
   azureIdentity,
   deleteMicrosoftTokens,
   getMatterSyncStatus,
+  getOutlookSignature,
   isMicrosoftConnected,
   pullZohoMatter,
+  refreshOutlookSignature,
   searchZohoMatters,
+  updateOutlookSignature,
 } from "./integrations.service";
 
 export const integrationsRouter = Router();
@@ -63,6 +66,44 @@ integrationsRouter.get(
       userEmail: res.locals.userEmail as string | undefined,
       projectId: req.params.projectId,
     });
+    if (!result.ok) return void sendServiceFailure(res, result);
+    res.json(result.data);
+  }),
+);
+
+integrationsRouter.get(
+  "/outlook-signature",
+  asyncRoute(async (_req, res) => {
+    const result = await getOutlookSignature(
+      createServerSupabase(),
+      res.locals.userId as string,
+    );
+    if (!result.ok) return void sendServiceFailure(res, result);
+    res.json(result.data);
+  }),
+);
+
+integrationsRouter.put(
+  "/outlook-signature",
+  asyncRoute(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = await updateOutlookSignature(
+      createServerSupabase(),
+      res.locals.userId as string,
+      body.html,
+    );
+    if (!result.ok) return void sendServiceFailure(res, result);
+    res.json(result.data);
+  }),
+);
+
+integrationsRouter.post(
+  "/outlook-signature/refresh",
+  asyncRoute(async (_req, res) => {
+    const result = await refreshOutlookSignature(
+      createServerSupabase(),
+      res.locals.userId as string,
+    );
     if (!result.ok) return void sendServiceFailure(res, result);
     res.json(result.data);
   }),

@@ -825,6 +825,11 @@ export {
   persistProviderSessionTokens,
 } from "./integrations.microsoftAuth";
 export { createOutlookDraft } from "./integrations.outlookDraft";
+export {
+  getOutlookSignature,
+  refreshOutlookSignature,
+  updateOutlookSignature,
+} from "./integrations.outlookSignature";
 export type {
   CreateOutlookDraftInput,
   OutlookDraftResult,

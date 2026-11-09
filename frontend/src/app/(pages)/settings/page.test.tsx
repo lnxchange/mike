@@ -46,6 +46,10 @@ vi.mock("@/app/contexts/UserProfileContext", () => ({
     }),
 }));
 
+vi.mock("@/app/components/settings/EmailSignatureSection", () => ({
+    EmailSignatureSection: () => null,
+}));
+
 vi.mock("@/app/lib/mikeApi", () => ({
     deleteAccount: state.deleteAccount,
     isMfaRequiredError: vi.fn(() => false),

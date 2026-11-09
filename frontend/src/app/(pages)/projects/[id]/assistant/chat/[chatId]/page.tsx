@@ -398,6 +398,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     attachToTurn,
     continuePlan,
     resumeIdlePlan,
+    stageOutlookDraft,
     setMessages,
     cancel,
     resetChat,
@@ -1855,6 +1856,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 ) : (
                   <AssistantMessage
                     key={i}
+                    messageId={msg.id}
+                    onStageOutlookDraft={stageOutlookDraft}
                     events={msg.events}
                     isStreaming={i === messages.length - 1 && isResponseLoading}
                     isError={!!msg.error}

@@ -59,6 +59,44 @@ vi.mock("../integrations.microsoftAuth", () => ({
 
 import { createOutlookDraft } from "../integrations.outlookDraft";
 
+const savedSignature = { html: null as string | null };
+
+function signatureDb() {
+  return {
+    from(table: string) {
+      if (table !== "user_outlook_signatures") {
+        throw new Error(`unexpected table ${table}`);
+      }
+      return {
+        select() {
+          return {
+            eq() {
+              return {
+                maybeSingle: async () => ({
+                  data: savedSignature.html ? { html: savedSignature.html } : null,
+                  error: null,
+                }),
+              };
+            },
+          };
+        },
+        upsert: async (row: { html: string }) => {
+          savedSignature.html = row.html;
+          return { error: null };
+        },
+        delete() {
+          return {
+            eq: async () => {
+              savedSignature.html = null;
+              return { error: null };
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
 const input = {
   to: ["alissa@example.com"],
   subject: "Re: Schedule",
@@ -66,7 +104,10 @@ const input = {
 };
 
 describe("createOutlookDraft", () => {
+  const db = signatureDb() as never;
+
   beforeEach(() => {
+    savedSignature.html = null;
     for (const fn of Object.values(graph)) fn.mockReset();
     graph.getGraphAccessToken.mockResolvedValue({
       kind: "ok",
@@ -87,14 +128,14 @@ describe("createOutlookDraft", () => {
       kind: "outlook_auth_required",
     });
     await expect(
-      createOutlookDraft({} as never, "user-1", input),
+      createOutlookDraft(db, "user-1", input),
     ).resolves.toEqual({ kind: "outlook_auth_required" });
   });
 
   it("creates a new draft when mailbox search is empty", async () => {
     graph.findMessageByInternetMessageId.mockResolvedValue(null);
     graph.searchMailboxMessages.mockResolvedValue([]);
-    const result = await createOutlookDraft({} as never, "user-1", input);
+    const result = await createOutlookDraft(db, "user-1", input);
     expect(result).toMatchObject({
       kind: "outlook_draft_created",
       threaded: false,
@@ -114,7 +155,7 @@ describe("createOutlookDraft", () => {
       id: "reply-draft",
       webLink: "https://outlook.office.com/mail/reply-draft",
     });
-    const result = await createOutlookDraft({} as never, "user-1", {
+    const result = await createOutlookDraft(db, "user-1", {
       ...input,
       inReplyToInternetMessageId: "<chain-123@example.com>",
     });
@@ -145,7 +186,7 @@ describe("createOutlookDraft", () => {
       id: "reply-draft",
       webLink: "https://outlook.office.com/mail/reply-draft",
     });
-    const result = await createOutlookDraft({} as never, "user-1", input);
+    const result = await createOutlookDraft(db, "user-1", input);
     expect(result).toMatchObject({
       kind: "outlook_draft_created",
       threaded: true,
@@ -164,7 +205,7 @@ describe("createOutlookDraft", () => {
       { id: "a", conversationId: "c1", receivedDateTime: "2026-09-20T00:00:00Z" },
       { id: "b", conversationId: "c2", receivedDateTime: "2026-09-21T00:00:00Z" },
     ]);
-    const result = await createOutlookDraft({} as never, "user-1", input);
+    const result = await createOutlookDraft(db, "user-1", input);
     expect(result).toMatchObject({
       kind: "outlook_draft_created",
       threaded: false,
@@ -178,7 +219,7 @@ describe("createOutlookDraft", () => {
     graph.searchMailboxMessages.mockRejectedValue(
       new Error("graph_request_failed"),
     );
-    const result = await createOutlookDraft({} as never, "user-1", input);
+    const result = await createOutlookDraft(db, "user-1", input);
     expect(result).toMatchObject({
       kind: "outlook_draft_created",
       threaded: false,
@@ -192,7 +233,7 @@ describe("createOutlookDraft", () => {
       new Error("graph_request_failed"),
     );
     graph.searchMailboxMessages.mockResolvedValue([]);
-    const result = await createOutlookDraft({} as never, "user-1", {
+    const result = await createOutlookDraft(db, "user-1", {
       ...input,
       inReplyToInternetMessageId: "<chain-123@example.com>",
     });
@@ -211,7 +252,7 @@ describe("createOutlookDraft", () => {
       new GraphRequestError(403, "ErrorAccessDenied", "/me/messages"),
     );
     await expect(
-      createOutlookDraft({} as never, "user-1", input),
+      createOutlookDraft(db, "user-1", input),
     ).resolves.toEqual({
       kind: "error",
       message:
@@ -237,13 +278,36 @@ describe("createOutlookDraft", () => {
         contentId: "attune-logo",
       },
     ]);
-    await createOutlookDraft({} as never, "user-1", input);
+    await createOutlookDraft(db, "user-1", input);
     expect(graph.createDraftMessage).toHaveBeenCalledWith(
       "token",
       expect.objectContaining({
         htmlBody: expect.stringContaining('id="Signature"'),
         inlineAttachments: [
           expect.objectContaining({ contentId: "attune-logo" }),
+        ],
+      }),
+    );
+    expect(savedSignature.html).toContain("data:image/png;base64,");
+    expect(savedSignature.html).toContain("Yule Guttenbeil");
+  });
+
+  it("reuses the saved signature and does not read sent mail again", async () => {
+    savedSignature.html =
+      '<div id="Signature"><b>Yule Guttenbeil</b><img src="data:image/png;base64,cG5n"></div>';
+    graph.findMessageByInternetMessageId.mockResolvedValue(null);
+    graph.searchMailboxMessages.mockResolvedValue([]);
+    await createOutlookDraft(db, "user-1", input);
+    expect(graph.listRecentSentMessageBodies).not.toHaveBeenCalled();
+    expect(graph.createDraftMessage).toHaveBeenCalledWith(
+      "token",
+      expect.objectContaining({
+        htmlBody: expect.stringContaining("Yule Guttenbeil"),
+        inlineAttachments: [
+          expect.objectContaining({
+            contentId: "mike-signature-1",
+            bytes: Buffer.from("png"),
+          }),
         ],
       }),
     );
@@ -262,7 +326,7 @@ describe("createOutlookDraft", () => {
       id: "reply-draft",
       webLink: "https://outlook.office.com/mail/reply-draft",
     });
-    await createOutlookDraft({} as never, "user-1", {
+    await createOutlookDraft(db, "user-1", {
       ...input,
       inReplyToInternetMessageId: "<chain-123@example.com>",
     });
@@ -277,7 +341,7 @@ describe("createOutlookDraft", () => {
   });
 
   it("rejects oversized attachments", async () => {
-    const result = await createOutlookDraft({} as never, "user-1", {
+    const result = await createOutlookDraft(db, "user-1", {
       ...input,
       attachments: [
         {

@@ -536,8 +536,12 @@ export type OutlookDraftPreviewEvent = {
   subject: string;
   to: string[];
   cc?: string[];
+  bcc?: string[];
   html_body: string;
   attachment_names: string[];
+  /** Documents the card can attach later, without asking the model to rewrite the email. */
+  attachment_document_ids?: string[];
+  in_reply_to_internet_message_id?: string;
 };
 
 export type OutlookDraftCreatedEvent = {
@@ -545,6 +549,8 @@ export type OutlookDraftCreatedEvent = {
   web_link: string;
   subject: string;
   to: string[];
+  cc?: string[];
+  html_body?: string;
   attachment_names: string[];
   threaded: boolean;
   thread_status?: OutlookThreadStatus;

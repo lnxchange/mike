@@ -385,6 +385,14 @@ create table if not exists public.user_microsoft_tokens (
 
 alter table public.user_microsoft_tokens enable row level security;
 
+create table if not exists public.user_outlook_signatures (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  html text not null check (char_length(html) between 1 and 500000),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_outlook_signatures enable row level security;
+
 -- Ordered, user-selected models for API routing gateways. Router slugs are
 -- deliberately provider-neutral (for example `openrouter` or `vercel`).
 create table if not exists public.user_router_models (
@@ -6755,6 +6763,8 @@ revoke all on public.org_api_keys from anon, authenticated;
 grant select, insert, update, delete on public.org_api_keys to service_role;
 revoke all on public.user_microsoft_tokens from anon, authenticated;
 grant select, insert, update, delete on public.user_microsoft_tokens to service_role;
+revoke all on public.user_outlook_signatures from anon, authenticated;
+grant select, insert, update, delete on public.user_outlook_signatures to service_role;
 revoke all on public.legal_source_documents from anon, authenticated;
 grant select, insert, update, delete on public.legal_source_documents to service_role;
 revoke all on public.auth_handoff_tickets from anon, authenticated;

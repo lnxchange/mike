@@ -6,6 +6,7 @@ import {
   cancelChatTurn,
   continueChatPlan,
   getChat,
+  stageChatOutlookDraft,
   streamChat,
   streamChatTurn,
   streamProjectChat,
@@ -2225,6 +2226,20 @@ export function useAssistantChat({
                 : undefined,
               html_body:
                 typeof data.html_body === "string" ? data.html_body : "",
+              bcc: Array.isArray(data.bcc)
+                ? data.bcc.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : undefined,
+              attachment_document_ids: Array.isArray(data.attachment_document_ids)
+                ? data.attachment_document_ids.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : undefined,
+              in_reply_to_internet_message_id:
+                typeof data.in_reply_to_internet_message_id === "string"
+                  ? data.in_reply_to_internet_message_id
+                  : undefined,
               attachment_names: Array.isArray(data.attachment_names)
                 ? data.attachment_names.filter(
                     (item): item is string => typeof item === "string",
@@ -2256,6 +2271,13 @@ export function useAssistantChat({
                     (item): item is string => typeof item === "string",
                   )
                 : [],
+              cc: Array.isArray(data.cc)
+                ? data.cc.filter(
+                    (item): item is string => typeof item === "string",
+                  )
+                : undefined,
+              html_body:
+                typeof data.html_body === "string" ? data.html_body : undefined,
               threaded: data.threaded === true,
               thread_status: parseOutlookThreadStatus(data.thread_status),
               isStreaming: false,
@@ -2641,7 +2663,12 @@ export function useAssistantChat({
     generation: number,
     signal: AbortSignal,
   ): Promise<boolean> => {
-    const deadline = Date.now() + 3000;
+    // The next slice is another server turn. Keep this tab on that turn
+    // until it is actually running or the plan has settled. A short wait
+    // used to drop the tab back to Continue while the server was still going.
+    const started = Date.now();
+    const deadline = started + 45_000;
+    let askedServerToContinue = false;
     while (Date.now() < deadline) {
       if (requestGenerationRef.current !== generation || signal.aborted) {
         return false;
@@ -2669,10 +2696,22 @@ export function useAssistantChat({
       const latest = [...loaded.messages]
         .reverse()
         .find((item) => item.role === "assistant");
-      if (!shouldFollowServerPlan(latest?.events ?? [])) {
-        eventsRef.current = latest?.events ?? [];
+      const latestEvents = latest?.events ?? [];
+      if (!shouldFollowServerPlan(latestEvents)) {
+        eventsRef.current = latestEvents;
         setMessages(loaded.messages);
         return false;
+      }
+      eventsRef.current = latestEvents;
+      setMessages(loaded.messages);
+      if (!askedServerToContinue && Date.now() - started >= 8_000) {
+        askedServerToContinue = true;
+        try {
+          const kicked = await continueChatPlan(targetChatId);
+          if (!kicked.continued) return false;
+        } catch {
+          return false;
+        }
       }
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, 300);
@@ -2775,6 +2814,27 @@ export function useAssistantChat({
       { resumeTurn: { assistantMessageId } },
     );
 
+  const stageOutlookDraft = async (messageId: string, eventIndex: number) => {
+    const id = chatId;
+    if (!id) {
+      throw new Error("The draft could not be staged. Please try again.");
+    }
+    const event = await stageChatOutlookDraft(id, messageId, eventIndex);
+    setMessages((prev) =>
+      prev.map((message) => {
+        if (message.id !== messageId || !message.events) return message;
+        return {
+          ...message,
+          events: message.events.map((item, index) =>
+            index === eventIndex && item.type === "outlook_draft_preview"
+              ? event
+              : item,
+          ),
+        };
+      }),
+    );
+  };
+
   return {
     messages,
     isResponseLoading,
@@ -2785,6 +2845,7 @@ export function useAssistantChat({
     attachToTurn,
     continuePlan,
     resumeIdlePlan,
+    stageOutlookDraft,
     setMessages,
     cancel,
     resetChat: () => {

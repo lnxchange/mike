@@ -68,6 +68,7 @@ import {
     subscribeToTurn,
     activeTurnFromChatRow,
     schedulePlanContinuation,
+    stageOutlookPreview,
     type ChatTurnLease,
 } from "./chat.service";
 import { decidePlanContinuation } from "./engine/tools/planTools";
@@ -165,6 +166,71 @@ chatRouter.post(
             assistantMessageId,
         });
         res.status(202).json({ cancelled: local || remote.requested });
+    }),
+);
+
+// POST /chat/:chatId/messages/:messageId/outlook-draft
+// Stages the draft card already stored on that message. No model turn.
+chatRouter.post(
+    "/:chatId/messages/:messageId/outlook-draft",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId, messageId } = req.params;
+        const rawIndex = (req.body as { event_index?: unknown } | undefined)
+            ?.event_index;
+        const eventIndex =
+            typeof rawIndex === "number" &&
+            Number.isInteger(rawIndex) &&
+            rawIndex >= 0
+                ? rawIndex
+                : null;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+        if (!can(access.projectRole, "content.edit")) {
+            return void res.status(403).json({
+                detail: "You do not have permission to modify this chat",
+            });
+        }
+
+        const result = await stageOutlookPreview(db, {
+            chatId,
+            messageId,
+            userId,
+            userEmail,
+            eventIndex,
+        });
+        if (!result.ok) {
+            if (result.kind === "not_found" || result.kind === "no_preview") {
+                return void res.status(404).json({
+                    code: result.kind,
+                    detail:
+                        result.kind === "no_preview"
+                            ? "There is no email draft to stage."
+                            : "Chat not found",
+                });
+            }
+            if (result.kind === "outlook_auth_required") {
+                return void res.status(409).json({
+                    code: "outlook_auth_required",
+                    detail: "Connect Microsoft in Settings to stage this draft.",
+                });
+            }
+            if (result.kind === "attachment_unavailable") {
+                return void res.status(400).json({
+                    code: "attachment_unavailable",
+                    detail: "One of the attached documents is not available.",
+                });
+            }
+            return void res.status(400).json({
+                code: "outlook_draft_failed",
+                detail: result.message,
+            });
+        }
+        res.json({ event: result.event });
     }),
 );
 

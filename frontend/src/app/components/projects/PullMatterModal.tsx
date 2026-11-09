@@ -23,7 +23,21 @@ import { appConfig } from "@/config";
 const t = appConfig.terminology;
 const SEARCH_DEBOUNCE_MS = 300;
 const MIN_SEARCH_LENGTH = 2;
-const NO_FOLDER_REASON = "No SharePoint folder yet";
+const NO_FOLDER_LABEL = "No SharePoint folder in Zoho";
+
+/** Why a greyed result cannot be pulled. Shown once for the whole list. */
+function noFolderExplanation(
+    blockedCount: number,
+    listedCount: number,
+    projectLower: string,
+): string {
+    if (blockedCount === listedCount) {
+        return blockedCount === 1
+            ? `This ${projectLower} can't be pulled yet because Zoho has no SharePoint folder for it.`
+            : "These can't be pulled yet because Zoho has no SharePoint folder for them.";
+    }
+    return `A ${projectLower} with no SharePoint folder in Zoho can't be pulled.`;
+}
 
 interface Props {
     open: boolean;
@@ -127,6 +141,15 @@ export function PullMatterModal({ open, onClose }: Props) {
     }
 
     const pullStatus = `Creating the ${t.projectLower} and pulling the first documents`;
+    const blockedCount = results?.filter((m) => !m.hasFolder).length ?? 0;
+    const noFolderNotice =
+        !pulling && results && blockedCount > 0
+            ? noFolderExplanation(
+                  blockedCount,
+                  results.length,
+                  t.projectLower,
+              )
+            : "";
     const footerStatus = pulling ? (
         <span className="flex items-center gap-2 text-sm text-gray-500" aria-hidden="true">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
@@ -158,6 +181,10 @@ export function PullMatterModal({ open, onClose }: Props) {
                 type: "button",
                 onClick: () => void handlePull(),
                 disabled: !selected || !selected.hasFolder || pulling,
+                title:
+                    noFolderNotice && blockedCount === results?.length
+                        ? noFolderNotice
+                        : undefined,
             }}
         >
             <div className="flex min-h-0 flex-1 flex-col">
@@ -221,11 +248,16 @@ export function PullMatterModal({ open, onClose }: Props) {
                                             aria-selected={isSelected}
                                             aria-disabled={disabled || undefined}
                                             disabled={disabled || pulling}
+                                            title={
+                                                disabled
+                                                    ? `This ${t.projectLower} can't be pulled yet because Zoho has no SharePoint folder for it.`
+                                                    : undefined
+                                            }
                                             onClick={() =>
                                                 setSelectedId(matter.id)
                                             }
                                             className={cn(
-                                                "flex w-full items-baseline gap-3 rounded-xl px-3 py-2 text-left transition-colors",
+                                                "flex w-full items-start gap-3 rounded-xl px-3 py-2 text-left transition-colors",
                                                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40",
                                                 disabled
                                                     ? "cursor-not-allowed text-gray-400"
@@ -234,7 +266,7 @@ export function PullMatterModal({ open, onClose }: Props) {
                                                     LIQUID_GLASS_MODAL_ROW_SELECTED_CLASS,
                                             )}
                                         >
-                                            <span className="w-24 shrink-0 text-xs tabular-nums text-gray-500">
+                                            <span className="w-24 shrink-0 pt-0.5 text-xs tabular-nums text-gray-500">
                                                 {matter.matterNumber ?? "—"}
                                             </span>
                                             <span className="min-w-0 flex-1">
@@ -249,22 +281,26 @@ export function PullMatterModal({ open, onClose }: Props) {
                                                     {matter.name}
                                                 </span>
                                                 <span className="block truncate text-xs text-gray-400">
-                                                    {[
-                                                        matter.account,
-                                                        matter.status,
-                                                        disabled
-                                                            ? NO_FOLDER_REASON
-                                                            : null,
-                                                    ]
+                                                    {[matter.account, matter.status]
                                                         .filter(Boolean)
                                                         .join(" · ")}
                                                 </span>
+                                                {disabled && (
+                                                    <span className="mt-1 block text-xs leading-snug text-gray-600">
+                                                        {NO_FOLDER_LABEL}
+                                                    </span>
+                                                )}
                                             </span>
                                         </button>
                                     </li>
                                 );
                             })}
                         </ul>
+                    )}
+                    {noFolderNotice && (
+                        <p className="mt-3 px-3 text-sm text-gray-600" role="status">
+                            {noFolderNotice}
+                        </p>
                     )}
                 </div>
 

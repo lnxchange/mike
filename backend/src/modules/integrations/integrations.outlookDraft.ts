@@ -2,9 +2,7 @@ import { normalizeMailboxSubject } from "../../lib/emailMessage";
 import { logError } from "../../lib/log";
 import {
   appendOutlookSignature,
-  extractOutlookSignatureHtml,
   outlookInnerHtmlFromDraftBody,
-  referencedContentIds,
   wrapOutlookHtmlDocument,
 } from "../../lib/outlookDraftHtml";
 import type { Db } from "../../lib/supabase";
@@ -16,8 +14,6 @@ import {
   createReplyDraft,
   findMessageByInternetMessageId,
   getMessageHtml,
-  listInlineFileAttachments,
-  listRecentSentMessageBodies,
   patchDraftMessage,
   searchMailboxMessages,
 } from "./integrations.graph";
@@ -26,68 +22,18 @@ import {
   getGraphAccessToken,
 } from "./integrations.microsoftAuth";
 import {
+  rememberOutlookSignature,
+  savedOrCapturedSignature,
+  signatureFromHtml,
+} from "./integrations.outlookSignature";
+import {
   MAX_OUTLOOK_ATTACHMENT_BYTES,
   MAX_OUTLOOK_ATTACHMENTS,
   type CreateOutlookDraftInput,
   type GraphMessage,
-  type OutlookAttachment,
   type OutlookDraftResult,
   type OutlookThreadStatus,
 } from "./integrations.shared";
-
-function matchingInlineImages(
-  needed: string[],
-  attachments: OutlookAttachment[],
-): OutlookAttachment[] {
-  if (!needed.length) return [];
-  return attachments.filter((attachment) => {
-    const contentId = attachment.contentId;
-    if (!contentId) return false;
-    return needed.some(
-      (id) =>
-        id === contentId ||
-        id.startsWith(`${contentId}@`) ||
-        contentId.startsWith(`${id}@`),
-    );
-  });
-}
-
-async function signatureFromHtml(
-  accessToken: string,
-  messageId: string,
-  rawHtml: string,
-): Promise<{ html: string; images: OutlookAttachment[] } | null> {
-  const html = extractOutlookSignatureHtml(rawHtml);
-  if (!html) return null;
-  const needed = referencedContentIds(html);
-  const images = needed.length
-    ? matchingInlineImages(
-        needed,
-        await listInlineFileAttachments(accessToken, messageId),
-      )
-    : [];
-  return { html, images };
-}
-
-async function loadMailboxSignature(
-  accessToken: string,
-): Promise<{ html: string; images: OutlookAttachment[] } | null> {
-  try {
-    const sent = await listRecentSentMessageBodies(accessToken);
-    for (const message of sent) {
-      const signature = await signatureFromHtml(
-        accessToken,
-        message.id,
-        message.html,
-      );
-      if (signature) return signature;
-    }
-  } catch (error) {
-    if (error instanceof GraphAuthError) throw error;
-    logError("integrations/outlook-draft", error, { stage: "signature" });
-  }
-  return null;
-}
 
 function composeStagedHtml(
   rawBody: string,
@@ -190,7 +136,11 @@ export async function createOutlookDraft(
   if (token.kind === "outlook_auth_required") return token;
 
   try {
-    let signature = await loadMailboxSignature(token.accessToken);
+    let signature = await savedOrCapturedSignature(
+      db,
+      userId,
+      token.accessToken,
+    );
     let htmlBody = composeStagedHtml(input.htmlBody, signature?.html ?? null);
     let inlineAttachments = signature?.images ?? [];
     // A reply draft Outlook just created already carries the mailbox signature.
@@ -218,6 +168,7 @@ export async function createOutlookDraft(
               htmlBody = composeStagedHtml(input.htmlBody, fromReply.html);
               inlineAttachments = [];
               signatureAlreadyOnDraft = true;
+              await rememberOutlookSignature(db, userId, fromReply);
             }
           }
         } catch (error) {

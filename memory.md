@@ -1,5 +1,9 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-10-19 — Anthropic key rotated and working
+
+Yule replaced the expiring Libris Colleague key. The first replacement was not scoped to a workspace, so `/v1/messages` returned 400 unless `anthropic-workspace-id` was set. He then set a workspace-scoped key. Railway `mike` deployment `bdcb2bb2` (SUCCESS, 19 October 2026) is live with that key. A Claude call with only `ANTHROPIC_API_KEY` returned 200. Health on `https://mike-production-68f2.up.railway.app/health` is 200. The old key can be disabled in the Anthropic console.
+
 ## 2026-10-02 — Today's assistant work is live
 
 Pushed `664683d5` on `cursor/setup-supabase-vercel-oss-cad9` (`93882e5e` plus the frontend type fix). Stacked redlines keep the other side's author. Review comments, plan-first turns, Microsoft reconnect, and the chat selection blur fix are in the same cut. No migrations.

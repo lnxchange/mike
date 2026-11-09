@@ -180,9 +180,11 @@ official host blocks a direct download.
 
 ## Authentication email
 
-Supabase Auth sends signup, email-change, and password-recovery messages.
-Configure production SMTP in the Supabase dashboard; Mike does not require a
-Resend API key for these messages.
+Supabase Auth sends signup, invite, email-change, and password-recovery
+messages. An organization invitation asks Auth to send its invite email when
+the address does not already have a confirmed account. Configure production
+SMTP in the Supabase dashboard; Mike does not require a Resend API key for
+these messages.
 
 In **Authentication > URL Configuration**, set the Site URL to the deployed
 frontend origin and add that origin's `/auth/callback` URL to the redirect

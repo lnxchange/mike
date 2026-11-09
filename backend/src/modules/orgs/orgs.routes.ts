@@ -237,12 +237,9 @@ orgsRouter.delete(
     }),
 );
 
-// POST /orgs/:orgId/invitations/:invitationId/resend — refresh expiry.
-//
-// The repository has no outbound email infrastructure, so "resend" moves the
-// expiry window rather than re-delivering a message; the invitation surfaces
-// in-app through GET /user/invitations either way. Wiring a mailer in would
-// mean adding a dependency this PR deliberately does not take on.
+// POST /orgs/:orgId/invitations/:invitationId/resend — refresh expiry and
+// ask Supabase Auth to send the signup invite again. A confirmed account
+// does not get a second signup email; the in-app invitation is unchanged.
 orgsRouter.post(
     "/:orgId/invitations/:invitationId/resend",
     requireAuth,

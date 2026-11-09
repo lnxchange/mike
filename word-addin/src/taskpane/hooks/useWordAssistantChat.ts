@@ -28,14 +28,33 @@ import {
   assistantContentFromEvents,
   completeAssistantEvents,
   finishAssistantReasoning,
+  isWordDocumentReadEvent,
   messageFromStorage,
   normalizeLocalWordEditEvents,
   setAssistantError,
   upsertDocumentReadEvent,
 } from "../lib/wordChatEvents";
 import { readCurrentDocumentName } from "../lib/wordDocumentIdentity";
+import { researchActivityLabel } from "../lib/researchActivity";
 
 let localMessageSequence = 0;
+
+function settleReadingActivities(
+  events: WordAssistantEvent[],
+): WordAssistantEvent[] {
+  if (
+    !events.some(
+      (event) => isWordDocumentReadEvent(event) && event.status === "reading",
+    )
+  ) {
+    return events;
+  }
+  return events.map((event) =>
+    isWordDocumentReadEvent(event) && event.status === "reading"
+      ? { ...event, status: "read" }
+      : event,
+  );
+}
 
 function createMessageId(role: WordChatMessage["role"]): string {
   localMessageSequence += 1;
@@ -640,6 +659,16 @@ export function useWordAssistantChat({
                 pendingClientToolCalls.add(job);
                 void job.finally(() => pendingClientToolCalls.delete(job));
               },
+              onToolCallStart: (name) => {
+                if (!requestIsCurrent()) return;
+                const label = researchActivityLabel(name);
+                if (!label) return;
+                assistantEvents = upsertDocumentReadEvent(
+                  settleReadingActivities(assistantEvents),
+                  { filename: label, status: "reading" },
+                );
+                publishAssistantEvents();
+              },
               onCitations: (citations) => {
                 if (!requestIsCurrent()) return;
                 // Later frames supersede earlier partial ones; the final
@@ -663,6 +692,7 @@ export function useWordAssistantChat({
             },
             (chunk) => {
               if (!requestIsCurrent()) return;
+              assistantEvents = settleReadingActivities(assistantEvents);
               streamedContent += chunk;
               assistantEvents = appendAssistantContent(assistantEvents, chunk);
               redlineParsePending = true;

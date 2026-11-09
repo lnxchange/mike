@@ -18,12 +18,14 @@ type Row = Record<string, unknown>;
 let tables: Record<string, Row[]>;
 let idCounter: number;
 let currentUser: { id: string; email: string };
+let invitedEmails: string[];
 // Force one table's writes to fail, so the router's db_error arm can be
 // exercised over real HTTP rather than reasoned about.
 let writeErrors: Record<string, { message: string; code?: string }>;
 
 function resetState() {
     idCounter = 1;
+    invitedEmails = [];
     writeErrors = {};
     currentUser = { id: "admin-1", email: "admin@firm.example" };
     tables = {
@@ -247,6 +249,15 @@ vi.mock("../../lib/supabase", () => ({
                     data: { user: { id: currentUser.id } },
                     error: null,
                 }),
+            admin: {
+                inviteUserByEmail: (email: string) => {
+                    invitedEmails.push(email);
+                    return Promise.resolve({
+                        data: { user: { email } },
+                        error: null,
+                    });
+                },
+            },
         },
     })),
 }));
@@ -473,7 +484,9 @@ describe("organization invitations", () => {
             email: "new@hire.example",
             role: "admin",
             status: "pending",
+            email_delivery: "sent",
         });
+        expect(invitedEmails).toEqual(["new@hire.example"]);
         expect(tables.org_members).toHaveLength(2);
     });
 
@@ -631,6 +644,8 @@ describe("organization invitations", () => {
             .post(`/orgs/org-1/invitations/${created.body.id}/resend`)
             .set(...AUTH);
         expect(res.status).toBe(200);
+        expect(res.body.email_delivery).toBe("sent");
+        expect(invitedEmails).toEqual(["new@hire.example", "new@hire.example"]);
         expect(new Date(res.body.expires_at).getTime()).toBeGreaterThan(
             Date.now(),
         );

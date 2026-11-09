@@ -83,6 +83,10 @@ interface Props {
   accessResolved?: boolean;
   /** Shares document previews with the initial composer before a chat exists. */
   onInitialSubmit?: (message: Message) => void;
+  onStageOutlookDraft?: (
+    messageId: string,
+    eventIndex: number,
+  ) => Promise<void>;
 }
 
 const ASSISTANT_PANEL_TRANSITION_MS = 500;
@@ -113,6 +117,7 @@ export function ChatView({
   canSend,
   accessResolved = true,
   onInitialSubmit,
+  onStageOutlookDraft,
 }: Props) {
   const router = useRouter();
   const [tabs, setTabs] = useState<AssistantSidePanelTab[]>([]);
@@ -874,6 +879,8 @@ export function ChatView({
                           />
                         ) : (
                           <AssistantMessage
+                            messageId={msg.id}
+                            onStageOutlookDraft={onStageOutlookDraft}
                             events={msg.events}
                             isStreaming={
                               i === messages.length - 1 && isResponseLoading

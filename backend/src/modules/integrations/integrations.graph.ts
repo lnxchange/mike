@@ -241,46 +241,55 @@ export async function findMessageByInternetMessageId(
   return data.value?.[0] ?? null;
 }
 
+const OUTLOOK_HTML_PREFER = {
+  Prefer: 'outlook.body-content-type="html", outlook.allow-unsafe-html',
+};
+
 export async function listRecentSentMessageBodies(
   accessToken: string,
 ): Promise<{ id: string; html: string }[]> {
+  // sentDateTime has to be selected or Graph rejects the sort, and the
+  // signature lookup then finds nothing. A list response also omits the
+  // full HTML body, which is where the signature lives, so each message
+  // is read on its own.
   const params = new URLSearchParams({
-    $select: "id,uniqueBody,body",
+    $select: "id,sentDateTime",
     $orderby: "sentDateTime desc",
     $top: "8",
   });
-  const data = await graphJson<{
-    value?: {
-      id?: string;
-      uniqueBody?: { content?: string; contentType?: string };
-      body?: { content?: string; contentType?: string };
-    }[];
-  }>(accessToken, `/me/mailFolders/sentitems/messages?${params.toString()}`, {
-    headers: { Prefer: 'outlook.body-content-type="html"' },
-  });
-  return (data.value ?? [])
-    .map((message) => {
-      // uniqueBody is the conversation diff. A signature that is on every
-      // message is not unique, so it is missing there. The full body still has it.
-      const html =
-        message.body?.content?.trim() ||
-        message.uniqueBody?.content?.trim() ||
-        "";
-      return message.id && html ? { id: message.id, html } : null;
-    })
-    .filter((message): message is { id: string; html: string } => !!message);
+  const data = await graphJson<{ value?: { id?: string }[] }>(
+    accessToken,
+    `/me/mailFolders/sentitems/messages?${params.toString()}`,
+  );
+  const messages: { id: string; html: string }[] = [];
+  for (const message of data.value ?? []) {
+    if (!message.id) continue;
+    try {
+      const html = await getMessageHtml(accessToken, message.id);
+      if (html) messages.push({ id: message.id, html });
+    } catch (error) {
+      if (error instanceof GraphAuthError) throw error;
+    }
+  }
+  return messages;
 }
 
 export async function getMessageHtml(
   accessToken: string,
   messageId: string,
 ): Promise<string | null> {
-  const data = await graphJson<{ body?: { content?: string } }>(
+  const data = await graphJson<{
+    body?: { content?: string };
+    uniqueBody?: { content?: string };
+  }>(
     accessToken,
-    `/me/messages/${encodeURIComponent(messageId)}?$select=body`,
-    { headers: { Prefer: 'outlook.body-content-type="html"' } },
+    `/me/messages/${encodeURIComponent(messageId)}?$select=body,uniqueBody`,
+    { headers: OUTLOOK_HTML_PREFER },
   );
-  const html = data.body?.content?.trim();
+  // uniqueBody is the conversation diff. A signature that is on every
+  // message is not unique, so it is missing there. The full body still has it.
+  const html =
+    data.body?.content?.trim() || data.uniqueBody?.content?.trim() || "";
   return html || null;
 }
 
@@ -290,6 +299,7 @@ export async function listInlineFileAttachments(
 ): Promise<OutlookAttachment[]> {
   const data = await graphJson<{
     value?: {
+      id?: string;
       name?: string;
       contentType?: string;
       contentId?: string;
@@ -298,18 +308,35 @@ export async function listInlineFileAttachments(
     }[];
   }>(
     accessToken,
-    `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=name,contentType,contentId,isInline,contentBytes`,
+    `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,contentId,isInline`,
   );
   const attachments: OutlookAttachment[] = [];
   for (const attachment of data.value ?? []) {
     const contentId = attachment.contentId?.replace(/^<|>$/g, "").trim();
-    if (!attachment.isInline || !contentId || !attachment.contentBytes) {
-      continue;
+    if (!attachment.isInline || !contentId) continue;
+    // A list of attachments does not include contentBytes. The bytes come
+    // from reading that attachment on its own.
+    let contentBytes = attachment.contentBytes;
+    let filename = attachment.name;
+    let contentType = attachment.contentType;
+    if (!contentBytes && attachment.id) {
+      const full = await graphJson<{
+        name?: string;
+        contentType?: string;
+        contentBytes?: string;
+      }>(
+        accessToken,
+        `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachment.id)}`,
+      );
+      contentBytes = full.contentBytes;
+      filename = filename || full.name;
+      contentType = contentType || full.contentType;
     }
+    if (!contentBytes) continue;
     attachments.push({
-      filename: attachment.name || contentId,
-      contentType: attachment.contentType || "application/octet-stream",
-      bytes: Buffer.from(attachment.contentBytes, "base64"),
+      filename: filename || contentId,
+      contentType: contentType || "application/octet-stream",
+      bytes: Buffer.from(contentBytes, "base64"),
       isInline: true,
       contentId,
     });

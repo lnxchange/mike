@@ -77,12 +77,22 @@ describe("PullMatterModal", () => {
         expect(options[0]).toHaveTextContent("Blue NRG");
         expect(options[0]).toHaveAttribute("aria-selected", "false");
         expect(options[1]).toBeDisabled();
-        expect(options[1]).toHaveTextContent("No SharePoint folder yet");
+        expect(options[1]).toHaveTextContent("No SharePoint folder in Zoho");
+        expect(options[1]).toHaveAttribute(
+            "title",
+            "This project can't be pulled yet because Zoho has no SharePoint folder for it.",
+        );
+        expect(
+            screen.getByRole("status"),
+        ).toHaveTextContent(
+            "A project with no SharePoint folder in Zoho can't be pulled.",
+        );
 
         const pull = screen.getByRole("button", {
             name: "Pull and keep in sync",
         });
         expect(pull).toBeDisabled();
+        expect(pull).not.toHaveAttribute("title");
 
         await user.click(options[0]);
         expect(options[0]).toHaveAttribute("aria-selected", "true");
@@ -192,6 +202,21 @@ describe("PullMatterModal", () => {
             await screen.findByText(/could not be pulled from Zoho/),
         ).toBeInTheDocument();
         expect(screen.queryByText(/postgres/)).not.toBeInTheDocument();
+    });
+
+    it("explains why a matter with no SharePoint folder cannot be pulled", async () => {
+        const user = userEvent.setup();
+        vi.mocked(searchZohoMatters).mockResolvedValue([HITS[1]]);
+        render(<PullMatterModal open onClose={vi.fn()} />);
+        await typeQuery(user, "263400");
+
+        const reason =
+            "This project can't be pulled yet because Zoho has no SharePoint folder for it.";
+        expect(await screen.findByRole("status")).toHaveTextContent(reason);
+        expect(screen.getByRole("option")).toBeDisabled();
+        expect(
+            screen.getByRole("button", { name: "Pull and keep in sync" }),
+        ).toHaveAttribute("title", reason);
     });
 
     it("shows an empty state when nothing matches", async () => {

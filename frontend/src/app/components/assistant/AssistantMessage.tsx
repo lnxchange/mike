@@ -108,6 +108,12 @@ interface Props {
      * edits flip their per-card UI without per-card clicks.
      */
     resolvedEditStatuses?: Record<string, "accepted" | "rejected">;
+    /** Assistant message id, so Stage in Outlook can save onto this turn. */
+    messageId?: string;
+    onStageOutlookDraft?: (
+        messageId: string,
+        eventIndex: number,
+    ) => Promise<void>;
 }
 
 export function AssistantMessage({
@@ -131,6 +137,8 @@ export function AssistantMessage({
     isDocReloading,
     isEditReloading,
     resolvedEditStatuses,
+    messageId,
+    onStageOutlookDraft,
 }: Props) {
     const contentDivRef = useRef<HTMLDivElement | null>(null);
     const [isCopied, setIsCopied] = useState(false);
@@ -321,7 +329,13 @@ export function AssistantMessage({
               kind: "plan";
               event: Extract<AssistantEvent, { type: "plan" }>;
               index: number;
-          };
+          }
+        | { kind: "outlook"; event: AssistantEvent; index: number };
+
+    const isOutlookSurfaceEvent = (event: AssistantEvent) =>
+        event.type === "outlook_draft_preview" ||
+        event.type === "outlook_draft_created" ||
+        event.type === "outlook_auth_required";
 
     const groups: EventGroup[] = [];
     if (events) {
@@ -340,6 +354,12 @@ export function AssistantMessage({
                     current = null;
                 }
                 groups.push({ kind: "plan", event: e, index: i });
+            } else if (isOutlookSurfaceEvent(e)) {
+                if (current) {
+                    groups.push(current);
+                    current = null;
+                }
+                groups.push({ kind: "outlook", event: e, index: i });
             } else {
                 if (!current)
                     current = { kind: "pre", events: [], indices: [] };
@@ -522,6 +542,11 @@ export function AssistantMessage({
                     attachmentNames={event.attachment_names ?? []}
                     isStreaming={event.isStreaming}
                     showConnector={showConnector}
+                    onStage={
+                        !isStreaming && messageId && onStageOutlookDraft
+                            ? () => onStageOutlookDraft(messageId, globalIdx)
+                            : undefined
+                    }
                 />
             );
         }
@@ -531,6 +556,8 @@ export function AssistantMessage({
                     key={globalIdx}
                     subject={event.subject}
                     to={event.to ?? []}
+                    cc={event.cc}
+                    htmlBody={event.html_body ?? ""}
                     attachmentNames={event.attachment_names ?? []}
                     threaded={event.threaded}
                     threadStatus={event.thread_status}
@@ -1388,6 +1415,18 @@ export function AssistantMessage({
                                         key={`plan-${g.index}`}
                                         event={g.event}
                                     />
+                                );
+                            }
+                            if (g.kind === "outlook") {
+                                return (
+                                    <div key={`o-${g.index}`}>
+                                        {renderEvent(
+                                            g.event,
+                                            0,
+                                            [g.event],
+                                            g.index,
+                                        )}
+                                    </div>
                                 );
                             }
                             const subsequentContent = hasContentAfter(gIdx);

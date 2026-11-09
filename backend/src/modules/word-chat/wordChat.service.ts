@@ -26,6 +26,7 @@ import {
   buildMessages,
   buildUserPersonalisationPrompt,
   buildWordChatSystemPrompt,
+  type WordResearchFlags,
   buildWorkflowStore,
   enrichWithPriorEvents,
   generateSpotlightNonce,
@@ -566,6 +567,7 @@ export type PreparedWordChatStream = {
   selectedModel: string;
   selectedReasoningLevel: ReturnType<typeof resolveEffectiveReasoningLevel>;
   nonce: ReturnType<typeof generateSpotlightNonce>;
+  legalResearch: WordResearchFlags;
 };
 
 export async function prepareWordChatStream(
@@ -787,13 +789,19 @@ export async function prepareWordChatStream(
     );
     const { api_keys: configuredApiKeys, personalisation } = modelSettings;
     const apiKeys = { ...configuredApiKeys };
-    delete apiKeys.courtlistener;
+    const legalResearch: WordResearchFlags = {
+      us: modelSettings.legal_research_us,
+      au: modelSettings.legal_research_au,
+      energy: modelSettings.legal_research_au_energy,
+      vic: modelSettings.legal_research_au_vic,
+      cases: modelSettings.legal_research_au_cases,
+    };
     const personalisationPrompt = buildUserPersonalisationPrompt(
       personalisation,
       nonce,
     );
     const wordSystemPrompt = [
-      buildWordChatSystemPrompt(args.clientToolsEnabled),
+      buildWordChatSystemPrompt(args.clientToolsEnabled, legalResearch),
       withAuExecutionBlocksPrompt(
         personalisationPrompt || undefined,
         personalisation?.jurisdiction,
@@ -828,6 +836,7 @@ export async function prepareWordChatStream(
         selectedModel,
         selectedReasoningLevel,
         nonce,
+        legalResearch,
       },
     };
   } catch (error) {

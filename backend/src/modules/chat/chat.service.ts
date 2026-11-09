@@ -54,6 +54,7 @@ export {
     type PlanContinuationRequest,
 } from "./chat.planRun";
 export { decidePlanContinuation } from "./engine/tools/planTools";
+export { stageOutlookPreview } from "./chat.outlookDraft";
 export {
   devLog,
   appendAssistantEventsToMessage,
@@ -94,6 +95,9 @@ export {
   ACTIVE_WORD_DOCUMENT_ID,
   buildDocContext,
   buildWordChatSystemPrompt,
+  WORD_CHAT_TOOL_NAMES,
+  wordChatAllowedToolNames,
+  type WordResearchFlags,
   withoutEmptyAssistantReservations,
 } from "./engine/index";
 export { generateAssistantChatTitle } from "./chat.title";

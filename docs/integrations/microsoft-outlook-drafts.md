@@ -53,7 +53,7 @@ sequenceDiagram
   Chat->>Vault: refresh Graph token
   Chat->>Entra: create draft plus attachments
   Entra-->>Mail: isDraft in signed-in mailbox
-  Chat-->>User: Open in Outlook card
+  Chat-->>User: Draft email card, then See draft in Outlook
 ```
 
 ## Product rules
@@ -64,7 +64,7 @@ sequenceDiagram
 - Join a live Outlook conversation when Mike can resolve one message in that mailbox. Prefer Message-ID from a filed email; otherwise search by normalised subject and the other party's address. Ambiguous results stay a new draft.
 - Existing SAML "Continue with SSO" stays. It remains identity-only.
 - The filer Graph app stays for Zoho/SharePoint matter sync. Do not enqueue `outlook.createDraft` from Mike.
-- Compose in chat first. `create_outlook_draft` defaults to a preview card. Stage to Outlook only when the user asks. Staging copies the user's Outlook signature from recent sent mail (plus inline logo images) and converts lists, bold, and italic into Outlook HTML.
+- Compose in chat first. `create_outlook_draft` defaults to a draft email card that stays visible with the reply. Stage in Outlook on that card sends the same text, without a second model pass. Staging uses the signature saved on the account. The first time, that signature is copied from recent sent mail, including the logo, and kept for later drafts. Settings, Account is where it can be edited. Lists, bold, and italic are still converted into Outlook HTML. The staged card links to See draft in Outlook.
 - This deliberately holds **per-user delegated tokens** (encrypted) on Railway. That is a different trust model from the sync ADR, which keeps the **app-only** Graph identity on the filer.
 
 ## 1. Entra app and Supabase Azure provider (operator setup)
@@ -138,7 +138,7 @@ Implementation in [`toolDispatcher.ts`](../../backend/src/modules/chat/engine/to
 
 New prompt rules in [`prompts.ts`](../../backend/src/modules/chat/engine/prompts.ts): when the user asks to email someone, call the tool; never say the mail was sent; end the body at "Kind regards,"; attach the real files.
 
-Wire type in [`packages/contracts/index.d.ts`](../../packages/contracts/index.d.ts). Card in [`EventBlocks.tsx`](../../frontend/src/app/components/assistant/message/EventBlocks.tsx): subject, recipients, attachment list, "Open in Outlook" (`webLink`). Connect card for `outlook_auth_required`.
+Wire type in [`packages/contracts/index.d.ts`](../../packages/contracts/index.d.ts). The draft card in [`EventBlocks.tsx`](../../frontend/src/app/components/assistant/message/EventBlocks.tsx) stays outside the Working trace: subject, recipients, body, attachment list, Stage in Outlook, then See draft in Outlook (`webLink`). Connect card for `outlook_auth_required`, also outside that trace. `POST /chat/:chatId/messages/:messageId/outlook-draft` stages the stored preview.
 
 ## 5. Reply-draft data: persist `internetMessageId`, then search Outlook
 
@@ -164,5 +164,5 @@ Verification while iterating: targeted Vitest as above. After UI lands, exercise
 - Staging into someone else's Drafts.
 - Using the filer command queue for these drafts.
 - Replacing SAML SSO.
-- Outlook signature injection, `updateDraft` / `deleteDraft`, inbox picker UI (mailbox search is in scope; choosing among several threads is not).
+- Filer signature injection, `updateDraft` / `deleteDraft`, inbox picker UI (mailbox search is in scope; choosing among several threads is not). Mike keeps the user's own signature on the account instead.
 - Changing `UPLOAD_PROCESSING_MAX_RUNNING_PER_USER` or the dirty filer tree.

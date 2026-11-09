@@ -27,6 +27,8 @@ function makeDb(initial: Record<string, Row[]>) {
     for (const [k, v] of Object.entries(initial)) tables[k] = v.map((r) => ({ ...r }));
     const selects: Record<string, string[]> = {};
     let idCounter = 1;
+    const invites: { email: string; redirectTo?: string }[] = [];
+    let inviteError: { message: string; code?: string } | null = null;
 
     function query(table: string) {
         const filters: (
@@ -131,8 +133,26 @@ function makeDb(initial: Record<string, Row[]>) {
 
     return {
         from: (t: string) => query(t),
+        auth: {
+            admin: {
+                inviteUserByEmail: async (
+                    email: string,
+                    options?: { redirectTo?: string },
+                ) => {
+                    invites.push({ email, redirectTo: options?.redirectTo });
+                    if (inviteError) {
+                        return { data: { user: null }, error: inviteError };
+                    }
+                    return { data: { user: { email } }, error: null };
+                },
+            },
+        },
         _tables: tables,
         _selects: selects,
+        _invites: invites,
+        _setInviteError: (error: { message: string; code?: string } | null) => {
+            inviteError = error;
+        },
     } as any;
 }
 
@@ -607,8 +627,48 @@ describe("org invitations", () => {
         // claim-after-signup email match both work on one canonical form.
         expect(result.invitation.email).toBe("newbie@acme.example");
         expect(result.invitation.status).toBe("pending");
+        expect(result.invitation.email_delivery).toBe("sent");
+        expect(db._invites).toEqual([
+            {
+                email: "newbie@acme.example",
+                redirectTo: `${process.env.FRONTEND_URL?.replace(/\/+$/, "") || "http://localhost:3000"}/auth/callback`,
+            },
+        ]);
         // Crucially: no membership yet.
         expect(db._tables.org_members).toHaveLength(2);
+    });
+
+    it("does not email when the address is already a confirmed Libris account", async () => {
+        const db = seedOrg();
+        db._setInviteError({
+            code: "email_exists",
+            message: "A user with this email address has already been registered",
+        });
+        const result = await createInvitation(db, {
+            actorId: "admin1",
+            orgId: "o1",
+            email: "newbie@acme.example",
+            role: "member",
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.invitation.email_delivery).toBe("existing_account");
+        expect(result.invitation.status).toBe("pending");
+    });
+
+    it("keeps the invitation when the signup email cannot be sent", async () => {
+        const db = seedOrg();
+        db._setInviteError({ message: "Error sending invite email" });
+        const result = await createInvitation(db, {
+            actorId: "admin1",
+            orgId: "o1",
+            email: "newbie@acme.example",
+            role: "member",
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.invitation.email_delivery).toBe("failed");
+        expect(db._tables.org_invitations).toHaveLength(1);
     });
 
     it("a pending invitation grants no access", async () => {
@@ -634,6 +694,7 @@ describe("org invitations", () => {
                 role: "member",
             }),
         ).resolves.toMatchObject({ ok: false, kind: "forbidden" });
+        expect(db._invites).toEqual([]);
     });
 
     it("rejects a malformed address and self-invitation", async () => {
@@ -946,6 +1007,10 @@ describe("org invitations", () => {
         expect(resent.ok).toBe(true);
         if (!resent.ok) return;
         expect(resent.invitation.status).toBe("pending");
+        expect(resent.invitation.email_delivery).toBe("sent");
+        expect(db._invites).toEqual([
+            expect.objectContaining({ email: "newbie@acme.example" }),
+        ]);
         expect(
             new Date(resent.invitation.expires_at as string).getTime(),
         ).toBeGreaterThan(Date.now());

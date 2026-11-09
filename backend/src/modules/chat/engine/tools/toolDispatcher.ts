@@ -204,6 +204,15 @@ function outlookAttachmentName(
   return docStore.get(docId)?.filename ?? docIndex?.[docId]?.filename ?? null;
 }
 
+function outlookDocumentId(
+  rawId: string,
+  docStore: DocStore,
+  docIndex: DocIndex | undefined,
+): string | null {
+  const docId = resolveDocLabel(rawId, docStore, docIndex) ?? rawId;
+  return docIndex?.[docId]?.document_id ?? null;
+}
+
 function documentSuffixFromName(filename: string) {
   return filename.includes(".")
     ? filename.split(".").pop()!.toLowerCase()
@@ -763,24 +772,6 @@ export async function runToolCalls(
       const rawDocId = args.doc_id as string;
       const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
       const docInfo = docStore.get(docId);
-      // Request-scoped inline documents (currently the active Word document)
-      // must enter model context only through read_document/fetch_documents.
-      // Those paths emit the visible read lifecycle and nonce-fence the entire
-      // body. find_in_document otherwise returns raw, user-controlled snippets
-      // and would silently bypass both guarantees.
-      if (docInfo?.inline_text !== undefined) {
-        toolResults.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: JSON.stringify({
-            ok: false,
-            error:
-              "Request-scoped documents must be opened with read_document before they can be searched.",
-            next_required_action: `Call read_document with doc_id "${docId}".`,
-          }),
-        });
-        continue;
-      }
       const query = (args.query as string) ?? "";
       const maxResults =
         typeof args.max_results === "number" ? args.max_results : undefined;
@@ -824,7 +815,17 @@ export async function runToolCalls(
           total_matches: totalMatches,
         });
       }
-      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      // The open Word document is inline text. Fence the hits the same way
+      // read_document fences the body, so a passage cannot instruct the model.
+      const fencedContent =
+        docInfo?.inline_text !== undefined && nonce
+          ? spotlight(content, nonce)
+          : content;
+      toolResults.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: fencedContent,
+      });
     } else if (tc.function.name === "list_documents") {
       const list = Array.from(docStore.entries()).map(([doc_id, info]) => ({
         doc_id,
@@ -3480,8 +3481,20 @@ export async function runToolCalls(
       const htmlBody =
         typeof args.html_body === "string" ? args.html_body : "";
       const attachmentIds = asStringList(args.attachment_doc_ids);
+      const replyDocId =
+        typeof args.reply_to_doc_id === "string" ? args.reply_to_doc_id : null;
+      const explicitMessageId = normalizeInternetMessageId(
+        typeof args.in_reply_to_internet_message_id === "string"
+          ? args.in_reply_to_internet_message_id
+          : null,
+      );
+      const filedMessageId = replyDocId
+        ? await loadFiledInternetMessageId(replyDocId, docStore, docIndex, db)
+        : null;
+      const inReplyTo = explicitMessageId ?? filedMessageId;
       if (!stage) {
         const attachmentNames: string[] = [];
+        const attachmentDocumentIds: string[] = [];
         let previewAttachmentError: string | null = null;
         for (const rawId of attachmentIds) {
           const filename = outlookAttachmentName(rawId, docStore, docIndex);
@@ -3491,6 +3504,8 @@ export async function runToolCalls(
             break;
           }
           attachmentNames.push(filename);
+          const documentId = outlookDocumentId(rawId, docStore, docIndex);
+          if (documentId) attachmentDocumentIds.push(documentId);
         }
         if (previewAttachmentError) {
           write(
@@ -3513,9 +3528,15 @@ export async function runToolCalls(
             type: "outlook_draft_preview",
             subject,
             to,
-            cc,
+            cc: cc.length > 0 ? cc : undefined,
+            bcc: bcc.length > 0 ? bcc : undefined,
             html_body: outlookInnerHtmlFromDraftBody(htmlBody),
             attachment_names: attachmentNames,
+            attachment_document_ids:
+              attachmentDocumentIds.length === attachmentNames.length
+                ? attachmentDocumentIds
+                : undefined,
+            in_reply_to_internet_message_id: inReplyTo ?? undefined,
           };
           outlookEvents.push(event);
           write(`data: ${JSON.stringify(event)}\n\n`);
@@ -3529,7 +3550,7 @@ export async function runToolCalls(
               to,
               attachment_names: attachmentNames,
               next_required_action:
-                "The draft is a chat preview only. Wait for the user to ask for changes or to stage it to Outlook. Do not say it is in Outlook.",
+                "A draft email card is shown. Do not repeat the email in prose. Do not call this tool again just to stage it, and do not rewrite it. If the user asks to stage it, tell them to use Stage in Outlook on the card.",
             }),
           });
         }
@@ -3569,18 +3590,6 @@ export async function runToolCalls(
           }
           attachments.push(loaded);
         }
-        const replyDocId =
-          typeof args.reply_to_doc_id === "string"
-            ? args.reply_to_doc_id
-            : null;
-        const explicitMessageId = normalizeInternetMessageId(
-          typeof args.in_reply_to_internet_message_id === "string"
-            ? args.in_reply_to_internet_message_id
-            : null,
-        );
-        const filedMessageId = replyDocId
-          ? await loadFiledInternetMessageId(replyDocId, docStore, docIndex, db)
-          : null;
         if (attachmentError) {
           write(
             `data: ${JSON.stringify({
@@ -3602,7 +3611,7 @@ export async function runToolCalls(
             subject,
             htmlBody,
             attachments,
-            inReplyToInternetMessageId: explicitMessageId ?? filedMessageId,
+            inReplyToInternetMessageId: inReplyTo,
           });
           if (result.kind === "outlook_auth_required") {
             const event: OutlookAuthRequiredEvent = {
@@ -3626,6 +3635,8 @@ export async function runToolCalls(
               web_link: result.webLink,
               subject: result.subject,
               to: result.to,
+              cc: cc.length > 0 ? cc : undefined,
+              html_body: outlookInnerHtmlFromDraftBody(htmlBody),
               attachment_names: result.attachmentNames,
               threaded: result.threaded,
               thread_status: result.threadStatus,
@@ -3643,7 +3654,7 @@ export async function runToolCalls(
                 threaded: result.threaded,
                 thread_status: result.threadStatus,
                 next_required_action:
-                  "Do not paste the Outlook URL in prose. Tell the user a review-only draft is ready in Outlook. Never say it was sent.",
+                  "Do not paste the Outlook URL in prose. The draft card shows See draft in Outlook. Never say it was sent.",
               }),
             });
           } else {

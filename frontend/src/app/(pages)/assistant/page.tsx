@@ -13,6 +13,7 @@ export default function AssistantPage() {
         handleChat,
         handleNewChat,
         cancel,
+        stageOutlookDraft,
         chatId,
     } = useAssistantChat();
 
@@ -34,6 +35,7 @@ export default function AssistantPage() {
             messages={messages}
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}
+            onStageOutlookDraft={stageOutlookDraft}
             cancel={cancel}
         />
     );

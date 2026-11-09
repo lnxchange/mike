@@ -422,6 +422,30 @@ export async function deleteAccount(): Promise<void> {
     return apiRequest<void>("/user/account", { method: "DELETE" });
 }
 
+type OutlookSignatureRecord = {
+    html: string | null;
+};
+
+export async function getOutlookSignature(): Promise<OutlookSignatureRecord> {
+    return apiRequest<OutlookSignatureRecord>("/integrations/outlook-signature");
+}
+
+export async function saveOutlookSignature(
+    html: string,
+): Promise<OutlookSignatureRecord> {
+    return apiRequest<OutlookSignatureRecord>("/integrations/outlook-signature", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ html }),
+    });
+}
+
+export async function refreshOutlookSignature(): Promise<OutlookSignatureRecord> {
+    return apiRequest<OutlookSignatureRecord>("/integrations/outlook-signature/refresh", {
+        method: "POST",
+    });
+}
+
 export async function deleteAllChats(): Promise<void> {
     return apiRequest<void>("/user/chats", { method: "DELETE" });
 }
@@ -1350,6 +1374,12 @@ export interface OrgInvitation {
     /** Recipient list only — the recipient is not a member yet, so they
      *  cannot look the organization's name up any other way. */
     org_name?: string | null;
+    /**
+     * Present on create and resend only. `sent` means Supabase Auth emailed
+     * a signup invite. `existing_account` means they already have a login.
+     * `failed` means the invitation row was saved and the email was not.
+     */
+    email_delivery?: "sent" | "existing_account" | "failed";
 }
 
 export async function listOrgs(): Promise<Org[]> {
@@ -2190,6 +2220,21 @@ export async function listChats(options?: {
 
 export async function listProjectChats(projectId: string): Promise<Chat[]> {
     return apiRequest<Chat[]>(`/projects/${projectId}/chats`);
+}
+
+export async function stageChatOutlookDraft(
+    chatId: string,
+    messageId: string,
+    eventIndex: number,
+): Promise<Extract<AssistantEvent, { type: "outlook_draft_created" }>> {
+    const result = await apiRequest<{
+        event: Extract<AssistantEvent, { type: "outlook_draft_created" }>;
+    }>(`/chat/${chatId}/messages/${messageId}/outlook-draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_index: eventIndex }),
+    });
+    return result.event;
 }
 
 export async function getChat(chatId: string): Promise<ChatDetailOut> {

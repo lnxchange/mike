@@ -20,6 +20,7 @@ import {
   SettingsDescription,
   SettingsLabel,
 } from "@/app/components/settings/SettingsText";
+import { EmailSignatureSection } from "@/app/components/settings/EmailSignatureSection";
 import { SettingsCard } from "@/app/components/settings/SettingsCard";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";
@@ -351,6 +352,8 @@ export default function SettingsPage() {
           </SettingsRow>
         </SettingsCard>
       </section>
+
+      <EmailSignatureSection />
 
       {/* Plan */}
       <section className="space-y-3">

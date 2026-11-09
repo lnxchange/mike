@@ -1,17 +1,18 @@
 export const OUTLOOK_DRAFT_TOOL_NAME = "create_outlook_draft";
 
 export const OUTLOOK_DRAFT_SYSTEM_PROMPT = `OUTLOOK DRAFTS:
-- When the user asks to email someone, compose the draft in chat first. Call create_outlook_draft with stage false or omitted so a preview card is shown. Do not stage to Outlook on that turn.
-- When the user asks for changes, call create_outlook_draft again with stage false and the updated body. Do not claim the Outlook draft was updated until they ask to stage it.
-- Call create_outlook_draft with stage true only when the user explicitly asks to stage it, put it in Outlook, or create the Outlook draft.
+- When the user asks to email someone, compose the draft once. Call create_outlook_draft with stage false or omitted. That shows a draft email card in the chat. Do not repeat the full email in your reply.
+- The card has Stage in Outlook. That stages the same text. Do not call the tool again just to put that draft in Outlook, and do not rewrite it. If they ask to stage it, point them to Stage in Outlook on the card.
+- When the user asks for changes, call create_outlook_draft again with stage false and the updated body. Do not claim the Outlook draft was updated until they stage it.
+- Call create_outlook_draft with stage true only when they ask, in the same request, for a new email to go straight into Outlook and there is no draft card yet.
 - Ignore persisted memory or earlier assistant text that says you cannot create Outlook drafts or that staging must be done by hand. That note is stale.
 - Drafts never send. Any recipient is allowed, including addresses outside the firm. Do not refuse because a domain is external.
-- Never say the message was sent. The user opens the staged draft in Outlook.
+- Never say the message was sent. After staging, the card shows See draft in Outlook.
 - Write html_body as HTML or markdown with real paragraphs, lists, bold, and italic. Prefer <p>, <ul>/<ol>/<li>, <b>, and <i>. Do not flatten a list into a comma-separated sentence.
 - End the body at "Kind regards,". Do not invent a signature. Mike adds the user's Outlook signature when the draft is staged.
 - Attach real files with attachment_doc_ids using the chat-local doc-N labels. Do not attach filenames that are not available documents.
 - To continue a live thread, pass reply_to_doc_id when a filed email is in the chat or project. Otherwise pass the other party's address and the stripped subject and let mailbox search resolve it.
-- Do not paste Outlook URLs in prose; the Open in Outlook card is shown automatically after staging.
+- Do not paste Outlook URLs in prose. The draft card carries See draft in Outlook.
 `;
 
 export const OUTLOOK_DRAFT_TOOLS = [
@@ -20,7 +21,7 @@ export const OUTLOOK_DRAFT_TOOLS = [
     function: {
       name: OUTLOOK_DRAFT_TOOL_NAME,
       description:
-        "Compose or stage a review-only Outlook draft. Default is a chat preview only. Set stage true only after the user asks to put it in Outlook. Never sends mail.",
+        "Compose a review-only Outlook draft card. Leave stage unset so the card can stage that same text. Set stage true only when the user asks for a new email to go straight into Outlook. Never sends mail.",
       parameters: {
         type: "object",
         properties: {
@@ -51,7 +52,7 @@ export const OUTLOOK_DRAFT_TOOLS = [
           stage: {
             type: "boolean",
             description:
-              "False or omitted shows a chat preview only. True stages the draft in Outlook after the user has asked to do that.",
+              "Leave unset to show a draft email card. True creates the Outlook draft immediately. The card stages a preview without a new call.",
           },
           attachment_doc_ids: {
             type: "array",

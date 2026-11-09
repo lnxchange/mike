@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import {
     OutlookConnectBlock,
     OutlookDraftBlock,
@@ -25,8 +26,11 @@ describe("Outlook event cards", () => {
             screen.getByText("This draft continues the existing conversation."),
         ).toBeInTheDocument();
         expect(
-            screen.getByRole("link", { name: /open in outlook/i }),
+            screen.getByRole("link", { name: /see draft in outlook/i }),
         ).toHaveAttribute("href", "https://outlook.office.com/mail/draft");
+        expect(
+            screen.getByText(/ready for you to send/i),
+        ).toBeInTheDocument();
     });
 
     it("explains an ambiguous mailbox search as a new draft", () => {
@@ -55,16 +59,34 @@ describe("Outlook event cards", () => {
                 attachmentNames={["note.pdf"]}
             />,
         );
-        expect(screen.getByText("Email draft")).toBeInTheDocument();
+        expect(screen.getByText("Draft email")).toBeInTheDocument();
         expect(screen.getByText("Schedule")).toBeInTheDocument();
         expect(screen.getByText("the schedule")).toBeInTheDocument();
         expect(screen.getByText("attached")).toBeInTheDocument();
         expect(
-            screen.getByText(/say when to stage this to Outlook/i),
-        ).toBeInTheDocument();
+            screen.getByRole("button", { name: /stage in outlook/i }),
+        ).toBeDisabled();
         expect(
-            screen.queryByRole("link", { name: /open in outlook/i }),
+            screen.queryByRole("link", { name: /see draft in outlook/i }),
         ).not.toBeInTheDocument();
+    });
+
+    it("stages the draft already shown when Stage in Outlook is clicked", async () => {
+        const user = userEvent.setup();
+        const onStage = vi.fn().mockResolvedValue(undefined);
+        render(
+            <OutlookDraftPreviewBlock
+                subject="Schedule"
+                to={["alissa@example.com"]}
+                htmlBody="<p>Kind regards,</p>"
+                attachmentNames={[]}
+                onStage={onStage}
+            />,
+        );
+        await user.click(
+            screen.getByRole("button", { name: /stage in outlook/i }),
+        );
+        expect(onStage).toHaveBeenCalledOnce();
     });
 
     it("points to Settings when Microsoft is not connected", () => {

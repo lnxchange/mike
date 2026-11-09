@@ -130,4 +130,36 @@ describe("AssistantMessage timeline", () => {
             screen.getByText("The response was interrupted."),
         ).toBeInTheDocument();
     });
+
+    it("keeps the draft email outside the working trace", () => {
+        render(
+            <AssistantMessage
+                messageId="message-1"
+                onStageOutlookDraft={async () => undefined}
+                events={[
+                    reasoning("Checking the recipient."),
+                    {
+                        type: "outlook_draft_preview",
+                        subject: "Schedule",
+                        to: ["alissa@example.com"],
+                        html_body: "<p>Please find the schedule.</p>",
+                        attachment_names: [],
+                    },
+                    {
+                        type: "content",
+                        text: "The draft is ready for you to review.",
+                    },
+                ]}
+            />,
+        );
+
+        expect(screen.getByText("Draft email")).toBeVisible();
+        expect(screen.getByText("Please find the schedule.")).toBeVisible();
+        expect(
+            screen.getByRole("button", { name: /stage in outlook/i }),
+        ).toBeEnabled();
+        expect(
+            screen.getByRole("button", { name: "Completed in 1 step" }),
+        ).toBeInTheDocument();
+    });
 });

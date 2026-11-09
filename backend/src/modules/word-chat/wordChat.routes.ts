@@ -30,6 +30,7 @@ import {
 
   reserveAssistantMessage,
   runLLMStream,
+  wordChatAllowedToolNames,
   stripTransientAssistantEvents,
   submitClientToolResult,
 } from "../chat/chat.service";
@@ -591,6 +592,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     selectedModel,
     selectedReasoningLevel,
     nonce,
+    legalResearch,
   } = prep.prepared;
   let chatTitle = prep.prepared.chatTitle;
   let memoryTurnScheduled = false;
@@ -666,14 +668,12 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       db,
       write,
       workflowStore,
-      // CourtListener and AU legislation are intentionally unavailable in
-      // document-scoped Word chats. Legal research remains a web-assistant
-      // capability.
-      includeResearchTools: false,
-      includeAuResearchTools: false,
-      includeAuEnergyResearchTools: false,
-      includeAuVicResearchTools: false,
-      includeAuCasesResearchTools: false,
+      includeUsResearchTools: legalResearch.us === true,
+      includeResearchTools: legalResearch.us === true,
+      includeAuResearchTools: legalResearch.au === true,
+      includeAuEnergyResearchTools: legalResearch.energy === true,
+      includeAuVicResearchTools: legalResearch.vic === true,
+      includeAuCasesResearchTools: legalResearch.cases === true,
       includeAskInputs: false,
       ...(clientToolsEnabled
         ? {
@@ -692,6 +692,10 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         : {}),
       model: selectedModel,
       reasoning: selectedReasoningLevel,
+      // The task pane cannot show a plan or continue a paused turn. The open
+      // document would otherwise force every question into plan-and-stop.
+      plans: false,
+      allowedToolNames: wordChatAllowedToolNames(legalResearch),
       apiKeys,
       signal: stream.signal,
         includeMemory: true,

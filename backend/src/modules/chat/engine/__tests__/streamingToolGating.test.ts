@@ -196,6 +196,99 @@ describe("runLLMStream document-mutation gating", () => {
     for (const writer of WRITERS) expect(names).not.toContain(writer);
   });
 
+  it("does not plan-and-stop a Word turn that has an open document", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      plans: false,
+      docStore: new Map([["active-word-document", { id: "active-word-document" }]]),
+      apiMessages: [
+        {
+          role: "user",
+          content:
+            "Can you please identify all the latest edits from Vin in this agreement?",
+        },
+      ],
+    });
+    const params = streamChatWithTools.mock.calls[0]?.[0] as {
+      requirePlan?: boolean;
+      tools: { function: { name: string } }[];
+    };
+    expect(params.requirePlan).toBe(false);
+    const names = params.tools.map((tool) => tool.function.name);
+    expect(names).not.toContain("create_plan");
+    expect(names).not.toContain("update_plan");
+    expect(names).toContain("read_document");
+  });
+
+  it("offers a Word turn only the tools the task pane can finish", async () => {
+    const { WORD_CHAT_TOOL_NAMES } = await import("../wordPrompt");
+    let toolResults: { tool_use_id: string; content: string }[] | undefined;
+    streamChatWithTools.mockImplementation(
+      async (params: { runTools?: RunToolsFn }) => {
+        toolResults = await params.runTools?.([
+          { id: "call-excel", name: "generate_excel", input: { title: "CP list" } },
+          { id: "call-read", name: "read_document", input: { doc_id: "active-word-document" } },
+        ]);
+        return { fullText: "" };
+      },
+    );
+
+    await runLLMStream({
+      ...baseParams(),
+      plans: false,
+      allowedToolNames: WORD_CHAT_TOOL_NAMES,
+      extraTools: [],
+    });
+
+    const names = advertisedToolNames();
+    for (const name of [
+      "read_document",
+      "find_in_document",
+      "search_library",
+      "list_workflows",
+      "read_workflow",
+    ]) {
+      expect(names).toContain(name);
+    }
+    for (const name of [
+      "generate_excel",
+      "generate_ppt",
+      "generate_docx",
+      "edit_document",
+      "finalize_document",
+      "replicate_document",
+      "create_outlook_draft",
+      "create_plan",
+    ]) {
+      expect(names).not.toContain(name);
+    }
+    expect(runToolCalls).toHaveBeenCalledTimes(1);
+    const dispatched = runToolCalls.mock.calls[0]?.[0] as {
+      function: { name: string };
+    }[];
+    expect(dispatched.map((call) => call.function.name)).toEqual([
+      "read_document",
+    ]);
+    expect(toolResults?.[0]?.content).toContain("not available");
+  });
+
+  it("adds Australian legislation tools to a Word turn when that research is on", async () => {
+    const { wordChatAllowedToolNames } = await import("../wordPrompt");
+    await runLLMStream({
+      ...baseParams(),
+      plans: false,
+      includeResearchTools: false,
+      includeAuResearchTools: true,
+      allowedToolNames: wordChatAllowedToolNames({ au: true }),
+      extraTools: [],
+    });
+    const names = advertisedToolNames();
+    expect(names).toContain("au_search_legislation");
+    expect(names).toContain("au_get_legislation");
+    expect(names).not.toContain("au_search_case_law");
+    expect(names).not.toContain("generate_docx");
+  });
+
   it("keeps the whole reading surface for a read-only caller", async () => {
     await runLLMStream({ ...baseParams(), allowDocumentMutation: false });
     const names = advertisedToolNames();

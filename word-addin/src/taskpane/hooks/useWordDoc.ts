@@ -7,6 +7,12 @@ import {
   stripStructuralMarkers,
   type DocumentBlock,
 } from "../lib/documentMarkdown";
+import {
+  formatWordReviewSection,
+  type WordReviewChange,
+  type WordReviewComment,
+  type WordReviewKind,
+} from "../lib/wordReview";
 import type { RedlineEdit } from "../lib/redline";
 import { isParagraphStyleFormat } from "../lib/redline";
 import { createSecureUuid } from "../lib/secureUuid";
@@ -2193,59 +2199,255 @@ export function releaseTrackedEdits(
  * All functions return Promises and must be called in a component context
  * where Office.js has already initialised (i.e. inside Office.onReady).
  */
-function commentDate(value: Date | undefined): string {
-  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return "";
-  return value.toISOString().slice(0, 10);
+function commentDate(value: unknown): string {
+  const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : undefined;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function reviewKind(type: string): WordReviewKind | "formatting" | null {
+  switch (type) {
+    case "Insert":
+    case "Added":
+    case "CellInsertion":
+      return "insertion";
+    case "Delete":
+    case "Deleted":
+    case "CellDeletion":
+      return "deletion";
+    case "MoveFrom":
+    case "MoveTo":
+    case "MovedFrom":
+    case "MovedTo":
+      return "move";
+    case "Replace":
+      return "replace";
+    case "ConflictInsert":
+      return "insertion";
+    case "ConflictDelete":
+      return "deletion";
+    case "Formatted":
+    case "Property":
+    case "ParagraphProperty":
+    case "Style":
+    case "StyleDefinition":
+    case "CellMerge":
+    case "TableProperty":
+    case "ParagraphNumber":
+      return "formatting";
+    default:
+      return type && type !== "None" ? "formatting" : null;
+  }
+}
+
+const REVIEW_TEXT_LOAD_LIMIT = 80;
+
+/**
+ * Desktop revisions first. getTrackedChanges() drops deleted text on Mac
+ * (office-js#5188), so it is only the fallback when the desktop inventory
+ * is missing or empty.
+ */
+async function readWordReviewChanges(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<{
+  changes: WordReviewChange[];
+  formattingCount: number;
+  unread: boolean;
+}> {
+  if (supportsDesktopRevisions()) {
+    try {
+      const desktop = await readDesktopReviewChanges(context);
+      if (desktop.changes.length > 0 || desktop.formattingCount > 0) {
+        return { ...desktop, unread: false };
+      }
+    } catch (error) {
+      console.warn(
+        "Desktop revision read failed; trying tracked changes",
+        getErrorMessage(error),
+      );
+    }
+  }
+  try {
+    return { ...(await readTrackedReviewChanges(context, body)), unread: false };
+  } catch (error) {
+    console.warn("Tracked-change read failed", getErrorMessage(error));
+    return { changes: [], formattingCount: 0, unread: true };
+  }
+}
+
+async function readDesktopReviewChanges(
+  context: Word.RequestContext,
+): Promise<{ changes: WordReviewChange[]; formattingCount: number }> {
+  const collection = context.document.revisions;
+  collection.load("items/type,items/author,items/date");
+  await context.sync();
+  return collectReviewChanges(
+    context,
+    collection.items.map((revision) => ({
+      type: String(revision.type),
+      author: revision.author ?? "",
+      date: commentDate(revision.date),
+      loadText: () => {
+        revision.range.load("text");
+        return () => revision.range.text ?? "";
+      },
+    })),
+  );
+}
+
+async function readTrackedReviewChanges(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<{ changes: WordReviewChange[]; formattingCount: number }> {
+  const collection = body.getTrackedChanges();
+  collection.load("items");
+  await context.sync();
+  for (const change of collection.items) {
+    change.load(["author", "date", "text", "type"]);
+  }
+  await context.sync();
+  let formattingCount = 0;
+  const changes: WordReviewChange[] = [];
+  for (const change of collection.items) {
+    const kind = reviewKind(String(change.type));
+    if (kind === "formatting") {
+      formattingCount += 1;
+      continue;
+    }
+    if (!kind) continue;
+    changes.push({
+      kind,
+      author: change.author ?? "",
+      date: commentDate(change.date),
+      text: change.text ?? "",
+    });
+  }
+  return { changes, formattingCount };
+}
+
+async function collectReviewChanges(
+  context: Word.RequestContext,
+  rows: {
+    type: string;
+    author: string;
+    date: string;
+    loadText: () => () => string;
+  }[],
+): Promise<{ changes: WordReviewChange[]; formattingCount: number }> {
+  let formattingCount = 0;
+  const pending: {
+    kind: WordReviewKind;
+    author: string;
+    date: string;
+    readText?: () => string;
+  }[] = [];
+  let textLoads = 0;
+  for (const row of rows) {
+    const kind = reviewKind(row.type);
+    if (kind === "formatting") {
+      formattingCount += 1;
+      continue;
+    }
+    if (!kind) continue;
+    const entry: (typeof pending)[number] = {
+      kind,
+      author: row.author,
+      date: row.date,
+    };
+    if (textLoads < REVIEW_TEXT_LOAD_LIMIT) {
+      entry.readText = row.loadText();
+      textLoads += 1;
+    }
+    pending.push(entry);
+  }
+  if (textLoads > 0) await context.sync();
+  return {
+    formattingCount,
+    changes: pending.map((entry) => ({
+      kind: entry.kind,
+      author: entry.author,
+      date: entry.date,
+      text: entry.readText ? entry.readText() : "",
+    })),
+  };
 }
 
 /**
- * Word review comments are not part of body text. Append them so the model
- * can read each bubble, the passage it sits on, and its replies.
+ * Review comments are not body text. A replies failure must not drop the
+ * parent bubbles: that is what made a marked-up file look uncommented.
  */
-async function readWordCommentSection(
+async function readWordReviewComments(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<{ comments: WordReviewComment[]; unread: boolean }> {
+  try {
+    const comments = body.getComments();
+    comments.load("items");
+    await context.sync();
+    if (comments.items.length === 0) return { comments: [], unread: false };
+    const anchors = comments.items.map((comment) => {
+      comment.load(["id", "authorName", "content", "creationDate", "resolved"]);
+      const anchor = comment.getRange();
+      anchor.load("text");
+      return anchor;
+    });
+    await context.sync();
+    let repliesUnread = false;
+    try {
+      for (const comment of comments.items) comment.replies.load("items");
+      await context.sync();
+      for (const comment of comments.items) {
+        comment.replies.items.forEach((reply) => {
+          reply.load(["authorName", "content", "creationDate"]);
+        });
+      }
+      await context.sync();
+    } catch (error) {
+      repliesUnread = true;
+      console.warn(
+        "Comment replies could not be read; sending the parent bubbles",
+        getErrorMessage(error),
+      );
+    }
+    return {
+      unread: false,
+      comments: comments.items.map((comment, index) => ({
+        id: comment.id,
+        author: comment.authorName ?? "",
+        date: commentDate(comment.creationDate),
+        anchor: anchors[index]?.text ?? "",
+        text: comment.content ?? "",
+        resolved: Boolean(comment.resolved),
+        replies: repliesUnread
+          ? []
+          : comment.replies.items.map((reply) => ({
+              author: reply.authorName ?? "",
+              date: commentDate(reply.creationDate),
+              text: reply.content ?? "",
+            })),
+      })),
+    };
+  } catch (error) {
+    console.warn("Comment read failed", getErrorMessage(error));
+    return { comments: [], unread: true };
+  }
+}
+
+/** Redline plus comment bubbles, appended after the accepted-view body. */
+async function readWordReviewSection(
   context: Word.RequestContext,
   body: Word.Body,
 ): Promise<string> {
-  const comments = body.getComments();
-  comments.load("items");
-  await context.sync();
-  if (comments.items.length === 0) return "";
-  for (const comment of comments.items) {
-    comment.load(["id", "authorName", "content", "creationDate", "resolved"]);
-    comment.replies.load("items");
-    comment.getRange().load("text");
-  }
-  await context.sync();
-  for (const comment of comments.items) {
-    comment.replies.items.forEach((reply) => {
-      reply.load(["authorName", "content", "creationDate"]);
-    });
-  }
-  await context.sync();
-  const lines = [
-    `--- COMMENTS (${comments.items.length}) ---`,
-    "Word review comments. The passage after \"on\" is the text the bubble is anchored to.",
-  ];
-  comments.items.forEach((comment, index) => {
-    const when = commentDate(comment.creationDate);
-    const anchor = (comment.getRange().text ?? "").replace(/\s+/g, " ").trim();
-    const state = comment.resolved ? " [resolved]" : "";
-    lines.push(
-      `${index + 1}. [id ${comment.id}] ${comment.authorName || "unknown author"}` +
-        `${when ? `, ${when}` : ""} on "${anchor.slice(0, 160)}"${state}: "${(comment.content ?? "").replace(/\s+/g, " ").trim()}"`,
-    );
-    comment.replies.items.forEach((reply) => {
-      const replyWhen = commentDate(reply.creationDate);
-      lines.push(
-        `   reply ${reply.authorName || "unknown author"}` +
-          `${replyWhen ? `, ${replyWhen}` : ""}: "${(reply.content ?? "").replace(/\s+/g, " ").trim()}"`,
-      );
-    });
+  const revisions = await readWordReviewChanges(context, body);
+  const comments = await readWordReviewComments(context, body);
+  return formatWordReviewSection({
+    changes: revisions.changes,
+    formattingCount: revisions.formattingCount,
+    comments: comments.comments,
+    revisionsUnread: revisions.unread,
+    commentsUnread: comments.unread,
   });
-  lines.push(
-    "To add a review comment or reply in this document, call comment_active_document.",
-  );
-  return lines.join("\n");
 }
 
 export function useWordDoc() {
@@ -2277,14 +2479,20 @@ export function useWordDoc() {
             text = body.text;
           }
           try {
-            const comments = await readWordCommentSection(context, body);
-            return comments ? `${text}\n\n${comments}` : text;
+            const review = await readWordReviewSection(context, body);
+            return `${text}\n\n${review}`;
           } catch (error) {
             console.warn(
-              "Comment read failed; sending the document without bubbles",
+              "Review markup read failed; sending the body with that stated",
               getErrorMessage(error),
             );
-            return text;
+            return `${text}\n\n${formatWordReviewSection({
+              changes: [],
+              formattingCount: 0,
+              comments: [],
+              revisionsUnread: true,
+              commentsUnread: true,
+            })}`;
           }
         }),
       ),

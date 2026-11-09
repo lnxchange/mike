@@ -31,6 +31,22 @@ function friendlyError(error: unknown, fallback: string) {
   return userFacingApiError(error, fallback);
 }
 
+function invitationNotice(
+  email: string,
+  delivery: OrgInvitation["email_delivery"],
+  resent = false,
+) {
+  if (delivery === "existing_account") {
+    return `${email} already has a Libris account. The invitation will be waiting when they sign in.`;
+  }
+  if (delivery === "failed") {
+    return `The invitation for ${email} is saved, but the signup email could not be sent. Try resend.`;
+  }
+  return resent
+    ? `Invitation resent to ${email}.`
+    : `Invitation sent to ${email}.`;
+}
+
 export function CreateOrganizationModal({
   open,
   onClose,
@@ -75,7 +91,12 @@ export function CreateOrganizationModal({
           createOrgInvitation(org.id, email, "member"),
         ),
       );
-      if (results.some((result) => result.status === "rejected")) {
+      if (
+        results.some((result) => {
+          if (result.status === "rejected") return true;
+          return result.value?.email_delivery === "failed";
+        })
+      ) {
         setCreatedOrg(org);
         setError(
           "Organization created, but some invitations could not be sent. You can add them later.",
@@ -233,8 +254,8 @@ export function InviteOrganizationMemberModal({
     setError(null);
     setNotice(null);
     try {
-      await createOrgInvitation(org.id, email, role);
-      setNotice(`Invitation sent to ${email}.`);
+      const invitation = await createOrgInvitation(org.id, email, role);
+      setNotice(invitationNotice(email, invitation.email_delivery));
       await onChanged();
       return true;
     } catch (err) {
@@ -252,8 +273,10 @@ export function InviteOrganizationMemberModal({
     setNotice(null);
     try {
       if (action === "resend") {
-        await resendOrgInvitation(org.id, invitation.id);
-        setNotice(`Invitation resent to ${invitation.email}.`);
+        const resent = await resendOrgInvitation(org.id, invitation.id);
+        setNotice(
+          invitationNotice(invitation.email, resent.email_delivery, true),
+        );
       } else {
         await cancelOrgInvitation(org.id, invitation.id);
         setNotice(`Invitation to ${invitation.email} cancelled.`);
