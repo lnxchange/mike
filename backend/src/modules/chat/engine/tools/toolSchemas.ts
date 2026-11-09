@@ -139,6 +139,33 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "find_documents",
+      description:
+        "Find a literal phrase in stored document text. Scope is project (the current project), library (Library Files), templates (Library Templates), or document (one document already in this chat). Matching is case-insensitive. Returns one excerpt per matching document, a doc_id for read_document or find_in_document, and next_offset. Pending or failed extraction means an empty result does not prove the phrase is absent.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: {
+            type: "string",
+            enum: ["project", "library", "templates", "document"],
+          },
+          query: { type: "string", description: "The phrase to find. 2 to 500 characters." },
+          doc_id: {
+            type: "string",
+            description: "Required when scope is document.",
+          },
+          offset: {
+            type: "number",
+            description: "Pass the previous next_offset to read the next page.",
+          },
+        },
+        required: ["scope", "query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "search_library",
       description:
         "Search the caller's Library shelves (personal Files/Templates plus every organisation they belong to). Use this to find a letterhead, precedent, or other Library Template before drafting. Results are registered in this chat so you can read_document or replicate_document them. Library Templates are immutable: copy with replicate_document before editing. Do not use generate_docx when a matching template exists.",

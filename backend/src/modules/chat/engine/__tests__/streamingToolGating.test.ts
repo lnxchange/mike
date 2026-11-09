@@ -244,6 +244,7 @@ describe("runLLMStream document-mutation gating", () => {
     for (const name of [
       "read_document",
       "find_in_document",
+      "find_documents",
       "search_library",
       "list_workflows",
       "read_workflow",
@@ -302,6 +303,7 @@ describe("runLLMStream document-mutation gating", () => {
       "fetch_documents",
       "list_workflows",
       "search_library",
+      "find_documents",
       "create_plan",
       "update_plan",
     ]) {

@@ -1,4 +1,4 @@
-import { createDocumentVersion, activateDocumentVersion, updateDocumentVersion } from "../../../documents/documents.service";
+import { createDocumentVersion, activateDocumentVersion, updateDocumentVersion, recordExtractedText } from "../../../documents/documents.service";
 import {
   downloadFile,
   extractedTextKey,
@@ -2172,6 +2172,9 @@ export async function readDocumentContent(
       devLog(
         `[read_document] mammoth length=${text.length} for filename="${docInfo.filename}"`,
       );
+    }
+    if (versionId && db && text && !text.startsWith("Document could not be read")) {
+      await recordExtractedText(db, versionId, text);
     }
     devLog(
       `[read_document] DONE filename="${docInfo.filename}" finalTextLength=${text.length} firstChars=${JSON.stringify(text.slice(0, 120))}`,

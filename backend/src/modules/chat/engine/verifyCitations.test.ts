@@ -118,6 +118,13 @@ describe("verifyQuoteAgainstSource", () => {
     expect(v.verified).toBe(false);
   });
 
+  it("rejects a cross-page quote whose segments are out of document order", () => {
+    const quote =
+      "The Landlord may terminate[[PAGE_BREAK]]the first day of each month";
+    const v = verifyQuoteAgainstSource(SOURCE, quote);
+    expect(v.verified).toBe(false);
+  });
+
   it.each(["...", "…"])(
     "ellipsis-separated quote using %s verifies each excerpt independently",
     (ellipsis) => {

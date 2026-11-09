@@ -1,4 +1,4 @@
-import { createDocumentVersions } from "../../../documents/documents.service";
+import { createDocumentVersions, findDocumentPhrases } from "../../../documents/documents.service";
 import {
   getCourtlistenerCases,
   searchCourtlistenerCaseLaw,
@@ -837,6 +837,116 @@ export async function runToolCalls(
         tool_call_id: tc.id,
         content: JSON.stringify(list),
       });
+    } else if (tc.function.name === "find_documents") {
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      const scope =
+        args.scope === "library" ||
+        args.scope === "templates" ||
+        args.scope === "document"
+          ? args.scope
+          : "project";
+      const offset =
+        typeof args.offset === "number" && args.offset >= 0
+          ? Math.floor(args.offset)
+          : 0;
+      if (query.length < 2 || query.length > 500) {
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            ok: false,
+            error: "query must be between 2 and 500 characters.",
+          }),
+        });
+      } else {
+        const requested =
+          scope === "document" && typeof args.doc_id === "string"
+            ? args.doc_id
+            : "";
+        const resolved = requested
+          ? (resolveDocLabel(requested, docStore, docIndex) ?? requested)
+          : "";
+        const documentId = resolved
+          ? docIndex?.[resolved]?.document_id
+          : undefined;
+        try {
+          const result = await findDocumentPhrases(db, {
+            userId,
+            projectId: projectId ?? null,
+            scope,
+            query,
+            offset,
+            documentId: documentId ?? null,
+          });
+          const hits: {
+            doc_id: string;
+            filename: string;
+            excerpt: string;
+            textless_page_count: number;
+          }[] = [];
+          let nextIndex = 0;
+          const existingByDocumentId = new Map<string, string>();
+          for (const [label, info] of Object.entries(docIndex ?? {})) {
+            existingByDocumentId.set(info.document_id, label);
+          }
+          for (const hit of result.hits) {
+            let label = existingByDocumentId.get(hit.documentId);
+            if (!label) {
+              while (docStore.has(`find-${nextIndex}`)) nextIndex += 1;
+              label = `find-${nextIndex}`;
+              nextIndex += 1;
+              docStore.set(label, {
+                storage_path: hit.storagePath,
+                file_type: hit.fileType,
+                filename: hit.filename,
+                source_kind:
+                  hit.libraryKind === "template"
+                    ? "library_template"
+                    : "document",
+              });
+              if (docIndex) {
+                docIndex[label] = {
+                  document_id: hit.documentId,
+                  filename: hit.filename,
+                  version_id: hit.versionId,
+                  version_number: hit.versionNumber,
+                };
+              }
+              existingByDocumentId.set(hit.documentId, label);
+            }
+            hits.push({
+              doc_id: label,
+              filename: hit.filename,
+              excerpt: hit.excerpt,
+              textless_page_count: hit.textlessPageCount,
+            });
+          }
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: true,
+              hits,
+              next_offset: result.nextOffset,
+              incomplete: result.incomplete,
+              pending: result.pending,
+              failed: result.failed,
+              note: result.incomplete
+                ? "Extraction is incomplete. An empty match does not prove the phrase is absent."
+                : undefined,
+            }),
+          });
+        } catch {
+          toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: false,
+              error: "Document search failed.",
+            }),
+          });
+        }
+      }
     } else if (tc.function.name === "search_library") {
       const query =
         typeof args.query === "string" ? args.query.trim() : "";

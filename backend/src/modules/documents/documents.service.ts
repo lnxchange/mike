@@ -49,6 +49,13 @@ export { renameDocument } from "./documents.rename";
 export { deleteCollectionDocuments } from "./documents.cleanup";
 
 export { handleDocumentPrecomputeText } from "./documents.textJobs";
+export {
+    findDocumentPhrases,
+    recordExtractedText,
+    type FindDocumentsResult,
+    type FindHit,
+    type FindScope,
+} from "./documents.textIndex";
 export { handleConversionConvert, markConversionFailed } from "./documents.conversionJobs";
 export { sweepStaleProcessingDocuments } from "./documents.maintenance";
 

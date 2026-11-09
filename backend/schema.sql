@@ -901,6 +901,8 @@ create table if not exists public.document_versions (
   size_bytes integer,
   page_count integer,
   content_sha256 text,
+  -- Changes when the bytes change, so a late text job cannot overwrite a newer edit.
+  text_revision uuid not null default gen_random_uuid(),
   deleted_at timestamptz,
   deleted_by uuid references auth.users(id) on delete set null,
   -- SharePoint item created when a Colleague edit is saved into DR.
@@ -935,6 +937,64 @@ create index if not exists document_versions_doc_vnum_idx
 create index if not exists document_versions_external_item_idx
   on public.document_versions(document_id)
   where external_item_id is not null;
+
+-- Derived text for find_documents. The read path keeps its storage cache.
+create table if not exists public.document_version_texts (
+  version_id uuid primary key references public.document_versions(id) on delete cascade,
+  source_revision uuid not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'processing', 'ready', 'failed')),
+  text_content text,
+  textless_page_count integer,
+  updated_at timestamptz not null default now(),
+  constraint document_version_texts_ready
+    check ((status = 'ready') = (text_content is not null))
+);
+
+alter table public.document_version_texts enable row level security;
+revoke all on public.document_version_texts from public, anon, authenticated;
+grant select, insert, update, delete on public.document_version_texts to service_role;
+
+create extension if not exists pg_trgm;
+
+do $$
+declare extension_schema text;
+begin
+  select n.nspname into extension_schema
+    from pg_extension e
+    join pg_namespace n on n.oid = e.extnamespace
+   where e.extname = 'pg_trgm';
+  if extension_schema is not null then
+    execute format(
+      'create index if not exists document_version_texts_find_idx on public.document_version_texts using gin (lower(text_content) %I.gin_trgm_ops) where status = %L',
+      extension_schema,
+      'ready'
+    );
+  end if;
+end $$;
+
+create or replace function public.touch_document_text_revision()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if tg_op = 'UPDATE' and (
+    new.storage_path is distinct from old.storage_path
+    or new.content_sha256 is distinct from old.content_sha256
+    or new.file_type is distinct from old.file_type
+  ) then
+    new.text_revision := gen_random_uuid();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists document_versions_touch_text_revision on public.document_versions;
+create trigger document_versions_touch_text_revision
+  before update of storage_path, content_sha256, file_type
+  on public.document_versions
+  for each row execute procedure public.touch_document_text_revision();
 
 create table if not exists public.upload_sessions (
   id uuid primary key,

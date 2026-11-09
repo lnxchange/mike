@@ -43,6 +43,7 @@ export const ACTIVE_WORD_DOCUMENT_LIVE_FILENAME = "Active Word document (live)";
 export const WORD_CHAT_TOOL_NAMES: ReadonlySet<string> = new Set([
   "read_document",
   "find_in_document",
+  "find_documents",
   "search_library",
   "list_workflows",
   "read_workflow",

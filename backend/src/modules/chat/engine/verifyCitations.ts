@@ -7,6 +7,11 @@ import { normalizeWithMap } from "./tools/documentOps";
 const PAGE_BREAK_SENTINEL = "[[PAGE_BREAK]]";
 const ELLIPSIS_PATTERN = /\.{3}|…/;
 
+// Cross-page fragments should sit near one page boundary. Extracted text may
+// put a header or footer between them. A match further away is a different passage.
+const MAX_PAGE_BREAK_SPAN_CHARS = 5_000;
+const MAX_LOCATE_ATTEMPTS = 64;
+
 // Source-text sentinels returned by readDocumentContent when a document can't
 // be read. Treat these as "no source" so every quote falls back to unverified
 // rather than false-negative matching against the literal error string.
@@ -46,6 +51,53 @@ export function locateQuote(
     locateNormalized(source, quote, {}) ??
     locateNormalized(source, quote, { stripPunctuation: true })
   );
+}
+
+function locateQuoteFrom(
+  source: string,
+  quote: string,
+  from: number,
+): QuoteLocation | null {
+  if (from >= source.length) return null;
+  const found = locateQuote(source.slice(from), quote);
+  if (!found) return null;
+  return {
+    start: found.start + from,
+    end: found.end + from,
+    excerpt: found.excerpt,
+  };
+}
+
+/**
+ * Locate segments in document order, each within maxGap of the previous end.
+ * A later occurrence of repeated text can still complete the chain.
+ */
+function locateSegmentsInOrder(
+  source: string,
+  segments: string[],
+  maxGap: number,
+): boolean {
+  let attempts = 0;
+  const search = (
+    index: number,
+    from: number,
+    previousEnd: number | null,
+  ): boolean => {
+    if (index === segments.length) return true;
+    let cursor = from;
+    while (attempts < MAX_LOCATE_ATTEMPTS) {
+      attempts += 1;
+      const location = locateQuoteFrom(source, segments[index], cursor);
+      if (!location) return false;
+      if (previousEnd !== null && location.start - previousEnd > maxGap) {
+        return false;
+      }
+      if (search(index + 1, location.end, location.end)) return true;
+      cursor = location.start + 1;
+    }
+    return false;
+  };
+  return search(0, 0, null);
 }
 
 function locateNormalized(
@@ -91,6 +143,18 @@ export function verifyQuoteAgainstSource(
       verifyQuoteAgainstSource(source, seg),
     );
     if (verified.some((result) => !result.verified)) {
+      return { verified: false, needs_correction: false };
+    }
+    const anchorSegments = segments.flatMap((segment) => {
+      const fragments = segment
+        .split(ELLIPSIS_PATTERN)
+        .map((fragment) => fragment.trim())
+        .filter((fragment) => /[\p{L}\p{N}]/u.test(fragment));
+      return fragments.length > 0 ? fragments : [segment];
+    });
+    if (
+      !locateSegmentsInOrder(source, anchorSegments, MAX_PAGE_BREAK_SPAN_CHARS)
+    ) {
       return { verified: false, needs_correction: false };
     }
     return {

@@ -2,6 +2,7 @@
 import { downloadFile, extractedTextKey, uploadFile } from "../../lib/storage";
 import { requiresLibreOfficeTextExtraction } from "../../lib/documentTypes";
 import { extractLegacyOfficeText } from "../../lib/pdfText";
+import { recordExtractedText } from "./documents.textIndex";
 import { type Db, type DbJob } from "../../lib/dbq/types";
 import { enqueueDbJob } from "../../lib/dbq/enqueue";
 
@@ -76,5 +77,9 @@ export async function handleDocumentPrecomputeText(
   );
   // Replacement/deletion during conversion invalidates the just-written
   // cache. The cleanup handler waits for this running claim to finish.
-  if (!(await isCurrent())) await retireCache();
+  if (!(await isCurrent())) {
+    await retireCache();
+    return;
+  }
+  await recordExtractedText(db, versionId, text);
 }

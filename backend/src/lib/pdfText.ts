@@ -232,6 +232,42 @@ function layoutPageText(items: PdfTextItem[]): string {
   return out.join("\n");
 }
 
+function formatPageList(pages: number[]): string {
+  const ranges: string[] = [];
+  let start = pages[0];
+  let end = pages[0];
+  for (const page of pages.slice(1)) {
+    if (page === end + 1) {
+      end = page;
+      continue;
+    }
+    ranges.push(start === end ? String(start) : `${start}-${end}`);
+    start = page;
+    end = page;
+  }
+  if (start !== undefined) {
+    ranges.push(start === end ? String(start) : `${start}-${end}`);
+  }
+  return ranges.join(", ");
+}
+
+/** How many pages the extraction notice says had no text layer. */
+export function textlessPageCount(text: string): number {
+  const scanned = text.match(
+    /none of its pages could be read \(([^)]+)\)/,
+  );
+  const partial = text.match(/^Pages without a text layer: ([^.]+)\./);
+  const list = scanned?.[1] ?? partial?.[1];
+  if (!list) return 0;
+  let count = 0;
+  for (const part of list.split(",").map((item) => item.trim())) {
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) count += Number(range[2]) - Number(range[1]) + 1;
+    else if (/^\d+$/.test(part)) count += 1;
+  }
+  return count;
+}
+
 export async function extractPdfText(buf: ArrayBuffer): Promise<string> {
   try {
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs" as string);
@@ -254,6 +290,7 @@ export async function extractPdfText(buf: ArrayBuffer): Promise<string> {
       standardFontDataUrl: STANDARD_FONT_DATA_URL,
     }).promise;
     const parts: string[] = [];
+    const textless: number[] = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
@@ -266,11 +303,13 @@ export async function extractPdfText(buf: ArrayBuffer): Promise<string> {
       const positionedFields = fields
         .map(positionedFormItem)
         .filter((item): item is PdfTextItem => item !== null);
-      let pageText = `[Page ${i}]\n${layoutPageText([
+      const body = layoutPageText([
         ...textContent.items,
         ...positionedFields,
-      ])}`;
+      ]).trim();
       const unpositionedFields = fields.filter((field) => !field.rect);
+      if (!body && unpositionedFields.length === 0) textless.push(i);
+      let pageText = `[Page ${i}]\n${body}`;
       if (unpositionedFields.length) {
         pageText += `\n[Page ${i} form fields]\n${unpositionedFields
           .map((field) => field.text)
@@ -278,7 +317,12 @@ export async function extractPdfText(buf: ArrayBuffer): Promise<string> {
       }
       parts.push(pageText);
     }
-    return parts.join("\n\n");
+    if (pdf.numPages > 0 && textless.length === pdf.numPages) {
+      return `This PDF has no text layer. It looks scanned, and none of its pages could be read (${formatPageList(textless)}). Do not invent its contents.`;
+    }
+    const bodyText = parts.join("\n\n");
+    if (!textless.length) return bodyText;
+    return `Pages without a text layer: ${formatPageList(textless)}. Those pages could not be read. Do not treat them as blank and do not invent what they say.\n\n${bodyText}`;
   } catch {
     return "";
   }
