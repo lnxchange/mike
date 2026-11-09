@@ -1,5 +1,9 @@
 # Mike / Libris Colleague — session memory
 
+## 2026-11-09 — Legal-quality ports, on a clean branch
+
+The uncommitted Outlook signature and Word review work was committed first (`46d7e185`). Then, without merging upstream: response style and custom instructions (`0d9d4606`), scanned-PDF notices and `find_documents` (`2f52e110`), plan-scoped subagents capped at 50 steps (`cf2e5f6d`), and playbooks with quote-checked reviews. Migrations `20261109_01` through `20261109_03` are in the tree and have not been applied to production. Nothing was pushed.
+
 ## 2026-10-19 — Anthropic key rotated and working
 
 Yule replaced the expiring Libris Colleague key. The first replacement was not scoped to a workspace, so `/v1/messages` returned 400 unless `anthropic-workspace-id` was set. He then set a workspace-scoped key. Railway `mike` deployment `bdcb2bb2` (SUCCESS, 19 October 2026) is live with that key. A Claude call with only `ANTHROPIC_API_KEY` returned 200. Health on `https://mike-production-68f2.up.railway.app/health` is 200. The old key can be disabled in the Anthropic console.

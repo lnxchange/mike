@@ -474,6 +474,77 @@ export async function saveResponseStyle(
     });
 }
 
+export type PlaybookRule = {
+    id: string;
+    name: string;
+    concept: string;
+    required: boolean;
+    standard: string;
+    fallbacks: string[];
+    unacceptable: string[];
+    guidance: string;
+};
+
+export type PlaybookRecord = {
+    id: string;
+    name: string;
+    description: string | null;
+    represented_party: string | null;
+    visibility: "private" | "public";
+    org_id: string | null;
+    content: { rules: PlaybookRule[] };
+    updated_at: string;
+};
+
+export type PlaybookFinding = {
+    ruleName: string;
+    status: string;
+    quote: string;
+    location: string;
+    analysis: string;
+    suggestedText: string;
+};
+
+export async function listPlaybooks(): Promise<PlaybookRecord[]> {
+    return apiRequest<PlaybookRecord[]>("/playbooks");
+}
+
+export async function createPlaybook(name: string): Promise<PlaybookRecord> {
+    return apiRequest<PlaybookRecord>("/playbooks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+    });
+}
+
+export async function getPlaybook(
+    playbookId: string,
+): Promise<{ playbook: PlaybookRecord; role: string }> {
+    return apiRequest(`/playbooks/${playbookId}`);
+}
+
+export async function savePlaybook(
+    playbookId: string,
+    content: { rules: PlaybookRule[] },
+): Promise<PlaybookRecord> {
+    return apiRequest<PlaybookRecord>(`/playbooks/${playbookId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+    });
+}
+
+export async function runPlaybook(
+    playbookId: string,
+    documentId: string,
+): Promise<{ summary: string; findings: PlaybookFinding[] }> {
+    return apiRequest(`/playbooks/${playbookId}/reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId, mode: "strict" }),
+    });
+}
+
 export async function refreshOutlookSignature(): Promise<OutlookSignatureRecord> {
     return apiRequest<OutlookSignatureRecord>("/integrations/outlook-signature/refresh", {
         method: "POST",
