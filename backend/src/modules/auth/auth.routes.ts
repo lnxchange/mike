@@ -356,16 +356,11 @@ authRouter.post("/oauth", asyncRoute(async (req, res) => {
     try {
       const client = createRequestSupabase(req, res);
       const wordDialog = req.body?.callbackPath === "/oauth-dialog.html";
-      // The web callback is a bare URL. A `next` query makes GoTrue treat the
-      // address as unlisted and send the browser to the other site alias,
-      // which does not have this sign-in's PKCE cookie.
+      // Both callbacks are bare URLs. A `next` query makes GoTrue treat the
+      // address as unlisted and send the browser to the site URL, which does
+      // not have this sign-in's PKCE cookie.
       const redirectTo = wordDialog
-        ? callbackUrl(
-            req,
-            req.body?.next,
-            "/onboarding/profile",
-            "/oauth-dialog.html",
-          )
+        ? new URL("/oauth-dialog.html", requestOrigin(req)).toString()
         : microsoftWebCallback(req);
       if (req.body?.intent === "link") {
         const { data: current } = await client.auth.getUser();
@@ -403,17 +398,11 @@ authRouter.post("/oauth", asyncRoute(async (req, res) => {
   if (req.body?.provider !== "google") return invalidBody(res);
   try {
     const client = createRequestSupabase(req, res);
-    const { data, error } = await startGoogleOAuth(
-      client,
-      callbackUrl(
-        req,
-        req.body?.next,
-        "/onboarding/profile",
-        req.body?.callbackPath === "/oauth-dialog.html"
-          ? "/oauth-dialog.html"
-          : "/auth/callback",
-      ),
-    );
+    const redirectTo =
+      req.body?.callbackPath === "/oauth-dialog.html"
+        ? new URL("/oauth-dialog.html", requestOrigin(req)).toString()
+        : callbackUrl(req, req.body?.next, "/onboarding/profile");
+    const { data, error } = await startGoogleOAuth(client, redirectTo);
     if (error || !data.url) return authError(res, error);
     setOAuthProviderCookie(req, res, "");
     res.json({ url: data.url });

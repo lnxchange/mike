@@ -164,8 +164,7 @@ describe("auth routes", () => {
     expect(authClient.auth.signInWithOAuth).toHaveBeenCalledWith({
       provider: "google",
       options: {
-        redirectTo:
-          "https://app.example.test/oauth-dialog.html?next=%2Fonboarding%2Fprofile",
+        redirectTo: "https://app.example.test/oauth-dialog.html",
         skipBrowserRedirect: true,
       },
     });

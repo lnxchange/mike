@@ -11,6 +11,12 @@ const API_BASE = (process.env.REACT_APP_API_BASE_URL || "/api").replace(
 const REQUEST_STORAGE_KEY = "mike-word-google-oauth-request";
 const PROVIDER_STORAGE_KEY = "mike-word-oauth-provider";
 
+function providerLabel(): "Google" | "Microsoft" {
+  const query = new URL(window.location.href).searchParams.get("provider");
+  const stored = window.sessionStorage.getItem(PROVIDER_STORAGE_KEY);
+  return query === "azure" || stored === "azure" ? "Microsoft" : "Google";
+}
+
 function setStatus(message: string): void {
   const element = document.getElementById("status");
   if (element) element.textContent = message;
@@ -60,7 +66,7 @@ async function responseError(response: Response): Promise<string> {
   };
   return typeof body.detail === "string" && body.detail
     ? body.detail
-    : `Google sign-in failed (HTTP ${response.status}).`;
+    : `${providerLabel()} sign-in failed (HTTP ${response.status}).`;
 }
 
 async function runGoogleOAuth(): Promise<void> {
@@ -113,7 +119,10 @@ async function runGoogleOAuth(): Promise<void> {
       !/^[A-Za-z0-9_-]{32,256}$/.test(data.handoffTicket)
     ) {
       clearTemporaryAuthStorage();
-      sendError(requestId, "Google sign-in did not produce a valid handoff.");
+      sendError(
+        requestId,
+        `${providerLabel()} sign-in did not produce a valid handoff.`,
+      );
       return;
     }
 
@@ -152,7 +161,7 @@ async function runGoogleOAuth(): Promise<void> {
   const data = (await response.json()) as { url?: string };
   if (!data.url) {
     clearTemporaryAuthStorage();
-    sendError(requestId, "Unable to open Google sign-in.");
+    sendError(requestId, `Unable to open ${providerLabel()} sign-in.`);
     return;
   }
 
@@ -167,7 +176,7 @@ Office.onReady(() => {
     const message =
       error instanceof Error
         ? error.message
-        : "Unable to complete Google sign-in.";
+        : `Unable to complete ${providerLabel()} sign-in.`;
     if (requestId) {
       sendError(requestId, message);
     } else {

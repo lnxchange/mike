@@ -1,5 +1,5 @@
 import React from "react";
-import { MikeIcon } from "../../../shared/chat/mike-icon";
+import wordmark from "../../../../../frontend/public/brand/libris-logo-fullcolor.svg";
 import { cn } from "../../../shared/lib/utils";
 
 interface WordAddinLogoProps {
@@ -7,22 +7,26 @@ interface WordAddinLogoProps {
   className?: string;
 }
 
-/** Mike logo lockup shared by branded Word add-in surfaces. */
+/** Libris Colleague lockup shared by branded Word add-in surfaces. */
 export function WordAddinLogo({
   size = "md",
   className,
 }: WordAddinLogoProps): React.ReactElement {
   const large = size === "lg";
   return (
-    <div className={cn("flex items-center gap-1.5", className)}>
-      <MikeIcon size={large ? 30 : 22} />
+    <div className={cn("flex items-center gap-1.5 text-gray-950", className)}>
+      <img
+        src={wordmark}
+        alt="Libris"
+        style={{ height: large ? 48 : 32, width: "auto" }}
+      />
       <span
         className={cn(
-          "font-serif font-light text-foreground",
-          large ? "text-4xl" : "text-2xl"
+          "font-serif font-semibold",
+          large ? "text-4xl" : "text-2xl",
         )}
       >
-        Mike
+        Colleague
       </span>
     </div>
   );

@@ -211,6 +211,10 @@ module.exports = async (_env, options) => {
             filename: "icons/[name].[contenthash][ext]",
           },
         },
+        {
+          test: /\.png$/i,
+          type: "asset/resource",
+        },
       ],
     },
     plugins: [
