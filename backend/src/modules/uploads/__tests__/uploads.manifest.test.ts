@@ -220,6 +220,66 @@ describe("parseUploadSessionRequest", () => {
       });
     });
 
+    it("accepts a 400-character filename and a 2048-character SharePoint address", () => {
+      const filename = `${"a".repeat(396)}.pdf`;
+      const prefix = "https://attunelegal.sharepoint.com/";
+      const webUrl = prefix + "a".repeat(2048 - prefix.length);
+      expect(filename).toHaveLength(400);
+      expect(webUrl).toHaveLength(2048);
+      const result = parseUploadSessionRequest(
+        {
+          ...documentRequest(1),
+          files: [
+            {
+              ...documentRequest(1).files[0],
+              filename,
+              external: { ...external, web_url: webUrl },
+            },
+          ],
+        },
+        USER_ID,
+        SESSION_ID,
+      );
+      expect(result.files[0].filename).toBe(filename);
+      expect(result.files[0].client_meta?.external?.web_url).toBe(webUrl);
+    });
+
+    it("names the field when a filename or SharePoint address is too long", () => {
+      expect(() =>
+        parseUploadSessionRequest(
+          {
+            ...documentRequest(1),
+            files: [
+              {
+                ...documentRequest(1).files[0],
+                filename: `${"a".repeat(397)}.pdf`,
+              },
+            ],
+          },
+          USER_ID,
+          SESSION_ID,
+        ),
+      ).toThrow(/files\.0\.filename/);
+      expect(() =>
+        parseUploadSessionRequest(
+          {
+            ...documentRequest(1),
+            files: [
+              {
+                ...documentRequest(1).files[0],
+                external: {
+                  ...external,
+                  web_url: `https://attunelegal.sharepoint.com/${"a".repeat(2049)}`,
+                },
+              },
+            ],
+          },
+          USER_ID,
+          SESSION_ID,
+        ),
+      ).toThrow(/files\.0\.external\.web_url/);
+    });
+
     it("rejects a non-ISO received_at", () => {
       expect(() =>
         parseUploadSessionRequest(

@@ -4,7 +4,10 @@ import {
 } from "./documents.cleanupJobs";
 import { copyDocumentVersionFiles } from "./documents.copyFiles";
 import { createDocumentVersion } from "./documents.lifecycle";
-import { saveSyncedMatterVersionToSharePoint } from "../integrations/integrations.service";
+import {
+    saveSyncedMatterVersionToSharePoint,
+    type SharePointSaveResult,
+} from "../integrations/integrations.service";
 // Version lifecycle for documents: listing, creating one from another
 // document's bytes, renaming, and deleting versions.
 //
@@ -309,6 +312,238 @@ export async function createVersionFromDocument(
             filename: savedFilename,
         },
     };
+}
+
+// ---------------------------------------------------------------------------
+// Save the current bytes to the matter's SharePoint drafts folder
+// ---------------------------------------------------------------------------
+
+export async function saveSharePointDraft(
+    params: {
+        documentId: string;
+        requestedFilename: string;
+        userId: string;
+        userEmail: string | undefined;
+    },
+    db: Db,
+): Promise<
+    | {
+          ok: true;
+          version: {
+              id: string;
+              version_number: number | null;
+              source: string;
+              created_at: string;
+              filename: string | null;
+          };
+          sharepoint: Extract<SharePointSaveResult, { ok: true }>;
+      }
+    | {
+          ok: false;
+          kind:
+              | "not_found"
+              | "forbidden"
+              | "validation"
+              | "not_matter"
+              | "no_active"
+              | "source_bytes"
+              | "storage_write"
+              | "version_insert"
+              | "conflict"
+              | "unavailable";
+          detail: string;
+      }
+> {
+    const { documentId, requestedFilename, userId, userEmail } = params;
+    const access = await ensureDocumentAccess(
+        documentId,
+        userId,
+        userEmail,
+        db,
+    );
+    if (!access.ok) {
+        return { ok: false, kind: "not_found", detail: "Document not found" };
+    }
+    if (!can(access.projectRole, "content.edit")) {
+        return {
+            ok: false,
+            kind: "forbidden",
+            detail: "You cannot save this document to SharePoint.",
+        };
+    }
+    if (!access.doc.project_id) {
+        return {
+            ok: false,
+            kind: "not_matter",
+            detail: "This document is not on a synced matter.",
+        };
+    }
+
+    const { data: project, error: projectError } = await db
+        .from("projects")
+        .select("cm_number")
+        .eq("id", access.doc.project_id)
+        .maybeSingle();
+    const matterNumber =
+        typeof project?.cm_number === "string" ? project.cm_number.trim() : "";
+    if (projectError || !matterNumber) {
+        return {
+            ok: false,
+            kind: "not_matter",
+            detail: "This document is not on a synced matter.",
+        };
+    }
+
+    const active = await loadActiveVersion(documentId, db);
+    if (!active?.storage_path) {
+        return {
+            ok: false,
+            kind: "no_active",
+            detail: "This document has no file to save.",
+        };
+    }
+
+    const filename = draftFilename(requestedFilename, active.filename);
+    if (!filename.ok) return filename;
+
+    const { data: existingDraft } = await db
+        .from("document_versions")
+        .select("filename")
+        .eq("document_id", documentId)
+        .not("external_item_id", "is", null)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    const existingName =
+        typeof existingDraft?.filename === "string"
+            ? existingDraft.filename.trim()
+            : "";
+    const forceNewFile =
+        !existingName ||
+        existingName.toLowerCase() !== filename.value.toLowerCase();
+
+    const bytes = await downloadFile(active.storage_path);
+    if (!bytes) {
+        return {
+            ok: false,
+            kind: "source_bytes",
+            detail: "The file could not be read.",
+        };
+    }
+
+    const sourceType = active.file_type ?? "";
+    const suffix = sourceType || documentSuffix(filename.value);
+    const versionSlug = crypto.randomUUID().replace(/-/g, "");
+    const key = versionStorageKey(userId, documentId, versionSlug, filename.value);
+    let pdfStoragePath: string | null = null;
+    try {
+        ({ pdfStoragePath } = await copyDocumentVersionFiles({
+            source: { ...active, file_type: suffix },
+            storagePath: key,
+            pdfStoragePath: `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`,
+            transport: "download",
+            rendition: "optional",
+            sourceBytes: bytes,
+        }));
+    } catch (error) {
+        console.error("[sharepoint-draft] storage write failed", error);
+        return {
+            ok: false,
+            kind: "storage_write",
+            detail: "Failed to create the new version.",
+        };
+    }
+    if (suffix === "pdf") pdfStoragePath = key;
+
+    const { data: versionRow, error: versionError } = await createDocumentVersion(
+        db,
+        {
+            document_id: documentId,
+            storage_path: key,
+            pdf_storage_path: pdfStoragePath,
+            source: "user_upload",
+            filename: filename.value,
+            file_type: sourceType || null,
+            size_bytes: active.size_bytes ?? bytes.byteLength,
+            page_count: active.page_count,
+            content_sha256: contentSha256(bytes),
+        },
+    );
+    if (versionError || !versionRow) {
+        return {
+            ok: false,
+            kind: "version_insert",
+            detail: "Failed to record the new version.",
+        };
+    }
+
+    const sharepoint = await saveSyncedMatterVersionToSharePoint(db, {
+        documentId,
+        versionId: versionRow.id as string,
+        storagePath: key,
+        filename: filename.value,
+        forceNewFile,
+    });
+    if (!sharepoint.ok) {
+        return {
+            ok: false,
+            kind:
+                sharepoint.kind === "conflict"
+                    ? "conflict"
+                    : sharepoint.kind === "skipped"
+                      ? "not_matter"
+                      : "unavailable",
+            detail: sharepoint.detail,
+        };
+    }
+
+    return {
+        ok: true,
+        version: {
+            id: versionRow.id,
+            version_number: versionRow.version_number,
+            source: versionRow.source,
+            created_at: versionRow.created_at,
+            filename: versionRow.filename,
+        },
+        sharepoint,
+    };
+}
+
+function draftFilename(
+    requested: string,
+    current: string | null | undefined,
+):
+    | { ok: true; value: string }
+    | { ok: false; kind: "validation"; detail: string } {
+    const value = requested.trim();
+    if (!value || value.length > 400 || /[\x00-\x1F\x7F/\\]/.test(value)) {
+        return {
+            ok: false,
+            kind: "validation",
+            detail: "Enter a file name without folders or unusual characters.",
+        };
+    }
+    const currentName = current?.trim() || "";
+    const currentExtension = filenameExtension(currentName);
+    if (
+        currentExtension &&
+        filenameExtension(value)?.toLowerCase() !== currentExtension.toLowerCase()
+    ) {
+        return {
+            ok: false,
+            kind: "validation",
+            detail: `Keep ${currentExtension} at the end of the name.`,
+        };
+    }
+    return { ok: true, value };
+}
+
+function filenameExtension(filename: string): string | null {
+    const dot = filename.lastIndexOf(".");
+    if (dot <= 0 || dot === filename.length - 1) return null;
+    return filename.slice(dot);
 }
 
 // ---------------------------------------------------------------------------

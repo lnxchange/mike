@@ -708,11 +708,25 @@ async function listProcessingDocuments(
   return files;
 }
 
+export type SharePointSaveResult =
+  | {
+      ok: true;
+      filename: string;
+      webUrl: string | null;
+      created: boolean;
+    }
+  | {
+      ok: false;
+      kind: "skipped" | "conflict" | "unavailable";
+      detail: string;
+    };
+
 /**
  * After a lawyer saves a version on a synced matter, ask the filer to put
  * that file in the SharePoint DR folder. A failure here leaves the Colleague
  * version in place. The five-minute sweep does not write back, so this save
- * is the only path.
+ * is the only path. `forceNewFile` omits the stored SharePoint item so a
+ * different name becomes a second DR file instead of replacing the draft.
  */
 export async function saveSyncedMatterVersionToSharePoint(
   db: Db,
@@ -721,14 +735,22 @@ export async function saveSyncedMatterVersionToSharePoint(
     versionId: string;
     storagePath: string;
     filename: string;
+    forceNewFile?: boolean;
   },
-): Promise<void> {
+): Promise<SharePointSaveResult> {
   const { documentId, versionId, storagePath, filename } = args;
+  const skipped = (detail: string): SharePointSaveResult => ({
+    ok: false,
+    kind: "skipped",
+    detail,
+  });
   try {
     const config = filerConfiguration();
-    if (!config.configured) return;
+    if (!config.configured) return skipped("SharePoint sync is not configured.");
     const name = filename.trim();
-    if (!documentId || !versionId || !storagePath || !name) return;
+    if (!documentId || !versionId || !storagePath || !name) {
+      return skipped("The draft is missing a file.");
+    }
 
     const { data: document, error: documentError } = await db
       .from("documents")
@@ -737,35 +759,46 @@ export async function saveSyncedMatterVersionToSharePoint(
       )
       .eq("id", documentId)
       .maybeSingle();
-    if (documentError || !document?.project_id) return;
+    if (documentError || !document?.project_id) {
+      return skipped("This document is not on a synced matter.");
+    }
 
     const { data: project, error: projectError } = await db
       .from("projects")
       .select("cm_number")
       .eq("id", document.project_id)
       .maybeSingle();
-    if (projectError) return;
+    if (projectError) return skipped("This document is not on a synced matter.");
     const matterNumber =
       typeof project?.cm_number === "string" ? project.cm_number.trim() : "";
-    if (!matterNumber) return;
+    if (!matterNumber) return skipped("This document is not on a synced matter.");
 
-    const { data: pushed } = await db
-      .from("document_versions")
-      .select("external_item_id, external_ctag")
-      .eq("document_id", documentId)
-      .not("external_item_id", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    const externalItemId =
-      stringOrNull(pushed?.external_item_id) ||
-      stringOrNull(document.external_item_id);
-    const externalCtag = pushed
-      ? stringOrNull(pushed.external_ctag)
-      : stringOrNull(document.external_ctag);
+    let externalItemId = "";
+    let externalCtag = "";
+    if (!args.forceNewFile) {
+      const { data: pushed } = await db
+        .from("document_versions")
+        .select("external_item_id, external_ctag")
+        .eq("document_id", documentId)
+        .not("external_item_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      externalItemId =
+        stringOrNull(pushed?.external_item_id) ||
+        stringOrNull(document.external_item_id) ||
+        "";
+      externalCtag = (
+        pushed
+          ? stringOrNull(pushed.external_ctag)
+          : stringOrNull(document.external_ctag)
+      ) || "";
+    }
 
     const sourceUrl = await getSignedUrl(storagePath, 600);
-    if (!sourceUrl) return;
+    if (!sourceUrl) {
+      return { ok: false, kind: "unavailable", detail: "The file could not be read." };
+    }
 
     const call = await callFiler(
       "push",
@@ -780,16 +813,41 @@ export async function saveSyncedMatterVersionToSharePoint(
       PUSH_TIMEOUT_MS,
       fetch,
     );
-    if (!call.ok || call.status !== 200) {
+    if (!call.ok) {
+      logError("integrations/push", filerStatusError(0), { documentId, versionId });
+      return {
+        ok: false,
+        kind: "unavailable",
+        detail: "SharePoint could not be reached.",
+      };
+    }
+    if (call.status === 409) {
+      const detail =
+        stringOrNull(call.body.error) ||
+        "SharePoint has a newer copy of this draft.";
+      logError("integrations/push", filerStatusError(409), { documentId, versionId });
+      return { ok: false, kind: "conflict", detail };
+    }
+    if (call.status !== 200) {
       logError(
         "integrations/push",
-        filerStatusError(call.ok ? call.status : 0),
+        filerStatusError(call.status),
         { documentId, versionId },
       );
-      return;
+      return {
+        ok: false,
+        kind: "unavailable",
+        detail: "The draft could not be saved to SharePoint.",
+      };
     }
     const itemId = stringOrNull(call.body.itemId);
-    if (!itemId) return;
+    if (!itemId) {
+      return {
+        ok: false,
+        kind: "unavailable",
+        detail: "The draft could not be saved to SharePoint.",
+      };
+    }
     const ctag = stringOrNull(call.body.ctag);
     await recordSharePointVersion(db, {
       documentId,
@@ -806,8 +864,19 @@ export async function saveSyncedMatterVersionToSharePoint(
         })
         .eq("id", documentId);
     }
+    return {
+      ok: true,
+      filename: stringOrNull(call.body.name) || name,
+      webUrl: stringOrNull(call.body.webUrl),
+      created: call.body.created !== false,
+    };
   } catch (error) {
     logError("integrations/push", error, { documentId, versionId });
+    return {
+      ok: false,
+      kind: "unavailable",
+      detail: "The draft could not be saved to SharePoint.",
+    };
   }
 }
 

@@ -222,5 +222,14 @@ describe("describeMatterSync", () => {
                 }),
             ).toBe("Sync failed, see Back Office");
         }
+        expect(
+            describeMatterSync({
+                ...base,
+                status: "Failed",
+                documentCount: 0,
+                remaining: 5,
+                lastError: "files.0.filename: Too big",
+            }),
+        ).toBe("files.0.filename: Too big");
     });
 });

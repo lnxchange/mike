@@ -2122,6 +2122,25 @@ export async function replaceDocumentVersionFile(
     );
 }
 
+export async function saveDocumentToSharePoint(
+    documentId: string,
+    filename: string,
+): Promise<{
+    filename: string;
+    webUrl: string | null;
+    created: boolean;
+    version: DocumentVersion;
+}> {
+    return apiRequest(
+        `/single-documents/${documentId}/sharepoint-draft`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename }),
+        },
+    );
+}
+
 export async function copyDocumentVersionFromDocument(
     documentId: string,
     sourceDocumentId: string,

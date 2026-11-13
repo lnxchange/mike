@@ -180,6 +180,7 @@ export function describeMatterSync(
     options?: MatterSyncVisible,
 ): string | null {
     if (!result || !result.found) return null;
+    if (result.lastError) return result.lastError;
     const visible = options?.visibleDocumentCount;
     const processing =
         typeof visible === "number" && result.documentCount > visible;

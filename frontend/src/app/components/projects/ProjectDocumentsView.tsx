@@ -437,6 +437,7 @@ export function ProjectDocumentsView({ projectId, folderId = null }: Props) {
                 }
                 hideEmptyStateAction={sharepointIngest != null}
                 syncFiles={sharepointIngest?.files ?? []}
+                matterNumber={project?.cm_number ?? null}
                 onAddDocumentsActionChange={
                     canDo("content.edit")
                         ? handleSavedFilesActionChange

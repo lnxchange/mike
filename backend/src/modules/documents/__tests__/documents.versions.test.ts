@@ -28,9 +28,11 @@ vi.mock("../../../lib/queue/conversionQueue", () => ({
 vi.mock("../../integrations/integrations.service", () => ({
   saveSyncedMatterVersionToSharePoint: vi.fn(async () => undefined),
 }));
+import { saveSyncedMatterVersionToSharePoint } from "../../integrations/integrations.service";
 import {
   createVersionFromDocument,
   deleteVersion,
+  saveSharePointDraft,
 } from "../documents.versions";
 const args = {
   documentId: "target",
@@ -243,4 +245,113 @@ describe("version deletion caller policy", () => {
       ).toMatchObject({ ok: false, kind });
     },
   );
+});
+
+function draftDb(existingFilename: string | null) {
+  const rpc = vi.fn().mockResolvedValue({
+    data: { ...row, filename: "Clause v2.docx" },
+    error: null,
+  });
+  const from = vi.fn((table: string) => {
+    const data =
+      table === "projects"
+        ? { cm_number: "263441" }
+        : existingFilename
+          ? { filename: existingFilename }
+          : null;
+    const query: Record<string, unknown> = {};
+    const chain = () => query;
+    for (const method of ["select", "eq", "not", "is", "order", "limit"]) {
+      query[method] = chain;
+    }
+    query.maybeSingle = async () => ({ data, error: null });
+    return query;
+  });
+  return { rpc, db: { rpc, from } as unknown as Db };
+}
+
+describe("saveSharePointDraft", () => {
+  const save = vi.mocked(saveSyncedMatterVersionToSharePoint);
+
+  beforeEach(() => {
+    save.mockResolvedValue({
+      ok: true,
+      filename: "Clause v2.docx",
+      webUrl: "https://sharepoint.example/dr",
+      created: true,
+    });
+  });
+
+  it("creates a new drafts file the first time, and when the name changes", async () => {
+    const first = draftDb(null);
+    const created = await saveSharePointDraft(
+      {
+        documentId: "target",
+        requestedFilename: "Clause v2.docx",
+        userId: "actor",
+        userEmail: undefined,
+      },
+      first.db,
+    );
+    expect(created.ok).toBe(true);
+    expect(save).toHaveBeenLastCalledWith(
+      first.db,
+      expect.objectContaining({
+        filename: "Clause v2.docx",
+        forceNewFile: true,
+      }),
+    );
+
+    const renamed = draftDb("Clause.docx");
+    await saveSharePointDraft(
+      {
+        documentId: "target",
+        requestedFilename: "Clause v3.docx",
+        userId: "actor",
+        userEmail: undefined,
+      },
+      renamed.db,
+    );
+    expect(save).toHaveBeenLastCalledWith(
+      renamed.db,
+      expect.objectContaining({
+        filename: "Clause v3.docx",
+        forceNewFile: true,
+      }),
+    );
+  });
+
+  it("updates the existing drafts file when the name is unchanged", async () => {
+    save.mockResolvedValue({
+      ok: true,
+      filename: "Clause.docx",
+      webUrl: "https://sharepoint.example/draft",
+      created: false,
+    });
+    const fake = draftDb("Clause.docx");
+    const result = await saveSharePointDraft(
+      {
+        documentId: "target",
+        requestedFilename: "clause.docx",
+        userId: "actor",
+        userEmail: undefined,
+      },
+      fake.db,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      sharepoint: {
+        filename: "Clause.docx",
+        webUrl: "https://sharepoint.example/draft",
+        created: false,
+      },
+    });
+    expect(save).toHaveBeenCalledWith(
+      fake.db,
+      expect.objectContaining({
+        filename: "clause.docx",
+        forceNewFile: false,
+      }),
+    );
+  });
 });

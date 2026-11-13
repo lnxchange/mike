@@ -39,7 +39,7 @@ const externalReferenceSchema = z
     drive_id: z.string().trim().min(1).max(512),
     item_id: z.string().trim().min(1).max(512),
     ctag: z.string().trim().min(1).max(512),
-    web_url: z.string().trim().min(1).max(512).optional(),
+    web_url: z.string().trim().min(1).max(2048).optional(),
   })
   .strict();
 
@@ -79,7 +79,7 @@ const clientFileSchema = z
       .string()
       .trim()
       .min(1)
-      .max(255)
+      .max(400)
       .refine(
         (filename) => !/[\x00-\x1F\x7F/\\]/.test(filename),
         "filename is invalid",
@@ -223,10 +223,12 @@ export function parseUploadSessionRequest(
     const issue = parsed.error.issues[0];
     const isFileTooLarge =
       issue?.code === "too_big" && issue.path.includes("size_bytes");
+    const field = issue?.path.length ? issue.path.join(".") : "";
+    const message = isFileTooLarge
+      ? "Each uploaded file must be 100 MB or smaller"
+      : (issue?.message ?? "Invalid upload session request");
     throw new UploadSessionValidationError(
-      isFileTooLarge
-        ? "Each uploaded file must be 100 MB or smaller"
-        : (issue?.message ?? "Invalid upload session request"),
+      field ? `${field}: ${message}` : message,
       isFileTooLarge
         ? { status: 413, code: "upload_file_too_large" }
         : undefined,

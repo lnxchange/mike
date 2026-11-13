@@ -27,6 +27,7 @@ import {
     deleteDocumentVersion,
     failedUploadMessage,
     renameDocumentVersion,
+    saveDocumentToSharePoint,
     type DocumentVersion,
     type UploadOutcome,
     type UploadProgress,
@@ -345,6 +346,8 @@ interface DocTableProps {
      */
     syncFiles?: MatterSyncFile[];
     emptyFolderMessage?: string;
+    /** Present only for an enrolled matter. Hides Save to SharePoint elsewhere. */
+    matterNumber?: string | null;
     renderAddDocumentsModal?: (
         open: boolean,
         onClose: () => void,
@@ -592,6 +595,7 @@ export function DocTable({
     hideEmptyStateAction = false,
     syncFiles = [],
     emptyFolderMessage,
+    matterNumber = null,
     renderAddDocumentsModal,
     onAddDocumentsActionChange,
     onUploadFilesActionChange,
@@ -5033,6 +5037,21 @@ export function DocTable({
                 onDeleteVersion={handleDeleteVersion}
                 onUploadNewVersion={submitNewVersion}
                 onReplaceVersion={replaceVersionFile}
+                onSaveToSharePoint={
+                    matterNumber
+                        ? async (doc, filename) => {
+                              const saved = await saveDocumentToSharePoint(
+                                  doc.id,
+                                  filename,
+                              );
+                              await refreshDocumentVersionState(doc.id);
+                              return {
+                                  filename: saved.filename,
+                                  webUrl: saved.webUrl,
+                              };
+                          }
+                        : undefined
+                }
                 canDelete={canDeleteDocument(sidePanelDoc)}
                 onOwnerOnlyAction={setOwnerOnlyAction}
                 onDelete={async (doc) => {

@@ -36,6 +36,7 @@ export type { ZipExportEntry } from "./documents.download";
 export {
     listVersions,
     createVersionFromDocument,
+    saveSharePointDraft,
     renameVersion,
     deleteVersion,
 } from "./documents.versions";

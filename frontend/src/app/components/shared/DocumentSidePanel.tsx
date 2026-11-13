@@ -32,6 +32,7 @@ import {
     LIQUID_GLASS_SUBTLE_CLASS,
 } from "@/app/components/ui/liquid-surface";
 import { formatBytes } from "@/app/components/projects/ProjectPageParts";
+import { userFacingApiError } from "@/app/lib/userFacingError";
 
 const MIN_DOC_COLUMN_WIDTH = 420;
 const DEFAULT_DOC_COLUMN_WIDTH = 620;
@@ -77,6 +78,10 @@ interface DocumentSidePanelProps {
     canDelete?: boolean;
     onOwnerOnlyAction?: (action: string) => void;
     onDelete: (doc: Document) => Promise<void> | void;
+    onSaveToSharePoint?: (
+        doc: Document,
+        filename: string,
+    ) => Promise<{ filename: string; webUrl: string | null }>;
 }
 
 export function DocumentSidePanel({
@@ -99,6 +104,7 @@ export function DocumentSidePanel({
     canDelete = true,
     onOwnerOnlyAction,
     onDelete,
+    onSaveToSharePoint,
 }: DocumentSidePanelProps) {
     const [mounted, setMounted] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -118,6 +124,14 @@ export function DocumentSidePanel({
     const [replacingVersionId, setReplacingVersionId] = useState<string | null>(
         null,
     );
+    const [draftOpen, setDraftOpen] = useState(false);
+    const [draftName, setDraftName] = useState("");
+    const [savingDraft, setSavingDraft] = useState(false);
+    const [draftError, setDraftError] = useState<string | null>(null);
+    const [draftSaved, setDraftSaved] = useState<{
+        filename: string;
+        webUrl: string | null;
+    } | null>(null);
     const [deletingDocument, setDeletingDocument] = useState(false);
     const [confirmDeleteDocumentOpen, setConfirmDeleteDocumentOpen] =
         useState(false);
@@ -173,6 +187,10 @@ export function DocumentSidePanel({
         setReplaceTargetVersion(null);
         setReplaceFile(null);
         setReplaceConfirmOpen(false);
+        setDraftOpen(false);
+        setDraftName("");
+        setDraftError(null);
+        setDraftSaved(null);
         setMobilePane("document");
     }, [doc?.id, versionId, currentVersionId]);
 
@@ -242,6 +260,34 @@ export function DocumentSidePanel({
         null;
     const selectedVersionId = selectedVersion?.id ?? versionId ?? null;
     const selectedFilename = selectedVersion?.filename?.trim() || doc.filename;
+    async function submitSharePointDraft() {
+        if (!onSaveToSharePoint || savingDraft) return;
+        const trimmed = draftName.trim();
+        if (!trimmed) {
+            setDraftError("Enter a file name.");
+            return;
+        }
+        if (hasExtensionChange(selectedFilename, trimmed)) {
+            setExtensionWarningOpen(true);
+            return;
+        }
+        setSavingDraft(true);
+        setDraftError(null);
+        try {
+            const saved = await onSaveToSharePoint(activeDoc, trimmed);
+            setDraftSaved(saved);
+            setDraftOpen(false);
+        } catch (error) {
+            setDraftError(
+                userFacingApiError(
+                    error,
+                    "The draft could not be saved to SharePoint.",
+                ),
+            );
+        } finally {
+            setSavingDraft(false);
+        }
+    }
     const selectedFileType =
         selectedVersion != null
             ? fileTypeForVersion(selectedVersion, doc.file_type)
@@ -918,6 +964,92 @@ export function DocumentSidePanel({
                         <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-gray-900">
                             <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />
                             <span>{uploadError}</span>
+                        </div>
+                    )}
+                    {onSaveToSharePoint && !readOnly && (
+                        <div className="mb-2 space-y-2">
+                            {draftOpen ? (
+                                <form
+                                    className="space-y-2"
+                                    onSubmit={(event) => {
+                                        event.preventDefault();
+                                        void submitSharePointDraft();
+                                    }}
+                                >
+                                    <label
+                                        className="block text-xs font-medium text-gray-900"
+                                        htmlFor="sharepoint-draft-name"
+                                    >
+                                        File name in drafts
+                                    </label>
+                                    <input
+                                        id="sharepoint-draft-name"
+                                        value={draftName}
+                                        onChange={(event) =>
+                                            setDraftName(event.target.value)
+                                        }
+                                        autoFocus
+                                        className="h-8 w-full border-0 border-b border-gray-300 bg-transparent px-0 text-sm text-gray-950 outline-none focus:border-gray-500"
+                                    />
+                                    <div className="flex justify-end gap-2">
+                                        <PillButtonUI
+                                            type="button"
+                                            tone="white"
+                                            size="normal"
+                                            onClick={() => setDraftOpen(false)}
+                                            disabled={savingDraft}
+                                        >
+                                            Cancel
+                                        </PillButtonUI>
+                                        <PillButtonUI
+                                            type="submit"
+                                            tone="blue"
+                                            size="normal"
+                                            loading={savingDraft}
+                                            disabled={savingDraft}
+                                        >
+                                            Save
+                                        </PillButtonUI>
+                                    </div>
+                                </form>
+                            ) : (
+                                <PillButtonUI
+                                    type="button"
+                                    tone="white"
+                                    size="normal"
+                                    className="w-full"
+                                    onClick={() => {
+                                        setDraftName(selectedFilename);
+                                        setDraftError(null);
+                                        setDraftOpen(true);
+                                    }}
+                                >
+                                    Save to SharePoint
+                                </PillButtonUI>
+                            )}
+                            {draftError && (
+                                <p className="text-xs text-red-600" role="alert">
+                                    {draftError}
+                                </p>
+                            )}
+                            {draftSaved && (
+                                <p className="text-xs text-gray-600">
+                                    Saved to SharePoint as {draftSaved.filename}.
+                                    {draftSaved.webUrl ? (
+                                        <>
+                                            {" "}
+                                            <a
+                                                href={draftSaved.webUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="underline"
+                                            >
+                                                Open the draft
+                                            </a>
+                                        </>
+                                    ) : null}
+                                </p>
+                            )}
                         </div>
                     )}
 
