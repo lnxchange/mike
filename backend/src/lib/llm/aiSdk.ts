@@ -362,6 +362,11 @@ function usesCourtlistenerTool(
 
 export const LAST_STEP_WRITE_REMINDER = `LAST STEP: Do not call any tools. Write the user-facing answer now from the documents and notes already in this response. If you cannot finish every attachment or edit, write what you have and state what remains.`;
 
+/** Research steps already taken before the next step must be the answer. */
+export const RESEARCH_ROUNDS_BEFORE_WRITE = 4;
+
+const WRITE_FROM_RESEARCH_NUDGE = `Write the user-facing answer now from the documents and notes already in this conversation. Do not call tools. Do not start the research again. If something is still unread, say what remains.`;
+
 export const PLAN_NOW_REMINDER = `PLAN NOW: Call create_plan. Name the parts of the response, including what you still need to read. Each item is one short sentence. Do not review, explain, draft, or answer the substance in this response.`;
 
 export const PLAN_COMPLETE_SUMMARY = `PLAN COMPLETE: The plan has no remaining steps. Do not call any tools. Write a short summary of what was actually produced for the user. Name the documents, edits, and notes that exist in this conversation. If a step was marked done but the document, edit, or note was not produced, say so and include the text now. Do not claim something was drafted, filed, or placed in Outlook unless that happened in this conversation.`;
@@ -369,6 +374,20 @@ export const PLAN_COMPLETE_SUMMARY = `PLAN COMPLETE: The plan has no remaining s
 export type StreamStepState = {
   toolCalls: Array<{ toolName: string }>;
 };
+
+function isResearchToolName(name: string): boolean {
+  return name.startsWith("au_") || name.startsWith("courtlistener_");
+}
+
+function researchRoundCount(steps: StreamStepState[]): number {
+  let count = 0;
+  for (const step of steps) {
+    if (step.toolCalls.some((call) => isResearchToolName(call.toolName))) {
+      count += 1;
+    }
+  }
+  return count;
+}
 
 export type PreparedStreamStep = {
   system?: string;
@@ -398,11 +417,17 @@ export function prepareAssistantStreamStep(args: {
   // names its work and stops. It does not become the written answer.
   const forcePlan = requirePlan && (args.steps.length >= 1 || lastStep);
   const requireTool = requirePlan && !forcePlan;
+  // A research question was spending every remaining round on another
+  // fetch, so the reserved writing step arrived with nothing to say.
+  const forceWrite =
+    !requirePlan &&
+    (lastStep || researchRoundCount(args.steps) >= RESEARCH_ROUNDS_BEFORE_WRITE);
   const courtlistener =
     !forcePlan &&
+    !forceWrite &&
     args.courtlistenerReminder === true &&
     usesCourtlistenerTool(args.steps);
-  if (!lastStep && !courtlistener && !forcePlan && !requireTool) {
+  if (!forceWrite && !courtlistener && !forcePlan && !requireTool) {
     return undefined;
   }
   if (forcePlan) {
@@ -417,10 +442,12 @@ export function prepareAssistantStreamStep(args: {
   }
   const extras = [
     courtlistener ? COURTLISTENER_CITATION_REMINDER : "",
-    lastStep ? LAST_STEP_WRITE_REMINDER : "",
+    forceWrite ? LAST_STEP_WRITE_REMINDER : "",
   ].filter(Boolean);
   return {
-    ...(lastStep ? { activeTools: [] as [], toolChoice: "none" as const } : {}),
+    ...(forceWrite
+      ? { activeTools: [] as [], toolChoice: "none" as const }
+      : {}),
     system: extras.length
       ? `${args.systemPrompt}\n\n${extras.join("\n\n")}`
       : args.systemPrompt,
@@ -451,6 +478,9 @@ export async function streamAiSdk(
   let reasoning = params.reasoning;
   let remainingSteps = maxIterations;
   let overrunRetries = 0;
+  let sawToolCall = false;
+  let writeRecovery = false;
+  let loadResponseMessages: (() => Promise<ModelMessageLike[]>) | null = null;
 
   try {
     for (;;) {
@@ -495,6 +525,8 @@ export async function streamAiSdk(
             planSummaryNow: params.planSummaryNow,
           }),
       });
+      loadResponseMessages = async () =>
+        (await result.responseMessages) as ModelMessageLike[];
 
       let truncatedTool: string | null | undefined;
       try {
@@ -546,6 +578,7 @@ export async function streamAiSdk(
               break;
             case "tool-call": {
               currentStep.producedToolCall = true;
+              sawToolCall = true;
               const call: NormalizedToolCall = {
                 id: part.toolCallId,
                 name: part.toolName,
@@ -591,6 +624,12 @@ export async function streamAiSdk(
         overrunRetries < MAX_REASONING_OVERRUN_RETRIES &&
         !params.abortSignal?.aborted;
       if (!canRetry) {
+        writeRecovery =
+          sawToolCall &&
+          !toolInputCutOff &&
+          lastFinishedStep !== null &&
+          !lastFinishedStep.producedText &&
+          !params.abortSignal?.aborted;
         if (toolInputCutOff) {
           throw new Error(
             errorMessage(
@@ -631,6 +670,44 @@ export async function streamAiSdk(
           truncatedTool: toolInputCutOff ? truncatedTool : undefined,
         },
       );
+    }
+
+    if (writeRecovery && loadResponseMessages) {
+      try {
+        let responseMessages: ModelMessageLike[] = [];
+        try {
+          responseMessages = await loadResponseMessages();
+        } catch {
+          responseMessages = [];
+        }
+        const writeResult = sdk.streamText({
+          model: config.model,
+          system: `${params.systemPrompt}\n\n${LAST_STEP_WRITE_REMINDER}`,
+          messages: messagesForOverrunRetry(
+            messages,
+            responseMessages,
+            WRITE_FROM_RESEARCH_NUDGE,
+          ),
+          tools,
+          maxOutputTokens,
+          stopWhen: sdk.stepCountIs(1),
+          abortSignal: params.abortSignal,
+          reasoning: config.supportsReasoning === false ? undefined : "none",
+          prepareStep: () => ({
+            toolChoice: "none" as const,
+            activeTools: [] as [],
+          }),
+        });
+        for await (const part of writeResult.stream) {
+          if (part.type === "text-delta" && part.text) {
+            fullText += part.text;
+            params.callbacks?.onContentDelta?.(part.text);
+          }
+        }
+      } catch {
+        // The research already happened. A failed writing pass leaves the
+        // incomplete-answer message in place.
+      }
     }
 
     await rawStreamRecorder?.flush("completed");

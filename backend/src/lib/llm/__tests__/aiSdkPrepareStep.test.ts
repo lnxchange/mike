@@ -3,6 +3,7 @@ import {
   LAST_STEP_WRITE_REMINDER,
   PLAN_COMPLETE_SUMMARY,
   PLAN_NOW_REMINDER,
+  RESEARCH_ROUNDS_BEFORE_WRITE,
   prepareAssistantStreamStep,
 } from "../aiSdk";
 
@@ -20,6 +21,22 @@ describe("prepareAssistantStreamStep", () => {
   it("strips tools and asks for a written answer on the last step", () => {
     const prepared = prepareAssistantStreamStep({
       steps: Array.from({ length: 15 }, () => ({ toolCalls: [] })),
+      maxIterations: 16,
+      systemPrompt: "BASE",
+    });
+
+    expect(prepared).toEqual({
+      activeTools: [],
+      toolChoice: "none",
+      system: `BASE\n\n${LAST_STEP_WRITE_REMINDER}`,
+    });
+  });
+
+  it("stops a research hunt and asks for the answer before the step cap", () => {
+    const prepared = prepareAssistantStreamStep({
+      steps: Array.from({ length: RESEARCH_ROUNDS_BEFORE_WRITE }, () => ({
+        toolCalls: [{ toolName: "au_get_energy" }],
+      })),
       maxIterations: 16,
       systemPrompt: "BASE",
     });
