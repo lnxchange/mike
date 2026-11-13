@@ -114,6 +114,44 @@ describe("parseWordEditsInput", () => {
     expect(neither.ok).toBe(false);
   });
 
+  it("accepts a document style name", () => {
+    const parsed = parseWordEditsInput({
+      edits: [
+        {
+          original: "Liability",
+          formats: ["style:Heading 2"],
+          reason: "Use the document's numbered heading style.",
+        },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.edits[0]?.formats).toEqual(["style:Heading 2"]);
+  });
+
+  it("accepts clearNumbering for a list the style does not own", () => {
+    const parsed = parseWordEditsInput({
+      edits: [
+        {
+          original: "2 Liability",
+          formats: ["clearNumbering"],
+          reason: "Remove a list the paragraph style does not own.",
+        },
+      ],
+    });
+    expect(parsed).toEqual({
+      ok: true,
+      edits: [
+        {
+          original: "2 Liability",
+          replacement: "",
+          formats: ["clearNumbering"],
+          reason: "Remove a list the paragraph style does not own.",
+        },
+      ],
+    });
+  });
+
   it("rejects an unsupported format and a bogus occurrence", () => {
     expect(
       parseWordEditsInput({

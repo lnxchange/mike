@@ -18,7 +18,10 @@
 import { randomUUID } from "node:crypto";
 import type { NormalizedToolCall, OpenAIToolSchema } from "../../../../lib/llm";
 import { MAX_DOCUMENT_CONTEXT_CHARS, spotlight } from "../contextBuilders";
-import { WORD_EDIT_FORMATS } from "../wordDocumentEdits";
+import {
+  WORD_EDIT_FORMATS,
+  isAllowedWordEditFormat,
+} from "../wordDocumentEdits";
 import { ACTIVE_WORD_DOCUMENT_LIVE_FILENAME } from "../wordPrompt";
 import { isAbortError } from "../streaming";
 import type { AssistantEvent, ClientToolsAdapter } from "../streaming";
@@ -149,9 +152,15 @@ export const WORD_CLIENT_TOOLS: OpenAIToolSchema[] = [
                   description:
                     "Formatting to apply to the passage instead of replacing " +
                     "it: any of bold, italic, underline, heading1, heading2, " +
-                    "heading3. Heading formats style the whole paragraph, so " +
-                    "do not use one when the passage shares a paragraph with " +
-                    "body text. Send exactly one of replacement or formats.",
+                    "heading3, clearNumbering, or style:<name>. style:<name> " +
+                    "applies that paragraph style from NUMBERED STYLES. " +
+                    "clearNumbering detaches a list the paragraph style does " +
+                    "not own. Do not use it on a heading whose «style:» " +
+                    "label is the numbering to keep; delete the typed number " +
+                    "instead. Heading formats, style names, and " +
+                    "clearNumbering apply to the whole paragraph, so do not " +
+                    "use one when the passage shares a paragraph with body " +
+                    "text. Send exactly one of replacement or formats.",
                 },
                 occurrence: {
                   type: "string",
@@ -453,14 +462,14 @@ export function parseWordEditsInput(
       if (
         raw.some(
           (format) =>
-            typeof format !== "string" || !WORD_EDIT_FORMATS.has(format),
+            typeof format !== "string" || !isAllowedWordEditFormat(format),
         )
       ) {
         return {
           ok: false,
           error:
             `edits[${index}].formats may only contain ` +
-            `${[...WORD_EDIT_FORMATS].join(", ")}.`,
+            `${[...WORD_EDIT_FORMATS].join(", ")}, or style:<name>.`,
         };
       }
       formats = [...new Set(raw as string[])];

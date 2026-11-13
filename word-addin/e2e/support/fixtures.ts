@@ -349,6 +349,18 @@ export const test = base.extend<{ addin: Addin }>({
         sort_order: 2,
         workflow: { id: "wf-draft", title: "Draft From Template" },
       },
+      {
+        id: "qa-filename",
+        workflow_id: "wf-saved-prompt",
+        name: "Suggest a filename",
+        prompt:
+          "Suggest one filename for this document. Do not edit the document. Use the pattern YYMMDD - Descriptive name.docx, with today's date and a short plain-English description of the document. Reply with the filename only.",
+        document_upload: false,
+        surface: "word",
+        enabled: true,
+        sort_order: 3,
+        workflow: { id: "wf-saved-prompt", title: "Saved prompt" },
+      },
     ];
     await page.route("**/quick-actions**", async (route, request) => {
       if (request.method() === "GET") {

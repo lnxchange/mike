@@ -512,6 +512,17 @@ describe("active Word document context", () => {
         expect(prompt).toContain("Never reveal tool names");
         expect(prompt).toContain("the application hides them");
         expect(prompt).toContain("never edit a list number");
+        expect(prompt).toContain("clearNumbering");
+        expect(prompt).toContain("Do not restate a conclusion");
+        expect(prompt).toContain("«1.»");
+        expect(prompt).toContain("«style:1.»");
+        expect(prompt).toContain("keep the style's numbering");
+        expect(prompt).toContain("always tracked changes");
+        expect(prompt).toContain("defined term");
+        expect(prompt).toContain("style:<name>");
+        expect(prompt).toContain(
+            "Where a heading style has its own numbering",
+        );
         expect(prompt).toContain("<untrusted-content>");
         expect(prompt).not.toContain("CONTRACT BODY TEXT");
 
@@ -585,6 +596,17 @@ describe("active Word document context", () => {
         expect(prompt).toContain('add "occurrence":"all"');
         expect(prompt).toContain('"heading3"');
         expect(prompt).toContain("never edit a list number");
+        expect(prompt).toContain("clearNumbering");
+        expect(prompt).toContain("Do not restate a conclusion");
+        expect(prompt).toContain("«1.»");
+        expect(prompt).toContain("«style:1.»");
+        expect(prompt).toContain("keep the style's numbering");
+        expect(prompt).toContain("always tracked changes");
+        expect(prompt).toContain("defined term");
+        expect(prompt).toContain("style:<name>");
+        expect(prompt).toContain(
+            "Where a heading style has its own numbering",
+        );
         expect(prompt).toContain("at most 200 characters");
     });
 

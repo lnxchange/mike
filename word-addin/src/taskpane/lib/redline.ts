@@ -6,7 +6,8 @@ export type WordEditFormat =
   | "underline"
   | "heading1"
   | "heading2"
-  | "heading3";
+  | "heading3"
+  | "clearNumbering";
 
 const WORD_EDIT_FORMATS: readonly WordEditFormat[] = [
   "bold",
@@ -15,17 +16,40 @@ const WORD_EDIT_FORMATS: readonly WordEditFormat[] = [
   "heading1",
   "heading2",
   "heading3",
+  "clearNumbering",
 ];
 
-/** True for formats that apply a paragraph style rather than a font change. */
-export function isParagraphStyleFormat(format: WordEditFormat): boolean {
-  return format.startsWith("heading");
+/** A `style:<name>` format applies that paragraph style from the document. */
+export function paragraphStyleFormatName(format: string): string | null {
+  if (!format.startsWith("style:")) return null;
+  const name = format.slice("style:".length).trim();
+  if (!name || name.length > 80 || /[\r\n]/.test(name)) return null;
+  return name;
+}
+
+export function isWordEditFormat(format: string): boolean {
+  return (
+    (WORD_EDIT_FORMATS as readonly string[]).includes(format) ||
+    paragraphStyleFormatName(format) !== null
+  );
+}
+
+/**
+ * True for formats that restyle the paragraph rather than a character run.
+ * Their tracked revision may cover the whole paragraph, or carry no text.
+ */
+export function isParagraphStyleFormat(format: string): boolean {
+  return (
+    format.startsWith("heading") ||
+    format === "clearNumbering" ||
+    paragraphStyleFormatName(format) !== null
+  );
 }
 
 export interface RedlineEdit {
   original: string;
   replacement: string;
-  format?: WordEditFormat[];
+  format?: string[];
   occurrence?: "all";
   reason?: string;
 }
@@ -34,7 +58,7 @@ export interface StreamingRedlineEdit {
   blockIndex: number;
   original: string;
   replacement?: string;
-  format?: WordEditFormat[];
+  format?: string[];
   occurrence?: "all";
   reason?: string;
   sealed: boolean;
@@ -94,7 +118,7 @@ function parseJsonStreamingEdit(
   if (hasReplacement === hasFormats) return null;
 
   let replacement: string | undefined;
-  let format: WordEditFormat[] | undefined;
+  let format: string[] | undefined;
   if (hasReplacement) {
     if (typeof row.inserted_text !== "string") return null;
     replacement = row.inserted_text;
@@ -104,12 +128,12 @@ function parseJsonStreamingEdit(
       row.formats.some(
         (entry) =>
           typeof entry !== "string" ||
-          !WORD_EDIT_FORMATS.includes(entry as WordEditFormat),
+          !isWordEditFormat(entry),
       )
     ) {
       return null;
     }
-    format = [...new Set(row.formats as WordEditFormat[])];
+    format = [...new Set(row.formats as string[])];
   }
   if (
     row.occurrence !== undefined &&

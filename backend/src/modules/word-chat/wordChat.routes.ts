@@ -37,7 +37,7 @@ import {
 import { enqueueChatTurnAudit } from "../../lib/audit";
 import {
   persistWordDocumentEdits,
-  WORD_EDIT_FORMATS,
+  isAllowedWordEditFormat,
   type WordEditApplyMode,
 } from "../chat/chat.service";
 import {
@@ -163,7 +163,7 @@ function parseProposedWordEdit(
   const formats = Array.isArray(body.formats)
     ? body.formats.filter(
         (entry): entry is string =>
-          typeof entry === "string" && WORD_EDIT_FORMATS.has(entry),
+          typeof entry === "string" && isAllowedWordEditFormat(entry),
       )
     : [];
   if (Array.isArray(body.formats) && formats.length !== body.formats.length) {

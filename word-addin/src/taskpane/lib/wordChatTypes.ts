@@ -13,6 +13,13 @@ export type ReasoningLevel =
   | "high"
   | "xhigh"
   | "max";
+
+/**
+ * Word edits are usually a read and a change. High reasoning turns that into
+ * a long visible thought before the first edit. Low is the unset default;
+ * the composer control still offers the higher levels for a full review.
+ */
+export const DEFAULT_WORD_REASONING_LEVEL: ReasoningLevel = "low";
 export type EditDecision = "accept" | "reject";
 export type EditBusyAction =
   | "view"

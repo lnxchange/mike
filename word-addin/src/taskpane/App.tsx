@@ -22,7 +22,10 @@ import {
 } from "./lib/wordChatSettings";
 import { useWordDocumentIdentity } from "./lib/wordDocumentIdentity";
 import { clearLocalWordChats } from "./lib/localWordChats";
-import type { ReasoningLevel } from "./lib/wordChatTypes";
+import {
+  DEFAULT_WORD_REASONING_LEVEL,
+  type ReasoningLevel,
+} from "./lib/wordChatTypes";
 
 export default function App(): React.ReactElement {
   useSuspendBackdropWhileSelecting();
@@ -41,7 +44,7 @@ export default function App(): React.ReactElement {
   const [chatReasoningLevel, setChatReasoningLevel] =
     useState<ReasoningLevel | null>(null);
   const [lastSelectedReasoningLevel, setLastSelectedReasoningLevel] =
-    useState<ReasoningLevel>("high");
+    useState<ReasoningLevel>(DEFAULT_WORD_REASONING_LEVEL);
   const [chatInSession, setChatInSession] = useState(false);
   const [initialMessages, setInitialMessages] = useState<Message[]>([]);
   const [workflowPageSelection, setWorkflowPageSelection] =

@@ -44,6 +44,8 @@ export interface SeedDocumentBlock {
   text?: string;
   /** Built-in style name, e.g. "Heading1" or "Title". */
   styleBuiltIn?: string;
+  /** The style name Word shows, for example "Heading 2". */
+  style?: string;
   /** Present marks the paragraph as a list item with this label. */
   listString?: string;
   listLevel?: number;
@@ -1022,6 +1024,12 @@ export function installOfficeMock(seed: OfficeSeed): void {
               set styleBuiltIn(value: unknown) {
                 recordFormatWrite(`style:${String(value)}`);
               },
+              set style(value: unknown) {
+                recordFormatWrite(`styleName:${String(value)}`);
+              },
+              detachFromList: () => {
+                recordFormatWrite("list:clear");
+              },
               getRange: (location?: string) => {
                 const paragraphRange = makeSearchRange("Select");
                 if (location === "Whole" && matchedBlock) {
@@ -1083,6 +1091,7 @@ export function installOfficeMock(seed: OfficeSeed): void {
             return [
               {
                 text: block.text ?? "",
+                style: block.style ?? block.styleBuiltIn ?? "Normal",
                 styleBuiltIn: block.styleBuiltIn ?? "Normal",
                 isListItem: block.listString !== undefined,
                 tableNestingLevel: 0,
@@ -1111,6 +1120,12 @@ export function installOfficeMock(seed: OfficeSeed): void {
       };
     }
 
+    doc.getSelection = () => ({
+      load: (_properties?: unknown) => undefined,
+      get text() {
+        return "";
+      },
+    });
     doc.body = body;
     doc.getBookmarkRangeOrNullObject = (name: string) => {
       wordCalls.bookmarkLookups.push(name);

@@ -3,8 +3,10 @@
 import { useCallback } from "react";
 import { toWordText } from "../lib/wordText";
 import {
+  boldLeadFromOoxml,
   renderDocumentMarkdown,
   stripStructuralMarkers,
+  withDocumentSelection,
   type DocumentBlock,
 } from "../lib/documentMarkdown";
 import {
@@ -14,7 +16,10 @@ import {
   type WordReviewKind,
 } from "../lib/wordReview";
 import type { RedlineEdit } from "../lib/redline";
-import { isParagraphStyleFormat } from "../lib/redline";
+import {
+  isParagraphStyleFormat,
+  paragraphStyleFormatName,
+} from "../lib/redline";
 import { createSecureUuid } from "../lib/secureUuid";
 import {
   bookmarkNameForEdit,
@@ -255,6 +260,19 @@ function getErrorMessage(error: unknown): string {
  * Word cannot place two top-level tables adjacently without a paragraph
  * between them, so each transition is exactly one table.
  */
+async function readSelection(
+  context: Word.RequestContext,
+): Promise<string> {
+  try {
+    const selected = context.document.getSelection();
+    selected.load("text");
+    await context.sync();
+    return selected.text ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function renderBodyAsMarkdown(
   context: Word.RequestContext,
   body: Word.Body,
@@ -262,7 +280,7 @@ async function renderBodyAsMarkdown(
   const paragraphs = body.paragraphs;
   const tables = body.tables;
   paragraphs.load(
-    "items/text,items/styleBuiltIn,items/tableNestingLevel,items/isListItem",
+    "items/text,items/style,items/styleBuiltIn,items/tableNestingLevel,items/isListItem",
   );
   tables.load("items/nestingLevel,items/values");
   await context.sync();
@@ -279,6 +297,7 @@ async function renderBodyAsMarkdown(
     (table) => table.nestingLevel === 1,
   );
   const blocks: DocumentBlock[] = [];
+  const paragraphIndexes: number[] = [];
   let tableIndex = 0;
   let inTable = false;
   paragraphs.items.forEach((paragraph, index) => {
@@ -287,7 +306,10 @@ async function renderBodyAsMarkdown(
         inTable = true;
         const table = topLevelTables[tableIndex];
         tableIndex += 1;
-        if (table) blocks.push({ kind: "table", values: table.values });
+        if (table) {
+          blocks.push({ kind: "table", values: table.values });
+          paragraphIndexes.push(-1);
+        }
       }
       return;
     }
@@ -297,12 +319,105 @@ async function renderBodyAsMarkdown(
     blocks.push({
       kind: "paragraph",
       text: paragraph.text,
+      style: paragraph.style,
       styleBuiltIn: paragraph.styleBuiltIn,
       listString: isRealListItem ? listItem.listString : undefined,
       listLevel: isRealListItem ? listItem.level : undefined,
     });
+    paragraphIndexes.push(index);
   });
+  await attachDefinitionBoldLeads(
+    context,
+    paragraphs.items,
+    blocks,
+    paragraphIndexes,
+  );
   return renderDocumentMarkdown(blocks);
+}
+
+const DEFINITION_HEADING =
+  /^(?:definitions?|interpretation|defined terms)$/i;
+
+/**
+ * Bold defined terms that are not introduced with "means" are only visible
+ * in the paragraph OOXML. Limit that read to the definitions section.
+ */
+async function attachDefinitionBoldLeads(
+  context: Word.RequestContext,
+  paragraphs: Word.Paragraph[],
+  blocks: DocumentBlock[],
+  paragraphIndexes: number[],
+): Promise<void> {
+  let start = -1;
+  let startLevel = 1;
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (!block || block.kind !== "paragraph") continue;
+    const text = block.text
+      .replace(/[\r\n\v]+$/g, "")
+      .trim()
+      .replace(/^\d+(?:\.\d+)*\s+/, "");
+    if (!DEFINITION_HEADING.test(text)) continue;
+    start = index;
+    const builtIn = block.styleBuiltIn;
+    startLevel =
+      builtIn === "Title" || builtIn === "Heading1"
+        ? 1
+        : builtIn === "Heading2"
+          ? 2
+          : builtIn === "Heading3"
+            ? 3
+            : builtIn === "Heading4"
+              ? 4
+              : builtIn === "Heading5"
+                ? 5
+                : builtIn === "Heading6"
+                  ? 6
+                  : 1;
+    break;
+  }
+  if (start < 0) return;
+  const targets: { index: number; ooxml: OfficeExtension.ClientResult<string> }[] =
+    [];
+  for (let index = start + 1; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (!block || block.kind !== "paragraph") continue;
+    const builtIn = block.styleBuiltIn;
+    const level =
+      builtIn === "Heading1" || builtIn === "Title"
+        ? 1
+        : builtIn === "Heading2"
+          ? 2
+          : builtIn === "Heading3"
+            ? 3
+            : builtIn === "Heading4"
+              ? 4
+              : builtIn === "Heading5"
+                ? 5
+                : builtIn === "Heading6"
+                  ? 6
+                  : undefined;
+    if (level !== undefined && level <= startLevel) break;
+    const paragraph = paragraphs[paragraphIndexes[index] ?? -1];
+    if (!paragraph) continue;
+    try {
+      targets.push({ index, ooxml: paragraph.getOoxml() });
+    } catch {
+      return;
+    }
+  }
+  if (targets.length === 0) return;
+  try {
+    await context.sync();
+  } catch {
+    return;
+  }
+  for (const target of targets) {
+    const block = blocks[target.index];
+    if (!block || block.kind !== "paragraph") continue;
+    const lead = boldLeadFromOoxml(target.ooxml.value ?? "");
+    if (lead) block.boldLead = lead;
+  }
 }
 
 /** Word reports paragraph breaks inconsistently (\r, \n, \v) across hosts. */
@@ -484,12 +599,12 @@ function matchesForSides(
 } {
   const wordReplacement = normalizeBreaks(toWordText(edit.replacement));
   const original = normalizeBreaks(edit.original);
-  // A heading style restyles the whole paragraph, so its Formatted revision
-  // reports the paragraph's text — or, on Word for the web, NO text at all
-  // (an empty-string paragraph-format revision). Ranges only report the
-  // revisions they intersect, so an empty-text match stays scoped to the
-  // passage the caller is looking at. Character formats keep the strict
-  // equality match.
+  // A heading style or list detachment restyles the whole paragraph, so its
+  // Formatted revision reports the paragraph's text — or, on Word for the
+  // web, NO text at all (an empty-string paragraph-format revision). Ranges
+  // only report the revisions they intersect, so an empty-text match stays
+  // scoped to the passage the caller is looking at. Character formats keep
+  // the strict equality match.
   const styleScoped = (edit.format ?? []).some(isParagraphStyleFormat);
   const formattedTextMatches = (text: string): boolean =>
     styleScoped
@@ -2469,6 +2584,7 @@ export function useWordDoc() {
           let text: string;
           try {
             text = await renderBodyAsMarkdown(context, body);
+            text = withDocumentSelection(text, await readSelection(context));
           } catch (error) {
             console.warn(
               "Structured document read failed; sending flat text",
@@ -2847,7 +2963,7 @@ export function useWordDoc() {
                 let targetParagraph: Word.Paragraph | null = null;
                 try {
                   targetParagraph = target.paragraphs.getFirst() ?? null;
-                  targetParagraph?.load("text,tableNestingLevel");
+                  targetParagraph?.load("text,tableNestingLevel,isListItem");
                 } catch {
                   targetParagraph = null;
                 }
@@ -2910,6 +3026,18 @@ export function useWordDoc() {
                       else if (format === "italic") match.font.italic = true;
                       else if (format === "underline") {
                         match.font.underline = Word.UnderlineType.single;
+                      } else if (paragraphStyleFormatName(format)) {
+                        const styleName = paragraphStyleFormatName(format);
+                        if (styleName && targetParagraph) {
+                          targetParagraph.style = styleName;
+                        }
+                      } else if (format === "clearNumbering") {
+                        // Removes a list the paragraph style does not own.
+                        // A heading style's own numbering is left in place;
+                        // the typed number in the text is a separate edit.
+                        if (targetParagraph?.isListItem) {
+                          targetParagraph.detachFromList();
+                        }
                       } else if (isParagraphStyleFormat(format)) {
                         const styleByFormat = {
                           heading1: Word.BuiltInStyleName.heading1,

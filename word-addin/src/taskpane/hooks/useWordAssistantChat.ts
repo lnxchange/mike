@@ -8,7 +8,7 @@ import type {
   WordAssistantEvent,
   WordDocumentEdit,
 } from "../types";
-import type { RedlineEdit, WordEditFormat } from "../lib/redline";
+import { isWordEditFormat, type RedlineEdit } from "../lib/redline";
 import { TOOL_EDIT_INDEX_BASE } from "../lib/wordTrackedEditKeys";
 import { saveLocalWordMessage } from "../lib/localWordChats";
 import type { WordChatStorageMode } from "../lib/wordChatSettings";
@@ -61,15 +61,6 @@ function createMessageId(role: WordChatMessage["role"]): string {
   return `${role}-${Date.now()}-${localMessageSequence}`;
 }
 
-const WORD_EDIT_FORMATS: readonly string[] = [
-  "bold",
-  "italic",
-  "underline",
-  "heading1",
-  "heading2",
-  "heading3",
-];
-
 /**
  * Read one row of an apply_word_edits tool input. The backend validated the
  * batch before forwarding it, so anything rejected here is a protocol
@@ -81,8 +72,8 @@ function parseToolEdit(raw: unknown): RedlineEdit | null {
   if (typeof row.original !== "string" || !row.original) return null;
   const formats = Array.isArray(row.formats)
     ? row.formats.filter(
-        (format): format is WordEditFormat =>
-          typeof format === "string" && WORD_EDIT_FORMATS.includes(format),
+        (format): format is string =>
+          typeof format === "string" && isWordEditFormat(format),
       )
     : [];
   if (formats.length === 0 && typeof row.replacement !== "string") return null;

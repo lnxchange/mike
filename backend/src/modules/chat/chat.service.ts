@@ -105,5 +105,6 @@ export { generateAssistantChatTitle } from "./chat.title";
 export {
   persistWordDocumentEdits,
   WORD_EDIT_FORMATS,
+  isAllowedWordEditFormat,
   type WordEditApplyMode,
 } from "./engine/wordDocumentEdits";

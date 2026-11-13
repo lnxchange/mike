@@ -175,6 +175,92 @@ test("a heading format applies the paragraph style as a reviewable tracked chang
   ]);
 });
 
+test("a document style name restyles the paragraph", async ({
+  addin,
+  page,
+}) => {
+  await addin.mockChatStream([
+    wordEdits(
+      formatEdit(
+        "Liability",
+        ["style:Heading 2"],
+        "Use the document's numbered heading style.",
+      ),
+    ),
+  ]);
+  await addin.gotoTaskpane({
+    documentText: "Liability The Supplier is liable.",
+    documentBlocks: [
+      { text: "Liability", style: "Normal" },
+      { text: "The Supplier is liable." },
+    ],
+  });
+  await addin.expectAuthedShell();
+
+  await page.getByPlaceholder("How can I help?").fill("Make it a heading");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+
+  await expect
+    .poll(async () => (await addin.wordCalls()).trackedChanges)
+    .toEqual([
+      {
+        text: "Liability",
+        location: "Format:styleName:Heading 2",
+        original: "Liability",
+      },
+    ]);
+  await expect(page.locator("[data-edit-status='pending']")).toContainText(
+    "style Heading 2",
+  );
+});
+
+test("clearNumbering detaches a list the paragraph style does not own", async ({
+  addin,
+  page,
+}) => {
+  await addin.mockChatStream([
+    wordEdits(
+      formatEdit(
+        "2 Liability.",
+        ["clearNumbering"],
+        "Remove a list the paragraph style does not own.",
+      ),
+    ),
+  ]);
+  await addin.gotoTaskpane({
+    documentText: "2 Liability. The Supplier is liable.",
+    documentBlocks: [
+      { text: "2 Liability.", listString: "1.", listLevel: 0 },
+      { text: "The Supplier is liable." },
+    ],
+  });
+  await addin.expectAuthedShell();
+
+  await page
+    .getByPlaceholder("How can I help?")
+    .fill("Fix the heading numbering");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+
+  await expect
+    .poll(async () => (await addin.wordCalls()).trackedChanges)
+    .toEqual([
+      {
+        text: "2 Liability.",
+        location: "Format:list:clear",
+        original: "2 Liability.",
+      },
+    ]);
+  expect((await addin.wordCalls()).inserts).toEqual([]);
+  const card = page.locator("[data-edit-status='pending']");
+  await expect(card).toContainText("remove numbering");
+  await expect(card).toContainText("2 Liability.");
+
+  await page.getByRole("button", { name: "Accept", exact: true }).click();
+  await expect(page.getByText("Accepted.", { exact: true })).toBeVisible();
+});
+
 test("a format block naming no recognized formatting settles as incomplete and never touches Word", async ({
   addin,
   page,

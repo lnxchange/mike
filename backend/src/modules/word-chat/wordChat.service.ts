@@ -39,6 +39,7 @@ import {
   persistLastSelectedChatModel,
   persistLastSelectedReasoningLevel,
 } from "../user/user.service";
+import { wordTurnReasoningLevel } from "./wordTurnReasoning";
 import {
   resolveEffectiveChatModel,
   resolveEffectiveReasoningLevel,
@@ -834,7 +835,13 @@ export async function prepareWordChatStream(
         workflowStore,
         apiKeys,
         selectedModel,
-        selectedReasoningLevel,
+        // The stored level is the user's choice. A question or a direct edit
+        // does not spend a High setting on this turn.
+        selectedReasoningLevel: wordTurnReasoningLevel({
+          selected: selectedReasoningLevel,
+          content: lastUser?.content,
+          workflow: lastUser?.workflow,
+        }),
         nonce,
         legalResearch,
       },
