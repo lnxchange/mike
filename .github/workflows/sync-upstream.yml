@@ -1,12 +1,12 @@
 # Keep this fork current with open-legal-products/mike.
 #
-# main is a clean mirror of upstream plus this workflow file. Fast-forward
+# main is a clean mirror of upstream plus these workflow files. Fast-forward
 # when possible; merge when we are only ahead by this infrastructure commit.
 # Any textual conflict on main is treated as a break in that invariant and
 # is escalated, never auto-resolved.
 #
 # The customized working branch is never updated in place. A clean merge
-# opens a PR (human glance + CI). Auto-merge runs only after CI is green.
+# opens a PR. Auto-merge runs only after CI is green.
 # A conflicted merge is aborted and filed as an issue.
 name: Sync upstream
 
@@ -27,11 +27,6 @@ concurrency:
   group: sync-upstream
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
 env:
   UPSTREAM_URL: https://github.com/open-legal-products/mike.git
   WORKING_BRANCH: ${{ inputs.working_branch || 'cursor/setup-supabase-vercel-oss-cad9' }}
@@ -40,6 +35,8 @@ jobs:
   labels:
     name: Ensure labels
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
       - name: Create labels if missing
         env:
@@ -55,10 +52,12 @@ jobs:
     name: Update main from upstream
     needs: labels
     runs-on: ubuntu-latest
-    outputs:
-      conflict: ${{ steps.sync.outputs.conflict }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: main
@@ -73,13 +72,10 @@ jobs:
           git fetch --no-tags upstream main
 
       - name: Fast-forward or merge upstream/main
-        id: sync
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "conflict=false" >> "$GITHUB_OUTPUT"
-
           git checkout main
           git reset --hard origin/main
 
@@ -101,13 +97,12 @@ jobs:
             exit 0
           fi
 
-          echo "conflict=true" >> "$GITHUB_OUTPUT"
           CONFLICTED="$(git diff --name-only --diff-filter=U | sed 's/^/- /' || true)"
           git merge --abort
           BODY="$(cat <<EOF
           Automated sync of \`upstream/main\` into \`main\` hit a textual conflict.
 
-          \`main\` is supposed to stay a clean mirror of \`open-legal-products/mike\` (plus this workflow file). A conflict means something unexpected landed on \`main\`. Do not force-push; inspect the commits that are not in upstream.
+          \`main\` is supposed to stay a clean mirror of \`open-legal-products/mike\` (plus these workflow files). A conflict means something unexpected landed on \`main\`. Do not force-push; inspect the commits that are not in upstream.
 
           Conflicted files:
 
@@ -136,8 +131,12 @@ jobs:
     needs: [labels, sync-main]
     if: needs.sync-main.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: main
@@ -171,7 +170,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "conflict=false" >> "$GITHUB_OUTPUT"
           echo "noop=false" >> "$GITHUB_OUTPUT"
 
           git checkout -B "$WORKING_BRANCH" "origin/$WORKING_BRANCH"
@@ -193,7 +191,6 @@ jobs:
             exit 0
           fi
 
-          echo "conflict=true" >> "$GITHUB_OUTPUT"
           CONFLICTED="$(git diff --name-only --diff-filter=U | sed 's/^/- /' || true)"
           git merge --abort
           BODY="$(cat <<EOF
@@ -231,7 +228,7 @@ jobs:
           exit 1
 
       - name: Open PR and enable auto-merge
-        if: steps.existing.outputs.skip != 'true' && steps.merge.outputs.noop != 'true' && steps.merge.outputs.conflict != 'true'
+        if: steps.existing.outputs.skip != 'true' && steps.merge.outputs.noop != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
