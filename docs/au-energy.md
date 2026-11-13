@@ -154,6 +154,11 @@ South Australian pages are sometimes bot-protected. The matching adoption
 Act can still be tried when the question is about how the Law applies in
 NSW, Queensland, or the ACT. Cite the official URL, not Exa.
 
+A contents-page line is not the provision. If the compilation only has the
+heading, the same read fetches the official HTML page (NSW, Queensland, ACT,
+or the South Australian instrument page), through Exa Contents when that
+host blocks Mike, and returns the operative text or an explicit miss.
+
 If an instrument id is rejected, search again rather than constructing an
 id. Ids look like `esc:ercop`, `aemc:nerr`, `sa:nerl`, `aer:hardship`, or
 `aemo:msats`.

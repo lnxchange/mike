@@ -2,6 +2,12 @@ import { mapWithConcurrency } from "./concurrency";
 import { extractDocxBodyText } from "./docxTrackedChanges";
 import { fetchExaContents, type ExaContentsFetch } from "./exaContents";
 import {
+    isOperativeProvision,
+    loadOfficialHtmlText,
+    selectOperativeSlice,
+    slicesFromHeadings,
+} from "./operativeProvision";
+import {
     resolveLegalSourceText,
     type LegalSourceStore,
 } from "./legalSourceStore";
@@ -47,6 +53,8 @@ export class AuEnergyError extends Error {
     status?: number;
     kind?: OfficialSourceKind;
     officialUrl?: string;
+    /** The number was only a contents heading, not the provision. */
+    headingOnly?: boolean;
 
     constructor(message: string, status?: number) {
         super(message);
@@ -942,21 +950,24 @@ export function findEnergyClause(
     if (!isEnergyClauseNumber(wanted)) {
         return findEnergyPhrase(text, wanted);
     }
-    const headings = collectEnergyHeadings(text);
-    const startAt = headings.findIndex(
-        (heading) => heading.number === wanted.toLowerCase(),
+    const slices = slicesFromHeadings(
+        text,
+        collectEnergyHeadings(text),
+        wanted,
     );
-    if (startAt < 0) {
+    const operative = selectOperativeSlice(slices);
+    if (!operative) {
         const err = new AuEnergyError(
-            `Clause ${wanted} was not found in the fetched instrument.`,
+            slices.length
+                ? `Clause ${wanted} was found only as a heading in the fetched instrument.`
+                : `Clause ${wanted} was not found in the fetched instrument.`,
         );
         err.kind = "not_found";
+        err.headingOnly = slices.length > 0;
         throw err;
     }
-    const from = headings[startAt]!.index;
-    const to = headings[startAt + 1]?.index ?? text.length;
     return {
-        text: text.slice(from, to).trim(),
+        text: operative,
         clause: wanted,
         page: 1,
         pageCount: 1,
@@ -1346,14 +1357,7 @@ async function getEscText(
         },
         fetchExa: energyExaFetch(options),
     });
-    const found = options.returnFullText
-        ? {
-              text: loaded.fullText,
-              clause: null,
-              page: 1,
-              pageCount: 1,
-          }
-        : findEnergyClause(loaded.fullText, clause, page);
+    const passage = await energyPassage(instrument, loaded.fullText, options, clause, page);
     return {
         instrumentId: instrument.id,
         name: instrument.name,
@@ -1361,15 +1365,80 @@ async function getEscText(
         versionLabel: loaded.versionLabel ?? version.label,
         start: version.start,
         end: version.end,
-        url: loaded.officialUrl || officialUrl,
-        ...found,
+        url: passage.url || loaded.officialUrl || officialUrl,
+        ...passage.found,
         attribution: attribution(instrument),
-        retrievedVia: loaded.retrievedVia,
+        retrievedVia: passage.retrievedVia ?? loaded.retrievedVia,
         currencyStatus:
             loaded.currencyStatus === "superseded"
                 ? "unconfirmed"
                 : loaded.currencyStatus,
     };
+}
+
+const STATUTE_HTML_SOURCES = new Set<EnergySource>(["sa", "nsw", "qld", "act"]);
+
+function statuteHtmlUrl(instrument: EnergyInstrument): string | null {
+    if (!STATUTE_HTML_SOURCES.has(instrument.source)) return null;
+    const url = instrument.landingUrl.trim();
+    if (!url || /\.pdf(?:$|\?)/i.test(url)) return null;
+    return url;
+}
+
+function missingClauseBody(name: string, clause: string): AuEnergyError {
+    const err = new AuEnergyError(
+        `The body of clause ${clause} in ${name} was not in the compilation or on the official HTML page. Do not treat a contents heading as the provision.`,
+    );
+    err.kind = "not_found";
+    err.headingOnly = true;
+    return err;
+}
+
+async function energyPassage(
+    instrument: EnergyInstrument,
+    fullText: string,
+    options: EnergyOptions,
+    clause?: string,
+    page?: number,
+): Promise<{
+    found: { text: string; clause: string | null; page: number; pageCount: number };
+    url?: string;
+    retrievedVia?: "official" | "exa";
+}> {
+    if (options.returnFullText) {
+        return {
+            found: {
+                text: fullText,
+                clause: null,
+                page: 1,
+                pageCount: 1,
+            },
+        };
+    }
+    try {
+        return { found: findEnergyClause(fullText, clause, page) };
+    } catch (err) {
+        const htmlUrl = clause ? statuteHtmlUrl(instrument) : null;
+        const retry =
+            err instanceof AuEnergyError &&
+            (err.headingOnly === true || err.kind === "not_found");
+        if (!htmlUrl || !retry) throw err;
+        const html = await loadOfficialHtmlText({
+            url: htmlUrl,
+            fetchImpl: options.fetchImpl ?? defaultFetch,
+            exaFetch: energyExaFetch(options),
+        });
+        if (!html) throw missingClauseBody(instrument.name, clause!);
+        try {
+            return {
+                found: findEnergyClause(html.text, clause, page),
+                url: html.url,
+                retrievedVia: html.via,
+            };
+        } catch {
+            throw missingClauseBody(instrument.name, clause!);
+        }
+    }
 }
 
 async function getAemcText(
@@ -1428,6 +1497,15 @@ async function getAemcText(
             (typeof data?.content === "string" && data.content) ||
             (typeof data?.description === "string" && data.description) ||
             "";
+        const body = stripHtml(html);
+        if (!isOperativeProvision(body)) {
+            const err = new AuEnergyError(
+                `Clause ${node.index || clause} in ${instrument.name} was found only as a heading. The operative text was not in the AEMC content response.`,
+            );
+            err.kind = "not_found";
+            err.headingOnly = true;
+            throw err;
+        }
         const url = `${AEMC_WEB}/${instrument.aemcType}/${version.aemcVersionId}/${node.id}`;
         return {
             instrumentId: instrument.id,
@@ -1440,7 +1518,7 @@ async function getAemcText(
             clause: node.index || clause,
             page: 1,
             pageCount: 1,
-            text: stripHtml(html) || `${node.index} ${node.title}`.trim(),
+            text: body,
             attribution: attribution(instrument),
         };
     }
@@ -1492,14 +1570,13 @@ export async function getEnergyText(
         if (instrument.source === "aemc" || !options.store) throw err;
         const held = await options.store.lookupLatest("energy", instrument.id);
         if (!held) throw err;
-        const found = options.returnFullText
-            ? {
-                  text: held.fullText,
-                  clause: null,
-                  page: 1,
-                  pageCount: 1,
-              }
-            : findEnergyClause(held.fullText, options.clause, options.page);
+        const passage = await energyPassage(
+            instrument,
+            held.fullText,
+            options,
+            options.clause,
+            options.page,
+        );
         return {
             instrumentId: instrument.id,
             name: instrument.name,
@@ -1507,10 +1584,10 @@ export async function getEnergyText(
             versionLabel: held.versionLabel,
             start: null,
             end: null,
-            url: held.officialUrl || instrument.landingUrl,
-            ...found,
+            url: passage.url || held.officialUrl || instrument.landingUrl,
+            ...passage.found,
             attribution: attribution(instrument),
-            retrievedVia: "store",
+            retrievedVia: passage.retrievedVia ?? "store",
             currencyStatus: "unconfirmed",
         };
     }

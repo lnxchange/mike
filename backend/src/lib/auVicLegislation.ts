@@ -13,6 +13,11 @@ import {
     officialSourceUnavailableMessage,
     type OfficialSourceKind,
 } from "./officialSourceAccess";
+import {
+    loadOfficialHtmlText,
+    selectOperativeSlice,
+    slicesFromHeadings,
+} from "./operativeProvision";
 import { extractPdfText } from "./pdfText";
 import { devLog } from "./log";
 
@@ -27,6 +32,8 @@ export class AuVicError extends Error {
     status?: number;
     kind?: OfficialSourceKind;
     officialUrl?: string;
+    /** The number was only a contents heading, not the provision. */
+    headingOnly?: boolean;
 
     constructor(message: string, status?: number) {
         super(message);
@@ -725,23 +732,33 @@ export function findVicSection(
         };
     }
     const wanted = section.trim().replace(/^s(?:ection)?\s+/i, "");
-    const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const heading = new RegExp(
-        `(^|\\n)\\s*(?:section\\s+)?${escaped}\\b[\\s\\S]*?(?=\\n\\s*(?:section\\s+)?(?!${escaped}\\b)\\d+[A-Za-z]?(?:\\.\\d+)*\\s+[A-Za-z]|$)`,
-        "i",
-    );
-    const match = text.match(heading);
-    if (!match) {
-        throw new AuVicError(
-            `Section ${wanted} was not found in the fetched Victorian title.`,
+    const slices = slicesFromHeadings(text, collectVicHeadings(text), wanted);
+    const operative = selectOperativeSlice(slices);
+    if (!operative) {
+        const err = new AuVicError(
+            slices.length
+                ? `Section ${wanted} was found only as a heading in the fetched Victorian title.`
+                : `Section ${wanted} was not found in the fetched Victorian title.`,
         );
+        err.kind = "not_found";
+        err.headingOnly = slices.length > 0;
+        throw err;
     }
     return {
-        text: match[0].trim(),
+        text: operative,
         section: wanted,
         page: 1,
         pageCount: 1,
     };
+}
+
+function collectVicHeadings(text: string): { index: number; number: string }[] {
+    const heading =
+        /(?:^|\n)\s*(?:section\s+)?(\d+[A-Za-z]?(?:\.\d+)*)(?!\()(?=\s|[—–-])/gi;
+    return [...text.matchAll(heading)].map((match) => ({
+        index: match.index ?? 0,
+        number: (match[1] ?? "").toLowerCase(),
+    }));
 }
 
 export async function getVicLegislationText(
@@ -808,14 +825,12 @@ export async function getVicLegislationText(
         },
         fetchExa: options.exaFetch ?? (options.fetchImpl ? undefined : fetchExaContents),
     });
-    const found = options.returnFullText
-        ? {
-              text: loaded.fullText,
-              section: null,
-              page: 1,
-              pageCount: 1,
-          }
-        : findVicSection(loaded.fullText, options.section, options.page);
+    const passage = await vicPassage(
+        title,
+        version,
+        loaded.fullText,
+        options,
+    );
     devLog("[au-vic] get", {
         id: title.id,
         version: version.label,
@@ -828,9 +843,74 @@ export async function getVicLegislationText(
         versionLabel: version.label,
         start: version.start,
         end: version.end,
-        url: loaded.officialUrl || fileUrl,
-        ...found,
+        url: passage.url || loaded.officialUrl || fileUrl,
+        ...passage.found,
         attribution:
             "Legislative material © State of Victoria, sourced from legislation.vic.gov.au.",
     };
+}
+
+function missingSectionBody(name: string, section: string): AuVicError {
+    const err = new AuVicError(
+        `The body of section ${section} in ${name} was not in the authorised compilation or on the official HTML page. Do not treat a contents heading as the provision.`,
+    );
+    err.kind = "not_found";
+    err.headingOnly = true;
+    return err;
+}
+
+async function vicPassage(
+    title: VicTitle,
+    version: VicVersion,
+    fullText: string,
+    options: VicOptions & { section?: string; page?: number },
+): Promise<{
+    found: {
+        text: string;
+        section: string | null;
+        page: number;
+        pageCount: number;
+    };
+    url?: string;
+}> {
+    if (options.returnFullText) {
+        return {
+            found: {
+                text: fullText,
+                section: null,
+                page: 1,
+                pageCount: 1,
+            },
+        };
+    }
+    try {
+        return {
+            found: findVicSection(fullText, options.section, options.page),
+        };
+    } catch (err) {
+        const htmlUrl =
+            options.section && version.url && !/\.pdf(?:$|\?)/i.test(version.url)
+                ? version.url
+                : null;
+        const retry =
+            err instanceof AuVicError &&
+            (err.headingOnly === true || err.kind === "not_found");
+        if (!htmlUrl || !retry) throw err;
+        const html = await loadOfficialHtmlText({
+            url: htmlUrl,
+            fetchImpl: options.fetchImpl ?? fetch,
+            exaFetch:
+                options.exaFetch ??
+                (options.fetchImpl ? undefined : fetchExaContents),
+        });
+        if (!html) throw missingSectionBody(title.name, options.section!);
+        try {
+            return {
+                found: findVicSection(html.text, options.section, options.page),
+                url: html.url,
+            };
+        } catch {
+            throw missingSectionBody(title.name, options.section!);
+        }
+    }
 }

@@ -229,6 +229,34 @@ describe("energy clause extraction", () => {
             /not found/,
         );
     });
+
+    it("returns the operative provision, not the contents heading", () => {
+        const text = [
+            "Contents",
+            "54 Deemed customer retail arrangements",
+            "55 Price",
+            "64 Large customer",
+            "54 Deemed customer retail arrangements",
+            "(1) A retailer is taken to have a deemed arrangement.",
+            "(2) The arrangement ends in the circumstances set out below.",
+            "55 Price",
+            "The price is the standing offer price.",
+        ].join("\n");
+        const clause = findEnergyClause(text, "54");
+        expect(clause.text).toContain("deemed arrangement");
+        expect(clause.text).toContain("(2)");
+        expect(clause.text).not.toContain("64 Large customer");
+        expect(() =>
+            findEnergyClause(
+                [
+                    "54 Deemed customer retail arrangements",
+                    "55 Price",
+                    "64 Large customer",
+                ].join("\n"),
+                "54",
+            ),
+        ).toThrow(/only as a heading/);
+    });
 });
 
 describe("energy instrument search", () => {
@@ -292,6 +320,61 @@ describe("getEnergyText against recorded responses", () => {
         expect(fetched.clause).toBe("71");
         expect(fetched.text).toContain("commission must publish");
         expect(fetched.url).toContain(".docx");
+    });
+
+    it("does not treat an empty AEMC content response as the clause", async () => {
+        await expect(
+            getEnergyText("nerr", {
+                clause: "3",
+                fetchImpl: async (url) => {
+                    const href = String(url);
+                    if (href.includes("/versions")) return Response.json(AEMC_VERSIONS);
+                    if (href.endsWith("/toc")) return Response.json(AEMC_TOC);
+                    if (href.includes("/content/10")) {
+                        return Response.json({
+                            data: { id: 10, index: "3", title: "Application", content: "" },
+                        });
+                    }
+                    throw new Error(`unexpected ${url}`);
+                },
+            }),
+        ).rejects.toThrow(/only as a heading/);
+    });
+
+    it("reads the operative South Australian section from the official HTML page", async () => {
+        const fetched = await getEnergyText("sa:nerl", {
+            clause: "54",
+            fetchImpl: async (url) => {
+                const href = String(url);
+                if (href.includes(".pdf")) {
+                    return new Response(Buffer.from("%PDF"), { status: 200 });
+                }
+                if (href.includes("legislation.sa.gov.au")) {
+                    return new Response(
+                        [
+                            "<h1>Contents</h1><p>54 Deemed customer retail arrangements</p>",
+                            "<h2>54 Deemed customer retail arrangements</h2>",
+                            "<p>(1) A retailer is taken to have a deemed customer retail arrangement.</p>",
+                            "<p>(2) The arrangement continues until it ends under this section.</p>",
+                            "<h2>55 Price</h2>",
+                        ].join(""),
+                        { status: 200, headers: { "Content-Type": "text/html" } },
+                    );
+                }
+                throw new Error(`unexpected ${url}`);
+            },
+            extractPdf: async () =>
+                [
+                    "54 Deemed customer retail arrangements",
+                    "55 Price",
+                    "64 Large customer",
+                ].join("\n"),
+        });
+        expect(fetched.text).toContain("deemed customer retail arrangement");
+        expect(fetched.text).toContain("(2)");
+        expect(fetched.url).toContain("legislation.sa.gov.au");
+        expect(fetched.url).not.toContain(".pdf");
+        expect(fetched.retrievedVia).toBe("official");
     });
 
     it("reads an AEMC clause from the rules API", async () => {

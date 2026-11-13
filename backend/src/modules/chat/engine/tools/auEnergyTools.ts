@@ -17,7 +17,7 @@ Use the energy tools for Victorian energy codes and determinations, the national
 Workflow:
 1. If you already know the instrument id (for example esc:ercop, sa:nerl, or aemc:nerr), call au_get_energy with that id. Do not call au_search_energy first.
 2. Search with au_search_energy only when you need an id.
-3. Read with au_get_energy. The clause argument may be a clause number (71, 120B, 3) or a heading or defined term (Definitions, small customer). One get of the instrument plus that phrase is enough. Do not hunt with six tool rounds. If the definition only points to an Act, say so and continue the user's actual task.
+3. Read with au_get_energy. The clause argument may be a clause number (71, 120B, 3) or a heading or defined term (Definitions, small customer). One get of the instrument plus that phrase is enough. Do not hunt with six tool rounds. A contents heading is not a successful read: the tool returns the operative provision, or says the body was not retrieved. Do not confirm a provision from a heading. If the definition only points to an Act, say so and continue the user's actual task.
 4. For the instrument as it stood on a date, call au_get_energy_as_at with yyyy-mm-dd.
 5. For version history, call au_energy_versions rather than fetching two full instruments.
 6. After an instrument has been fetched in this turn, use au_find_in_energy for short 1-3 word probes. Maximum 3 searches per assistant turn.

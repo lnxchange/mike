@@ -54,5 +54,10 @@ If legislation.vic.gov.au blocks a download, the server may pull the
 authorised text through Exa Contents when `EXA_API_KEY` is set, or reuse
 a held copy after a currency check. Cite the official URL, not Exa.
 
+A contents-page line is not the section. If the authorised PDF only has
+the heading, the same read fetches the legislation.vic.gov.au HTML page
+for that Act, through Exa Contents when the host blocks Mike, and returns
+the operative text or an explicit miss.
+
 If a title id is rejected, search again rather than constructing an id.
 Ids look like `vic:electricity-industry-act-2000`.

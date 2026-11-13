@@ -16,7 +16,7 @@ Use the Victorian legislation tools for Victorian Acts and statutory rules on le
 
 Workflow:
 1. Search with au_search_vic_legislation to obtain a title id (for example vic:electricity-industry-act-2000). Do not guess ids.
-2. Read the current authorised compilation with au_get_vic_legislation. Prefer a section.
+2. Read the current authorised compilation with au_get_vic_legislation. Prefer a section. A contents heading is not a successful read: the tool returns the operative provision, or says the body was not retrieved. Do not confirm a section from a heading.
 3. For the law as it stood on a date, call au_get_vic_legislation_as_at with yyyy-mm-dd.
 4. For version history, call au_vic_legislation_versions rather than fetching two full Acts.
 5. After a title has been fetched in this turn, use au_find_in_vic_legislation for short 1-3 word probes. Maximum 3 searches per assistant turn.

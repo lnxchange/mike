@@ -127,6 +127,31 @@ describe("Victorian section extraction", () => {
         expect(findVicSection(text, "40").text).not.toContain("Further condition");
         expect(findVicSection(text).pageCount).toBe(1);
     });
+
+    it("returns the operative section, not the contents heading", () => {
+        const text = [
+            "Contents",
+            "39 Deemed contracts for relevant customers",
+            "40 Licence conditions",
+            "39 Deemed contracts for relevant customers",
+            "(1) A relevant customer is taken to have a deemed contract.",
+            "(7) The contract ends only under this subsection if the customer was never billed.",
+            "40 Licence conditions",
+        ].join("\n");
+        const section = findVicSection(text, "39");
+        expect(section.text).toContain("deemed contract");
+        expect(section.text).toContain("(7)");
+        expect(section.text).not.toContain("40 Licence");
+        expect(() =>
+            findVicSection(
+                [
+                    "39 Deemed contracts for relevant customers",
+                    "40 Licence conditions",
+                ].join("\n"),
+                "39",
+            ),
+        ).toThrow(/only as a heading/);
+    });
 });
 
 describe("getVicLegislationText against recorded responses", () => {
@@ -152,6 +177,44 @@ describe("getVicLegislationText against recorded responses", () => {
         expect(fetched.section).toBe("40");
         expect(fetched.text).toContain("licensee must comply");
         expect(fetched.url).toContain("authorised.pdf");
+    });
+
+    it("reads the operative section from the official HTML page when the PDF is a contents list", async () => {
+        const fetched = await getVicLegislationText(
+            "Electricity Industry Act 2000",
+            {
+                section: "39",
+                fetchImpl: async (url) => {
+                    const href = String(url);
+                    if (href.includes("/api/tide/page")) return Response.json(TIDE_PAGE);
+                    if (href.includes("authorised.pdf")) {
+                        return new Response(Buffer.from("%PDF"), { status: 200 });
+                    }
+                    if (href.includes("/in-force/acts/electricity-industry-act-2000")) {
+                        return new Response(
+                            [
+                                "<p>39 Deemed contracts for relevant customers</p>",
+                                "<h2>39 Deemed contracts for relevant customers</h2>",
+                                "<p>(1) A relevant customer is taken to have a deemed contract with the licensee.</p>",
+                                "<p>(7) If the customer was never billed, the contract ends only under this subsection.</p>",
+                                "<h2>40 Licence conditions</h2>",
+                            ].join(""),
+                            { status: 200 },
+                        );
+                    }
+                    throw new Error(`unexpected ${url}`);
+                },
+                extractPdf: async () =>
+                    [
+                        "39 Deemed contracts for relevant customers",
+                        "40 Licence conditions",
+                    ].join("\n"),
+            },
+        );
+        expect(fetched.section).toBe("39");
+        expect(fetched.text).toContain("never billed");
+        expect(fetched.url).toContain("legislation.vic.gov.au");
+        expect(fetched.url).not.toContain(".pdf");
     });
 
     it("falls back to the curated catalog when Tide has no page", async () => {
