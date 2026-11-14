@@ -370,6 +370,9 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     // Outlook: the message's own attachments go through exactly the same
     // upload session and chips as files picked from the desktop.
     const handleEmailAttachments = async (): Promise<void> => {
+      // Capture the chat generation before the mailbox read. A switch while
+      // the attachments are loading must not file them onto the next chat.
+      const generation = uploadGenerationRef.current;
       let read: EmailAttachmentRead;
       try {
         read = await readComposeAttachmentFiles();
@@ -377,6 +380,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         notifyError(error, { action: "read the email attachments" });
         return;
       }
+      if (generation !== uploadGenerationRef.current) return;
       if (read.files.length === 0) {
         setDocumentUploadError(
           read.skipped.length > 0
@@ -385,13 +389,16 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         );
         return;
       }
-      await uploadComposerFiles(read.files);
+      await uploadComposerFiles(read.files, generation);
     };
 
-    const uploadComposerFiles = async (files: File[]): Promise<void> => {
+    const uploadComposerFiles = async (
+      files: File[],
+      startedGeneration?: number,
+    ): Promise<void> => {
       if (files.length === 0) return;
 
-      const generation = uploadGenerationRef.current;
+      const generation = startedGeneration ?? uploadGenerationRef.current;
       const { supported, unsupported } = partitionSupportedDocumentFiles(files);
       if (supported.length === 0) {
         setDocumentUploadError(
