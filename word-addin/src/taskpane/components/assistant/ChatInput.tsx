@@ -46,6 +46,11 @@ import type { WordEditApplyMode } from "../../lib/wordChatSettings";
 import { AddDocumentsModal } from "../documents/AddDocumentsModal";
 import { FileTypeIcon } from "../documents/DirectoryIcons";
 import { DocumentSourceMenu } from "../documents/DocumentSourceMenu";
+import { isOutlookHost } from "../../lib/officeHost";
+import {
+  readComposeAttachmentFiles,
+  type EmailAttachmentRead,
+} from "../../lib/outlookCompose";
 import { ModelToggle } from "./ModelToggle";
 import {
   DEFAULT_WORD_REASONING_LEVEL,
@@ -359,9 +364,41 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     ): Promise<void> => {
       const files = Array.from(event.target.files ?? []);
       event.target.value = "";
+      await uploadComposerFiles(files);
+    };
+
+    // Outlook: the message's own attachments go through exactly the same
+    // upload session and chips as files picked from the desktop.
+    const handleEmailAttachments = async (): Promise<void> => {
+      // Capture the chat generation before the mailbox read. A switch while
+      // the attachments are loading must not file them onto the next chat.
+      const generation = uploadGenerationRef.current;
+      let read: EmailAttachmentRead;
+      try {
+        read = await readComposeAttachmentFiles();
+      } catch (error) {
+        notifyError(error, { action: "read the email attachments" });
+        return;
+      }
+      if (generation !== uploadGenerationRef.current) return;
+      if (read.files.length === 0) {
+        setDocumentUploadError(
+          read.skipped.length > 0
+            ? "These attachments are links or attached items and cannot be read."
+            : "This email has no attachments.",
+        );
+        return;
+      }
+      await uploadComposerFiles(read.files, generation);
+    };
+
+    const uploadComposerFiles = async (
+      files: File[],
+      startedGeneration?: number,
+    ): Promise<void> => {
       if (files.length === 0) return;
 
-      const generation = uploadGenerationRef.current;
+      const generation = startedGeneration ?? uploadGenerationRef.current;
       const { supported, unsupported } = partitionSupportedDocumentFiles(files);
       if (supported.length === 0) {
         setDocumentUploadError(
@@ -691,6 +728,11 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
                       setPlaybookModalInitialId(undefined);
                       setPlaybookModalOpen(true);
                     }}
+                    onEmailAttachments={
+                      isOutlookHost()
+                        ? () => void handleEmailAttachments()
+                        : undefined
+                    }
                   />
                   <EditApplyModeMenu
                     mode={editApplyMode}
