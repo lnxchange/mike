@@ -4157,6 +4157,7 @@ export async function runToolCalls(
             typeof args.negative_prompt === "string" ? args.negative_prompt : undefined,
           projectId: projectId ?? null,
           orgId: options.orgId ?? null,
+          signal: options.signal,
         },
       );
       const generatedType =

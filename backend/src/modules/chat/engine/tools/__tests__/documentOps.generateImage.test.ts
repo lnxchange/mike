@@ -59,9 +59,20 @@ describe("generateImage", () => {
     expect(result).toMatchObject({ filename: "Timeline.png", document_id: "doc-1" });
     expect(mocks.uploadFile.mock.calls[0]![2]).toBe("image/png");
     expect(mocks.docxToPdf).not.toHaveBeenCalled();
-    expect(mocks.enqueueConversion).toHaveBeenCalledWith(
-      expect.objectContaining({ fileType: "png", finalizeDocumentStatus: false }),
-    );
+    expect(mocks.enqueueConversion).not.toHaveBeenCalled();
+  });
+
+  it("does not store the image after the turn is stopped", async () => {
+    const controller = new AbortController();
+    mocks.generateImageBytes.mockImplementation(async () => {
+      controller.abort();
+      return { bytes: PNG, extension: "png", mimeType: "image/png" };
+    });
+    const result = await generateImage("Timeline", "a timeline", "user-1", fakeDb() as never, {
+      signal: controller.signal,
+    });
+    expect(result).toMatchObject({ error_kind: "image_generation.aborted" });
+    expect(mocks.uploadFile).not.toHaveBeenCalled();
   });
 
   it("answers with a configuration message when the feature is off", async () => {

@@ -59,6 +59,21 @@ describe("readImageGenConfig", () => {
     ).toBe(false);
   });
 
+  it("withholds an Azure key unless the endpoint is an Azure host", () => {
+    const missing = readImageGenConfig({
+      IMAGE_GEN_PROVIDER: "azure",
+      AZURE_API_KEY: "az",
+    } as never);
+    expect(missing.apiKey).toBeUndefined();
+    expect(missing.enabled).toBe(false);
+    const other = readImageGenConfig({
+      IMAGE_GEN_PROVIDER: "azure",
+      IMAGE_GEN_API_URL: "https://api.openai.com/v1/images/generations",
+      AZURE_API_KEY: "az",
+    } as never);
+    expect(other.apiKey).toBeUndefined();
+  });
+
   it("uses the api-key header for Azure", () => {
     const cfg = readImageGenConfig({
       IMAGE_GEN_PROVIDER: "azure",

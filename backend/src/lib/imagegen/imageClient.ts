@@ -127,6 +127,15 @@ function isOpenAiHost(urlString: string): boolean {
   }
 }
 
+function isAzureHost(urlString: string): boolean {
+  try {
+    const host = new URL(urlString).hostname.toLowerCase();
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
 export function buildImageGenUrl(baseUrl: string, protocol: ImageGenProtocol): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   if (protocol === "automatic1111") {
@@ -183,7 +192,8 @@ function resolveApiKey(
         ? env.OPENAI_API_KEY?.trim() || undefined
         : undefined;
     case "azure":
-      return env.AZURE_API_KEY?.trim() || undefined;
+      // An Azure key is only sent to an explicit Azure OpenAI host.
+      return isAzureHost(url) ? env.AZURE_API_KEY?.trim() || undefined : undefined;
     default:
       return undefined;
   }
@@ -342,35 +352,37 @@ async function postJson(
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
   const forward = () => controller.abort();
   signal?.addEventListener("abort", forward, { once: true });
-  let response: Response;
   try {
-    response = await fetchImpl(cfg.url, {
-      method: "POST",
-      headers: buildImageGenHeaders(cfg),
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (cause) {
-    throw new AppError(
-      controller.signal.aborted ? "image_generation.timeout" : "image_generation.network_failed",
-      "Image generation request failed",
-      { cause },
-    );
+    let response: Response;
+    try {
+      response = await fetchImpl(cfg.url, {
+        method: "POST",
+        headers: buildImageGenHeaders(cfg),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (cause) {
+      throw new AppError(
+        controller.signal.aborted ? "image_generation.timeout" : "image_generation.network_failed",
+        "Image generation request failed",
+        { cause },
+      );
+    }
+    if (!response.ok) {
+      throw new AppError("image_generation.http_failed", "Image endpoint returned an error status", {
+        cause: { status: response.status },
+      });
+    }
+    try {
+      return await response.json();
+    } catch (cause) {
+      throw new AppError("image_generation.invalid_response", "Image endpoint returned non-JSON body", {
+        cause,
+      });
+    }
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", forward);
-  }
-  if (!response.ok) {
-    throw new AppError("image_generation.http_failed", "Image endpoint returned an error status", {
-      cause: { status: response.status },
-    });
-  }
-  try {
-    return await response.json();
-  } catch (cause) {
-    throw new AppError("image_generation.invalid_response", "Image endpoint returned non-JSON body", {
-      cause,
-    });
   }
 }
 

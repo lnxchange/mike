@@ -1074,19 +1074,14 @@ async function persistGeneratedFile(params: {
   );
 
   // PPTX is the only generated type that pays for LibreOffice here (XLSX is
-  // never converted — spreadsheets are served raw). With the async flag on,
-  // the rendition rides the conversion queue instead: the document is
-  // inserted without one and a job fills it in with retries — closing the
-  // sync path's silent failure mode where a LibreOffice hiccup left the doc
-  // permanently rendition-less.
+  // never converted — spreadsheets are served raw, and PNG/JPEG stay rasters).
+  // With the async flag on, the rendition rides the conversion queue instead:
+  // the document is inserted without one and a job fills it in with retries —
+  // closing the sync path's silent failure mode where a LibreOffice hiccup
+  // left the doc permanently rendition-less.
   let pdfStoragePath: string | null = null;
-  // Generated images always take the queue: docxToPdf(buffer) has no file
-  // name for LibreOffice to infer a raster import filter from, while the
-  // conversion job is told the file type.
-  const isGeneratedImage = extension === "png" || extension === "jpg";
   const deferRenditionToQueue =
-    shouldConvertToPdf(extension) &&
-    (isGeneratedImage || process.env.ASYNC_DOCUMENT_CONVERSION === "true");
+    shouldConvertToPdf(extension) && process.env.ASYNC_DOCUMENT_CONVERSION === "true";
   if (shouldConvertToPdf(extension) && !deferRenditionToQueue) {
     try {
       const pdfBuf = await docxToPdf(buffer);
@@ -1220,6 +1215,12 @@ export async function generateImage(
           ? "The image engine did not answer in time. Tell the user and suggest trying again later."
           : "The image engine could not produce an image for this request. Tell the user; do not retry the same prompt.",
       error_kind: kind,
+    };
+  }
+  if (options?.signal?.aborted) {
+    return {
+      error: "Image generation was stopped before the file was saved.",
+      error_kind: "image_generation.aborted",
     };
   }
   const result = await persistGeneratedFile({
