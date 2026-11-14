@@ -2867,14 +2867,14 @@ async function readWordReviewChanges(
     } catch (error) {
       console.warn(
         "Desktop revision read failed; trying tracked changes",
-        getErrorMessage(error),
+        logErrorMessage(error),
       );
     }
   }
   try {
     return { ...(await readTrackedReviewChanges(context, body)), unread: false };
   } catch (error) {
-    console.warn("Tracked-change read failed", getErrorMessage(error));
+    console.warn("Tracked-change read failed", logErrorMessage(error));
     return { changes: [], formattingCount: 0, unread: true };
   }
 }
@@ -3010,7 +3010,7 @@ async function readWordReviewComments(
       repliesUnread = true;
       console.warn(
         "Comment replies could not be read; sending the parent bubbles",
-        getErrorMessage(error),
+        logErrorMessage(error),
       );
     }
     return {
@@ -3032,7 +3032,7 @@ async function readWordReviewComments(
       })),
     };
   } catch (error) {
-    console.warn("Comment read failed", getErrorMessage(error));
+    console.warn("Comment read failed", logErrorMessage(error));
     return { comments: [], unread: true };
   }
 }
@@ -3093,7 +3093,7 @@ export function useWordDoc() {
           } catch (error) {
             console.warn(
               "Review markup read failed; sending the body with that stated",
-              getErrorMessage(error),
+              logErrorMessage(error),
             );
             return `${text}\n\n${formatWordReviewSection({
               changes: [],
@@ -3176,7 +3176,7 @@ export function useWordDoc() {
               results.push({
                 id: "",
                 status: "error",
-                error: getErrorMessage(error),
+                error: logErrorMessage(error),
               });
             }
           }
