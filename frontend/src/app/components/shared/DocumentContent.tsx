@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PdfView } from "./views/PdfView";
 import { DocxView } from "./views/DocxView";
 import type { DocxCloseGuard, DocxSaveState } from "./views/DocxRenderer.types";
+import { ImageDocumentView } from "./views/ImageDocumentView";
 import { SpreadsheetView } from "./views/SpreadsheetView";
 import {
     CitationQuotesSection,
@@ -334,6 +335,13 @@ export function DocumentContent({
                         onWarningDismiss={onWarningDismiss}
                         initialScrollTop={initialScrollTop ?? null}
                         onScrollChange={onScrollChange}
+                    />
+                ) : viewType === "image" ? (
+                    <ImageDocumentView
+                        documentId={documentId}
+                        versionId={versionId}
+                        refetchKey={refetchKey}
+                        alt={resolvedDocument.title}
                     />
                 ) : viewType === "spreadsheet" ? (
                     <SpreadsheetView

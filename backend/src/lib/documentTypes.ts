@@ -14,10 +14,13 @@ export const ALLOWED_DOCUMENT_TYPES = new Set([
   // A container, not a document: the worker expands it into one document per
   // supported entry, preserving its folder structure, and keeps no zip row.
   "zip",
+  "png",
+  "jpg",
+  "jpeg",
 ]);
 
 export const ALLOWED_DOCUMENT_TYPES_LABEL =
-  "pdf, docx, doc, xlsx, xlsm, xls, pptx, ppt, eml, msg, zip";
+  "pdf, docx, doc, xlsx, xlsm, xls, pptx, ppt, eml, msg, zip, png, jpg, jpeg";
 
 const EMAIL_TYPES = new Set(["eml", "msg"]);
 const ARCHIVE_TYPES = new Set(["zip"]);
@@ -49,6 +52,7 @@ export function documentSuffix(filename: string): string {
 const WORD_TYPES = new Set(["docx", "doc"]);
 const SPREADSHEET_TYPES = new Set(["xlsx", "xlsm", "xls"]);
 const PRESENTATION_TYPES = new Set(["pptx", "ppt"]);
+const IMAGE_TYPES = new Set(["png", "jpg", "jpeg"]);
 
 export function isWordDocumentType(fileType: string | null | undefined) {
   return WORD_TYPES.has((fileType ?? "").toLowerCase());
@@ -62,11 +66,14 @@ export function isPresentationDocumentType(fileType: string | null | undefined) 
   return PRESENTATION_TYPES.has((fileType ?? "").toLowerCase());
 }
 
+export function isImageDocumentType(fileType: string | null | undefined) {
+  return IMAGE_TYPES.has((fileType ?? "").toLowerCase());
+}
+
 export function shouldConvertToPdf(fileType: string | null | undefined) {
   const normalized = (fileType ?? "").toLowerCase();
-  // Spreadsheets are intentionally excluded: they are rendered natively as a
-  // grid in the frontend (Fortune-sheet) from the raw file bytes rather than a
-  // PDF rendition, which clipped wide/large sheets.
+  // Spreadsheets are rendered as a grid, and images stay rasters. Neither
+  // goes through LibreOffice for a PDF rendition.
   return (
     isWordDocumentType(normalized) || isPresentationDocumentType(normalized)
   );
@@ -76,9 +83,9 @@ export function shouldConvertToPdf(fileType: string | null | undefined) {
  * The types whose text can only be read by round-tripping the file through
  * LibreOffice. Every other allowed type has an in-process reader — docx via
  * the tracked-changes extractor (mammoth as fallback), pptx via officeText,
- * spreadsheets via SheetJS, pdf via pdfjs — so .doc and .ppt are the only
- * ones read_document pays a subprocess conversion for, and therefore the only
- * ones worth precomputing and caching.
+ * spreadsheets via SheetJS, pdf via pdfjs, images via Mistral OCR — so .doc
+ * and .ppt are the only ones read_document pays a subprocess conversion for,
+ * and therefore the only ones worth precomputing and caching.
  */
 export function requiresLibreOfficeTextExtraction(
   fileType: string | null | undefined,
@@ -111,6 +118,11 @@ export function contentTypeForDocumentType(fileType: string | null | undefined) 
       return "application/vnd.ms-outlook";
     case "zip":
       return "application/zip";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
     default:
       return "application/octet-stream";
   }

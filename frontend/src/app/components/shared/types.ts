@@ -731,6 +731,9 @@ export function panelDocumentType(filename: string): PanelDocumentType {
   if (extension === "xlsx" || extension === "xlsm" || extension === "xls") {
     return "spreadsheet";
   }
+  if (extension === "png" || extension === "jpg" || extension === "jpeg") {
+    return "image";
+  }
   return "pdf";
 }
 

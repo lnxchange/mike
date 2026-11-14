@@ -117,6 +117,9 @@ describe("contentTypeForDocumentType", () => {
             eml: "message/rfc822",
             msg: "application/vnd.ms-outlook",
             zip: "application/zip",
+            png: "image/png",
+            jpg: "image/jpeg",
+            jpeg: "image/jpeg",
         };
         for (const type of ALLOWED_DOCUMENT_TYPES) {
             expect(contentTypeForDocumentType(type)).toBe(expected[type]);

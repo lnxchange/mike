@@ -5,7 +5,8 @@ import { DbJobDeferredError, type Db, type DbJob } from "../../lib/dbq/types";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import { AppError } from "../../lib/appError";
 import { reportError, setOperation } from "../../lib/observability/sentry";
-import { enrichExtractedPdfText, ocrEnabled } from "../../lib/ocr/ocrClient";
+import { enrichExtractedPdfText, extractImageOcrText, ocrEnabled } from "../../lib/ocr/ocrClient";
+import { contentTypeForDocumentType, isImageDocumentType } from "../../lib/documentTypes";
 
 export { extractDocumentText } from "../../lib/extraction/documentText";
 
@@ -49,8 +50,17 @@ export async function handleDocumentExtractText(db: Db, job: DbJob): Promise<voi
         await markDocumentTextFailed(db, job, "too_large");
         return;
       }
-      if (fileType.toLowerCase() === "pdf" && (extracted.textlessPageCount ?? 0) > 0 && ocrEnabled()) {
-        const enriched = await enrichExtractedPdfText(raw, extracted);
+      if (
+        (fileType.toLowerCase() === "pdf" || isImageDocumentType(fileType)) &&
+        (extracted.textlessPageCount ?? 0) > 0 &&
+        ocrEnabled()
+      ) {
+        const enriched = isImageDocumentType(fileType)
+          ? await extractImageOcrText(
+              raw,
+              contentTypeForDocumentType(fileType) as "image/png" | "image/jpeg",
+            )
+          : await enrichExtractedPdfText(raw, extracted);
         extracted = { text: enriched.text, textlessPageCount: enriched.textlessPageCount };
         if (enriched.error) {
           reportError(enriched.error, {

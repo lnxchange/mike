@@ -378,7 +378,7 @@ export function AddDocumentsModal({
     setWarning(
       unsupported.length === 0
         ? null
-        : "Only PDF, Word, Excel, and PowerPoint files can be uploaded.",
+        : "Only PDF, Word, Excel, PowerPoint, email, zip, and PNG or JPEG files can be uploaded.",
     );
     if (supported.length === 0) return;
 

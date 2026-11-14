@@ -85,6 +85,9 @@ export const SUPPORTED_UPLOAD_EXTENSIONS = [
     "eml",
     "msg",
     "zip",
+    "png",
+    "jpg",
+    "jpeg",
 ] as const;
 
 /**
@@ -105,7 +108,7 @@ export const SUPPORTED_UPLOAD_ACCEPT = SUPPORTED_UPLOAD_EXTENSIONS.map(
 ).join(",");
 
 export const UNSUPPORTED_UPLOAD_MESSAGE =
-    "Unsupported file type. Only PDF, Word, Excel, PowerPoint, email (.eml, .msg) and .zip files can be uploaded.";
+    "Unsupported file type. Only PDF, Word, Excel, PowerPoint, email (.eml, .msg), .zip, and PNG or JPEG images can be uploaded.";
 
 const SUPPORTED_UPLOAD_EXTENSION_SET: ReadonlySet<string> = new Set(
     SUPPORTED_UPLOAD_EXTENSIONS,

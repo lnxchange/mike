@@ -19,6 +19,7 @@ import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
 import { DocumentPaneTitle } from "@/app/components/shared/DocumentPaneTitle";
 import { PdfView } from "@/app/components/shared/views/PdfView";
 import { DocxView } from "@/app/components/shared/views/DocxView";
+import { ImageDocumentView } from "@/app/components/shared/views/ImageDocumentView";
 import { SpreadsheetView } from "@/app/components/shared/views/SpreadsheetView";
 import { CloseButton, PillButtonUI } from "@mike/ui";
 import type { Document } from "@/app/components/shared/types";
@@ -653,7 +654,16 @@ export function DocumentSidePanel({
                         versionNumber={selectedVersionNumber}
                     />
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                        {selectedViewType === "spreadsheet" ? (
+                        {selectedViewType === "image" ? (
+                            <ImageDocumentView
+                                rounded="top-right"
+                                key={`${selectedVersionId ?? "current"}:${selectedUploadedAt ?? ""}:${selectedSizeBytes ?? ""}`}
+                                documentId={doc.id}
+                                versionId={selectedVersionId}
+                                displayUrl={displayUrl}
+                                alt={selectedFilename}
+                            />
+                        ) : selectedViewType === "spreadsheet" ? (
                             <SpreadsheetView
                                 rounded="top-right"
                                 key={`${selectedVersionId ?? "current"}:${selectedUploadedAt ?? ""}:${selectedSizeBytes ?? ""}`}
