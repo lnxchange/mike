@@ -746,7 +746,7 @@ function documentListPrompt(
     section += `- ${doc.doc_id}: ${label}\n`;
   }
   section +=
-    "\nYou do NOT retain document content between conversation turns. You MUST call read_document (or fetch_documents) once at the start of every response that involves a document's content, even if you have read it in a previous turn. Within the same response, do not call read_document or fetch_documents again for a document/version that has already been read; use the prior tool result, find_in_document for targeted checks, or proceed to the next required tool. Failure to read once per turn will result in hallucinated or stale content.\n---\n";
+    "\nDocument text is not automatically carried into the next turn. If this conversation already contains the needed text, or the previous-turn working notes cover it, do not reread those documents. Call read_document or fetch_documents only for documents you do not already have in this response, or when you need a fresh copy after an edit. Within the same response, read each document/version at most once; then use the prior result or find_in_document. Do not invent document content you have not read.\n---\n";
   return section;
 }
 
