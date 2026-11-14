@@ -33,6 +33,12 @@ import {
 } from "../../../../lib/docxTrackedChanges";
 import { buildDownloadUrl } from "../../../../lib/downloadTokens";
 import {
+  generateImageBytes,
+  imageGenerationEnabled,
+  readImageGenConfig,
+} from "../../../../lib/imagegen/imageClient";
+import { AppError } from "../../../../lib/appError";
+import {
   contentSha256,
   loadActiveVersion,
 } from "../../../../lib/documentVersions";
@@ -1042,7 +1048,7 @@ ${slides
 
 async function persistGeneratedFile(params: {
   title: string;
-  extension: "docx" | "xlsx" | "pptx";
+  extension: "docx" | "xlsx" | "pptx" | "png" | "jpg";
   buffer: Buffer;
   userId: string;
   db: Db;
@@ -1068,15 +1074,14 @@ async function persistGeneratedFile(params: {
   );
 
   // PPTX is the only generated type that pays for LibreOffice here (XLSX is
-  // never converted — spreadsheets are served raw). With the async flag on,
-  // the rendition rides the conversion queue instead: the document is
-  // inserted without one and a job fills it in with retries — closing the
-  // sync path's silent failure mode where a LibreOffice hiccup left the doc
-  // permanently rendition-less.
+  // never converted — spreadsheets are served raw, and PNG/JPEG stay rasters).
+  // With the async flag on, the rendition rides the conversion queue instead:
+  // the document is inserted without one and a job fills it in with retries —
+  // closing the sync path's silent failure mode where a LibreOffice hiccup
+  // left the doc permanently rendition-less.
   let pdfStoragePath: string | null = null;
   const deferRenditionToQueue =
-    shouldConvertToPdf(extension) &&
-    process.env.ASYNC_DOCUMENT_CONVERSION === "true";
+    shouldConvertToPdf(extension) && process.env.ASYNC_DOCUMENT_CONVERSION === "true";
   if (shouldConvertToPdf(extension) && !deferRenditionToQueue) {
     try {
       const pdfBuf = await docxToPdf(buffer);
@@ -1163,6 +1168,75 @@ async function persistGeneratedFile(params: {
     version_number: 1,
     storage_path: key,
     message: `Document '${filename}' has been generated successfully.`,
+  };
+}
+
+/**
+ * generate_image: render one image with the deployment's configured image
+ * engine (lib/imagegen) and store it as a first-class generated document, so
+ * it opens in the DocPanel and can be attached or downloaded like a DOCX.
+ * Images are never converted to PDF; documentTypes treats png/jpg as raster.
+ */
+export async function generateImage(
+  title: string,
+  prompt: string,
+  userId: string,
+  db: Db,
+  options?: {
+    size?: unknown;
+    negativePrompt?: string;
+    projectId?: string | null;
+    orgId?: string | null;
+    signal?: AbortSignal;
+  },
+) {
+  const cfg = readImageGenConfig();
+  if (!imageGenerationEnabled(cfg)) {
+    return {
+      error:
+        "Image generation is not configured on this Mike deployment. Tell the user an administrator can enable it (IMAGE_GEN_PROVIDER); do not retry.",
+    };
+  }
+  if (typeof prompt !== "string" || !prompt.trim()) {
+    return { error: "generate_image requires a non-empty prompt" };
+  }
+  let image;
+  try {
+    image = await generateImageBytes(
+      { prompt, size: options?.size, negativePrompt: options?.negativePrompt, signal: options?.signal },
+      cfg,
+    );
+  } catch (err) {
+    const kind = err instanceof AppError ? err.kind : "image_generation.failed";
+    devLog("[generate_image] failed:", kind);
+    return {
+      error:
+        kind === "image_generation.timeout"
+          ? "The image engine did not answer in time. Tell the user and suggest trying again later."
+          : "The image engine could not produce an image for this request. Tell the user; do not retry the same prompt.",
+      error_kind: kind,
+    };
+  }
+  if (options?.signal?.aborted) {
+    return {
+      error: "Image generation was stopped before the file was saved.",
+      error_kind: "image_generation.aborted",
+    };
+  }
+  const result = await persistGeneratedFile({
+    title: title || "image",
+    extension: image.extension,
+    buffer: image.bytes,
+    userId,
+    db,
+    projectId: options?.projectId ?? null,
+    orgId: options?.orgId ?? null,
+  });
+  if ("error" in result) return result;
+  return {
+    ...result,
+    ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}),
+    message: `Image '${result.filename}' has been generated successfully.`,
   };
 }
 
