@@ -116,11 +116,7 @@ describe("version text extraction", () => {
       await handleDocumentExtractText(fake.db, job);
       expect(fetchSpy).toHaveBeenCalledOnce();
       expect(fake.calls[2].args).toMatchObject({
-        p_text: "[Page 1]
-Scanned contract page 1
-
-[Page 2]
-Scanned signature page 2",
+        p_text: "[Page 1]\nScanned contract page 1\n\n[Page 2]\nScanned signature page 2",
         p_textless_pages: 0,
       });
       fake.done();
@@ -168,11 +164,7 @@ Scanned signature page 2",
   });
   it("publishes pdf.js text and reports a warning when Mistral OCR fails", async () => {
     vi.stubEnv("MISTRAL_API_KEY", "test-mistral-key");
-    mocks.pdf.mockResolvedValue({ text: "[Page 1]
-Native clause
-
-[Page 2]
-", textlessPageCount: 1 });
+    mocks.pdf.mockResolvedValue({ text: "[Page 1]\nNative clause\n\n[Page 2]\n", textlessPageCount: 1 });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("upstream error", { status: 503 }),
     );
@@ -184,11 +176,7 @@ Native clause
       ]);
       await handleDocumentExtractText(fake.db, job);
       expect(fake.calls[2].args).toMatchObject({
-        p_text: "[Page 1]
-Native clause
-
-[Page 2]
-",
+        p_text: "[Page 1]\nNative clause\n\n[Page 2]\n",
         p_textless_pages: 1,
       });
       expect(sentry.reportError).toHaveBeenCalledOnce();

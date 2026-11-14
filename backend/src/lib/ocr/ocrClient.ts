@@ -235,9 +235,13 @@ function resolveApiKey(
         ? env.OPENROUTER_API_KEY?.trim() || undefined
         : undefined;
     case "azure":
-      return env.AZURE_API_KEY?.trim() || env.AZURE_FOUNDRY_API_KEY?.trim() || undefined;
     case "azure-foundry":
-      return env.AZURE_FOUNDRY_API_KEY?.trim() || env.AZURE_API_KEY?.trim() || undefined;
+      // Azure keys belong on an Azure endpoint the operator named. Without
+      // one, do not fall through to the OpenAI or Mistral default host.
+      if (!hasExplicitCustomEndpoint) return undefined;
+      return provider === "azure"
+        ? env.AZURE_API_KEY?.trim() || env.AZURE_FOUNDRY_API_KEY?.trim() || undefined
+        : env.AZURE_FOUNDRY_API_KEY?.trim() || env.AZURE_API_KEY?.trim() || undefined;
     case "mistral":
       return !hasExplicitCustomEndpoint || isMistralHost(url)
         ? env.MISTRAL_API_KEY?.trim() || undefined
@@ -298,6 +302,8 @@ export function readOcrConfig(env: NodeJS.ProcessEnv = process.env): OcrConfig {
     url = buildUrlFromBase(env.OLLAMA_BASE_URL?.trim() || DEFAULT_OLLAMA_BASE_URL, protocol);
   } else if (provider === "openrouter") {
     url = buildUrlFromBase(env.OPENROUTER_BASE_URL?.trim() || DEFAULT_OPENROUTER_BASE_URL, protocol);
+  } else if (provider === "azure" || provider === "azure-foundry") {
+    url = "";
   } else if (provider === "openai") {
     url = DEFAULT_OPENAI_CHAT_URL;
   } else if (protocol === "openai-chat") {
@@ -770,12 +776,17 @@ export function mergeOcrIntoPdfPages(
   pageSections: readonly string[],
   ocrPages: readonly OcrPage[],
   minPageChars = DEFAULT_MIN_PAGE_CHARS,
+  allowedIndexes?: readonly number[],
 ): { text: string; textlessPageCount: number; ocrPageCount: number } {
+  const allowed = allowedIndexes ? new Set(allowedIndexes) : null;
   const merged = [...pageSections];
   const populatedByOcr = new Set<number>();
 
   for (const ocr of ocrPages) {
     if (ocr.index < 0 || ocr.index >= merged.length) continue;
+    if (allowed && !allowed.has(ocr.index)) continue;
+    // A page that already has native text stays as pdf.js read it.
+    if (meaningfulPageLength(merged[ocr.index]!) >= minPageChars) continue;
     const cleaned = ocr.text.trim();
     if (!cleaned) continue;
     const match = PAGE_HEADER_PATTERN.exec(merged[ocr.index]!);
@@ -791,11 +802,12 @@ export function mergeOcrIntoPdfPages(
     }
   }
 
-  const ocrPageCount = populatedByOcr.size;
   return {
-    text: textlessPageCount === merged.length ? "" : merged.join("\n\n"),
+    // Keep short native text. The threshold decides which pages need OCR,
+    // not whether the document is published as empty.
+    text: merged.join("\n\n"),
     textlessPageCount,
-    ocrPageCount,
+    ocrPageCount: populatedByOcr.size,
   };
 }
 
@@ -822,7 +834,10 @@ export async function enrichExtractedPdfText(
 
   try {
     const ocrPages = await ocrPdfPages(pdfBytes, missing, cfg, fetchImpl);
-    const merged = mergeOcrIntoPdfPages(pageSections, ocrPages, cfg.minPageChars);
+    const merged = mergeOcrIntoPdfPages(pageSections, ocrPages, cfg.minPageChars, missing);
+    if (merged.ocrPageCount === 0) {
+      return { ...extracted, ocrPageCount: 0 };
+    }
     return {
       text: merged.text,
       textlessPageCount: merged.textlessPageCount,

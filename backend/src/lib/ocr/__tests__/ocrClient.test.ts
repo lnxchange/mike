@@ -41,7 +41,7 @@ function openAiChatResponse(content: unknown, status = 200) {
 describe("OCR page detection, configuration, and multi-provider execution", () => {
   it("ignores page markers and whitespace when measuring page text", () => {
     expect(meaningfulPageLength("[Page 1]\n   \n[Page 1 form fields]\n")).toBe(0);
-    expect(meaningfulPageLength("[Page 2]\nClausola compromissoria")).toBe(21);
+    expect(meaningfulPageLength("[Page 2]\nClausola compromissoria")).toBe(22);
   });
 
   it("reconstructs empty page sections for a fully scanned PDF", () => {
@@ -253,5 +253,47 @@ describe("OCR page detection, configuration, and multi-provider execution", () =
     expect(merged.text).toBe("[Page 1]\n\n\n[Page 2]\nPagina due");
     expect(merged.textlessPageCount).toBe(1);
     expect(merged.ocrPageCount).toBe(1);
+  });
+
+  it("does not replace a native page the request did not ask for", () => {
+    const merged = mergeOcrIntoPdfPages(
+      ["[Page 1]\nTesto nativo digitale sufficiente", "[Page 2]\n"],
+      [
+        { index: 0, text: "OCR rewrote the native page" },
+        { index: 1, text: "Pagina scansionata" },
+      ],
+      10,
+      [1],
+    );
+    expect(merged.text).toBe(
+      "[Page 1]\nTesto nativo digitale sufficiente\n\n[Page 2]\nPagina scansionata",
+    );
+    expect(merged.ocrPageCount).toBe(1);
+  });
+
+  it("keeps short native text when OCR returns nothing usable", () => {
+    const merged = mergeOcrIntoPdfPages(
+      ["[Page 1]\nSigned", "[Page 2]\n"],
+      [{ index: 1, text: "   " }],
+      25,
+      [1],
+    );
+    expect(merged.text).toBe("[Page 1]\nSigned\n\n[Page 2]\n");
+    expect(merged.ocrPageCount).toBe(0);
+  });
+
+  it("does not send an Azure key to the public OpenAI or Mistral default", () => {
+    expect(ocrEnabled(readOcrConfig({ OCR_PROVIDER: "azure", AZURE_API_KEY: "azure-key" }))).toBe(false);
+    expect(readOcrConfig({ OCR_PROVIDER: "azure", AZURE_API_KEY: "azure-key" }).url).toBe("");
+    expect(
+      ocrEnabled(readOcrConfig({ OCR_PROVIDER: "azure-foundry", AZURE_FOUNDRY_API_KEY: "foundry-key" })),
+    ).toBe(false);
+    const azure = readOcrConfig({
+      OCR_PROVIDER: "azure",
+      OCR_BASE_URL: "https://example.openai.azure.com/openai/deployments/ocr",
+      AZURE_API_KEY: "azure-key",
+    });
+    expect(azure.apiKey).toBe("azure-key");
+    expect(azure.url).toContain("openai.azure.com");
   });
 });
