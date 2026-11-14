@@ -286,5 +286,8 @@ export function sourceDocumentType(filename: string): SourceDocumentType {
   if (extension === "xlsx" || extension === "xlsm" || extension === "xls") {
     return "spreadsheet";
   }
+  if (extension === "png" || extension === "jpg" || extension === "jpeg") {
+    return "image";
+  }
   return "pdf";
 }
