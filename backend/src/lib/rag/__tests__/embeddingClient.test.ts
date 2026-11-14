@@ -22,6 +22,22 @@ describe("embedding configuration", () => {
     expect(custom.url).toBe("https://tei.internal/v1/embeddings");
     expect(buildEmbeddingHeaders(custom)).toMatchObject({ "api-key": "secret" });
   });
+  it("rejects a batch size that floors to zero and withholds keys from lookalike hosts", () => {
+    const batch = readEmbeddingConfig({
+      RAG_ENABLED: "true", OPENAI_API_KEY: "k", EMBEDDING_BATCH_SIZE: "0.4",
+    });
+    expect(batch.batchSize).toBe(32);
+    const lookalike = readEmbeddingConfig({
+      RAG_ENABLED: "true", EMBEDDING_PROVIDER: "mistral",
+      EMBEDDING_API_URL: "https://notmistral.ai/v1/embeddings", MISTRAL_API_KEY: "m",
+    });
+    expect(lookalike.apiKey).toBeUndefined();
+    const azure = readEmbeddingConfig({
+      RAG_ENABLED: "true", EMBEDDING_PROVIDER: "azure", AZURE_API_KEY: "az",
+    });
+    expect(azure.apiKey).toBeUndefined();
+    expect(azure.enabled).toBe(false);
+  });
   it("never sends a provider deployment key to an unrelated custom host", () => {
     const cfg = readEmbeddingConfig({
       RAG_ENABLED: "true", EMBEDDING_PROVIDER: "openai", EMBEDDING_API_URL: "https://other.example.com/v1/embeddings",

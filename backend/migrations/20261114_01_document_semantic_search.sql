@@ -11,7 +11,8 @@
 --
 -- The embedding column is untyped `vector` so deployments can choose any
 -- model/dimension. Searches compare only rows of the configured
--- embedding_model, so dimensions always match. Exact (sequential) distance is
+-- embedding_model and embedding_dimensions, so a dimensions change cannot
+-- match vectors from the previous setting. Exact (sequential) distance is
 -- computed over the caller's eligible versions only; see
 -- docs/document-semantic-search.md for an optional HNSW index once a
 -- deployment fixes its dimension.
@@ -22,6 +23,7 @@ create table if not exists public.document_text_chunks (
   version_id uuid not null references public.document_versions(id) on delete cascade,
   source_revision uuid not null,
   embedding_model text not null,
+  embedding_dimensions integer not null,
   chunk_index integer not null,
   page_start integer,
   page_end integer,
@@ -31,7 +33,7 @@ create table if not exists public.document_text_chunks (
   content_tsv tsvector generated always as (to_tsvector('simple', content)) stored,
   embedding vector not null,
   created_at timestamptz not null default now(),
-  primary key (version_id, embedding_model, chunk_index)
+  primary key (version_id, embedding_model, embedding_dimensions, chunk_index)
 );
 create index if not exists document_text_chunks_tsv_idx
   on public.document_text_chunks using gin (content_tsv);
@@ -39,12 +41,13 @@ create index if not exists document_text_chunks_tsv_idx
 create table if not exists public.document_embedding_status (
   version_id uuid not null references public.document_versions(id) on delete cascade,
   embedding_model text not null,
+  embedding_dimensions integer not null,
   source_revision uuid not null,
   status text not null default 'pending' check (status in ('pending','processing','ready','failed')),
   chunk_count integer,
   error_code text,
   updated_at timestamptz not null default now(),
-  primary key (version_id, embedding_model)
+  primary key (version_id, embedding_model, embedding_dimensions)
 );
 
 alter table public.document_text_chunks enable row level security;
@@ -54,11 +57,12 @@ grant select, insert, update, delete on public.document_text_chunks, public.docu
 
 -- Queue embedding work for a version whose current text is ready. Idempotent:
 -- an already-ready or in-flight (revision, model) pair is not queued again.
-create or replace function public.queue_document_embeddings(p_version_id uuid, p_model text, p_retry_failed boolean default false)
+create or replace function public.queue_document_embeddings(p_version_id uuid, p_model text, p_retry_failed boolean default false, p_dimensions integer default 0)
 returns boolean language plpgsql security invoker set search_path=public,pg_temp as $$
 declare v public.document_versions%rowtype; s public.document_embedding_status%rowtype;
 begin
-  if p_model is null or char_length(p_model) not between 1 and 200 then
+  if p_model is null or char_length(p_model) not between 1 and 200
+     or p_dimensions is null or p_dimensions < 0 then
     raise exception 'Invalid embedding model' using errcode='22023';
   end if;
   select * into v from public.document_versions where id=p_version_id and deleted_at is null for update;
@@ -67,41 +71,43 @@ begin
       and t.source_revision=v.text_revision and t.extractor_version=1 and t.status='ready') then
     return false;
   end if;
-  select * into s from public.document_embedding_status where version_id=v.id and embedding_model=p_model;
+  select * into s from public.document_embedding_status
+    where version_id=v.id and embedding_model=p_model and embedding_dimensions=p_dimensions;
   if found and s.source_revision=v.text_revision
      and (s.status='ready' or (s.status='failed' and not p_retry_failed)) then return false; end if;
-  if exists(select 1 from public.db_jobs where dedupe_key='document.embed:'||v.id||':'||v.text_revision||':'||p_model
+  if exists(select 1 from public.db_jobs where dedupe_key='document.embed:'||v.id||':'||v.text_revision||':'||p_model||':'||p_dimensions
       and status in ('pending','running')) then return false; end if;
-  insert into public.document_embedding_status(version_id,embedding_model,source_revision,status)
-    values(v.id,p_model,v.text_revision,'pending')
-    on conflict(version_id,embedding_model) do update set source_revision=excluded.source_revision,
+  insert into public.document_embedding_status(version_id,embedding_model,embedding_dimensions,source_revision,status)
+    values(v.id,p_model,p_dimensions,v.text_revision,'pending')
+    on conflict(version_id,embedding_model,embedding_dimensions) do update set source_revision=excluded.source_revision,
       status='pending',chunk_count=null,error_code=null,updated_at=now();
   insert into public.db_jobs(kind,payload,dedupe_key,max_attempts,run_at)
     values('document.embed_text',
-      jsonb_build_object('versionId',v.id,'revision',v.text_revision,'model',p_model),
-      'document.embed:'||v.id||':'||v.text_revision||':'||p_model, 3, now());
+      jsonb_build_object('versionId',v.id,'revision',v.text_revision,'model',p_model,'dimensions',p_dimensions),
+      'document.embed:'||v.id||':'||v.text_revision||':'||p_model||':'||p_dimensions, 3, now());
   return true;
 end; $$;
 
 -- Atomically replace a version's chunks for one model, only while the text
 -- revision still matches (a late job cannot publish chunks of an edited text).
-create or replace function public.replace_document_text_chunks(p_version_id uuid, p_revision uuid, p_model text, p_chunks jsonb)
+create or replace function public.replace_document_text_chunks(p_version_id uuid, p_revision uuid, p_model text, p_chunks jsonb, p_dimensions integer default 0)
 returns boolean language plpgsql security invoker set search_path=public,pg_temp as $$
 begin
   if jsonb_typeof(p_chunks) <> 'array' then raise exception 'Invalid chunks' using errcode='22023'; end if;
   perform 1 from public.document_versions where id=p_version_id and text_revision=p_revision and deleted_at is null for update;
   if not found then return false; end if;
-  delete from public.document_text_chunks where version_id=p_version_id and embedding_model=p_model;
-  insert into public.document_text_chunks(version_id,source_revision,embedding_model,chunk_index,page_start,page_end,start_char,end_char,content,embedding)
-    select p_version_id,p_revision,p_model,c.chunk_index,c.page_start,c.page_end,c.start_char,c.end_char,c.content,c.embedding::vector
+  delete from public.document_text_chunks
+    where version_id=p_version_id and embedding_model=p_model and embedding_dimensions=p_dimensions;
+  insert into public.document_text_chunks(version_id,source_revision,embedding_model,embedding_dimensions,chunk_index,page_start,page_end,start_char,end_char,content,embedding)
+    select p_version_id,p_revision,p_model,p_dimensions,c.chunk_index,c.page_start,c.page_end,c.start_char,c.end_char,c.content,c.embedding::vector
     from jsonb_to_recordset(p_chunks) as c(chunk_index integer,page_start integer,page_end integer,start_char integer,end_char integer,content text,embedding text);
   update public.document_embedding_status set status='ready',chunk_count=jsonb_array_length(p_chunks),error_code=null,updated_at=now()
-    where version_id=p_version_id and embedding_model=p_model and source_revision=p_revision;
+    where version_id=p_version_id and embedding_model=p_model and embedding_dimensions=p_dimensions and source_revision=p_revision;
   return found;
 end; $$;
 
 -- Bounded backfill for versions whose text is ready but not embedded with p_model.
-create or replace function public.backfill_document_embeddings(p_model text, p_limit integer default 100, p_retry_failed boolean default false)
+create or replace function public.backfill_document_embeddings(p_model text, p_limit integer default 100, p_retry_failed boolean default false, p_dimensions integer default 0)
 returns integer language plpgsql security invoker set search_path=public,pg_temp as $$
 declare queued integer:=0; r record;
 begin
@@ -111,12 +117,26 @@ begin
       join public.document_version_texts t on t.version_id=v.id and t.source_revision=v.text_revision
         and t.extractor_version=1 and t.status='ready'
       left join public.document_embedding_status s on s.version_id=v.id and s.embedding_model=p_model
+        and s.embedding_dimensions=p_dimensions
     where v.deleted_at is null
-      and (s.version_id is null or s.source_revision<>v.text_revision or (p_retry_failed and s.status='failed'))
+      and (
+        s.version_id is null
+        or s.source_revision<>v.text_revision
+        or (p_retry_failed and s.status='failed')
+        or (
+          s.source_revision=v.text_revision
+          and s.status in ('pending','processing')
+          and not exists (
+            select 1 from public.db_jobs
+            where dedupe_key='document.embed:'||v.id||':'||v.text_revision||':'||p_model||':'||p_dimensions
+              and status in ('pending','running')
+          )
+        )
+      )
     order by (v.id=d.current_version_id) desc, v.created_at desc
     limit least(greatest(coalesce(p_limit,100),1),500)
   loop
-    if public.queue_document_embeddings(r.id,p_model,p_retry_failed) then queued:=queued+1; end if;
+    if public.queue_document_embeddings(r.id,p_model,p_retry_failed,p_dimensions) then queued:=queued+1; end if;
   end loop;
   return queued;
 end; $$;
@@ -127,7 +147,8 @@ end; $$;
 create or replace function public.search_document_chunks(
   p_user_id text, p_user_email text, p_workspace text, p_scope text,
   p_query_text text, p_query_embedding text, p_model text,
-  p_project_id uuid default null, p_document_id uuid default null, p_limit integer default 8
+  p_project_id uuid default null, p_document_id uuid default null, p_limit integer default 8,
+  p_dimensions integer default 0
 ) returns jsonb language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare result jsonb; q vector; page_limit integer:=least(greatest(coalesce(p_limit,8),1),20);
   project_allowed boolean:=false; tsq tsquery;
@@ -162,10 +183,11 @@ begin
     select e.*,c.chunk_index,c.page_start,c.page_end,c.start_char,c.end_char,c.content,c.embedding,c.content_tsv
     from eligible e join public.document_text_chunks c
       on c.version_id=e.version_id and c.source_revision=e.text_revision and c.embedding_model=p_model
+        and c.embedding_dimensions=p_dimensions
   ), coverage as (
     select count(*) total_versions,
       count(*) filter (where exists(select 1 from public.document_embedding_status s where s.version_id=e.version_id
-        and s.embedding_model=p_model and s.source_revision=e.text_revision and s.status='ready')) embedded_versions
+        and s.embedding_model=p_model and s.embedding_dimensions=p_dimensions and s.source_revision=e.text_revision and s.status='ready')) embedded_versions
     from eligible e
   ), vec as (
     select version_id,chunk_index,row_number() over (order by embedding <=> q) rnk
@@ -192,13 +214,13 @@ begin
   return result;
 end; $$;
 
-revoke all on function public.queue_document_embeddings(uuid,text,boolean),
-  public.replace_document_text_chunks(uuid,uuid,text,jsonb),
-  public.backfill_document_embeddings(text,integer,boolean),
-  public.search_document_chunks(text,text,text,text,text,text,text,uuid,uuid,integer)
+revoke all on function public.queue_document_embeddings(uuid,text,boolean,integer),
+  public.replace_document_text_chunks(uuid,uuid,text,jsonb,integer),
+  public.backfill_document_embeddings(text,integer,boolean,integer),
+  public.search_document_chunks(text,text,text,text,text,text,text,uuid,uuid,integer,integer)
   from public,anon,authenticated;
-grant execute on function public.queue_document_embeddings(uuid,text,boolean),
-  public.replace_document_text_chunks(uuid,uuid,text,jsonb),
-  public.backfill_document_embeddings(text,integer,boolean),
-  public.search_document_chunks(text,text,text,text,text,text,text,uuid,uuid,integer)
+grant execute on function public.queue_document_embeddings(uuid,text,boolean,integer),
+  public.replace_document_text_chunks(uuid,uuid,text,jsonb,integer),
+  public.backfill_document_embeddings(text,integer,boolean,integer),
+  public.search_document_chunks(text,text,text,text,text,text,text,uuid,uuid,integer,integer)
   to service_role;

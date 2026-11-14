@@ -59,6 +59,7 @@ export async function searchDocumentsSemantic(db: Db, args: {
     p_user_id: args.userId, p_user_email: args.userEmail ?? null,
     p_workspace: args.workspace ?? "personal", p_scope: args.scope,
     p_query_text: args.query, p_query_embedding: toVectorLiteral(vector), p_model: cfg.model,
+    p_dimensions: cfg.dimensions ?? 0,
     p_project_id: args.projectId ?? null, p_document_id: args.documentId ?? null, p_limit: limit,
   });
   if (error) return internalFailure(new AppError("rag.search_failed", "Semantic search failed", { cause: error }));

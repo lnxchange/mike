@@ -37,7 +37,9 @@ keeps document text on the firm's infrastructure. Models such as e5 need
 
 Changing `EMBEDDING_MODEL` does not mix vectors: rows are keyed by model and the
 search reads only the configured one. Run the backfill to embed existing
-documents with the new model.
+documents with the new model. `embedding_dimensions` is part of the chunk
+and status identity (0 when `EMBEDDING_DIMENSIONS` is unset), so changing the
+dimension starts a separate index and never searches vectors of another size.
 
 ## Rollout
 
@@ -47,6 +49,8 @@ documents with the new model.
 4. Embed existing documents in bounded batches (up to 500 per call) with
    `backfillDocumentEmbeddings(db, { limit, retryFailed })` from the documents
    facade, or `select public.backfill_document_embeddings('<model>', 500);`.
+   Rows left `pending` or `processing` after their job has finished are queued
+   again.
 
 ## Scale
 

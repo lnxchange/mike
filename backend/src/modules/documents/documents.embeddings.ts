@@ -23,13 +23,15 @@ export async function handleDocumentEmbedText(
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
   setOperation("documents.embed");
-  const { versionId, revision, model } = job.payload;
+  const { versionId, revision, model, dimensions } = job.payload;
+  const embeddingDimensions = typeof dimensions === "number" && Number.isInteger(dimensions) ? dimensions : 0;
   if (typeof versionId !== "string" || typeof revision !== "string" || typeof model !== "string") return;
-  if (!cfg.enabled || cfg.model !== model) return; // RAG off or model changed since queueing
+  if (!cfg.enabled || cfg.model !== model || (cfg.dimensions ?? 0) !== embeddingDimensions) return;
 
   const { data: claim, error: claimError } = await db.from("document_embedding_status")
     .update({ status: "processing", error_code: null, updated_at: new Date().toISOString() })
-    .eq("version_id", versionId).eq("embedding_model", model).eq("source_revision", revision)
+    .eq("version_id", versionId).eq("embedding_model", model).eq("embedding_dimensions", embeddingDimensions)
+    .eq("source_revision", revision)
     .in("status", ["pending", "processing", "failed"]).select("version_id").maybeSingle();
   if (claimError) throw claimError;
   if (!claim) return;
@@ -77,18 +79,21 @@ export async function handleDocumentEmbedText(
     embedding: toVectorLiteral(vectors[i]!),
   }));
   const { error: replaceError } = await db.rpc("replace_document_text_chunks", {
-    p_version_id: versionId, p_revision: revision, p_model: model, p_chunks: payload,
+    p_version_id: versionId, p_revision: revision, p_model: model,
+    p_dimensions: embeddingDimensions, p_chunks: payload,
   });
   if (replaceError) throw replaceError;
 }
 
 /** Failure hook: mark exhausted embedding work failed for its exact revision/model. */
 export async function markDocumentEmbeddingsFailed(db: Db, job: DbJob, errorCode = "embedding_failed"): Promise<void> {
-  const { versionId, revision, model } = job.payload;
+  const { versionId, revision, model, dimensions } = job.payload;
+  const embeddingDimensions = typeof dimensions === "number" && Number.isInteger(dimensions) ? dimensions : 0;
   if (typeof versionId !== "string" || typeof revision !== "string" || typeof model !== "string") return;
   const { error } = await db.from("document_embedding_status")
     .update({ status: "failed", error_code: errorCode, updated_at: new Date().toISOString() })
-    .eq("version_id", versionId).eq("embedding_model", model).eq("source_revision", revision)
+    .eq("version_id", versionId).eq("embedding_model", model).eq("embedding_dimensions", embeddingDimensions)
+    .eq("source_revision", revision)
     .in("status", ["pending", "processing", "failed"]);
   if (error) throw error;
 }
@@ -103,7 +108,9 @@ export async function queueDocumentEmbeddings(
   cfg: EmbeddingConfig = readEmbeddingConfig(),
 ): Promise<void> {
   if (!cfg.enabled) return;
-  const { error } = await db.rpc("queue_document_embeddings", { p_version_id: versionId, p_model: cfg.model });
+  const { error } = await db.rpc("queue_document_embeddings", {
+    p_version_id: versionId, p_model: cfg.model, p_dimensions: cfg.dimensions ?? 0,
+  });
   if (error) {
     reportError(new AppError("rag.queue_failed", "Embedding job could not be queued", { cause: error }), {
       level: "warning",
@@ -120,7 +127,8 @@ export async function backfillDocumentEmbeddings(
 ): Promise<number> {
   if (!cfg.enabled) return 0;
   const { data, error } = await db.rpc("backfill_document_embeddings", {
-    p_model: cfg.model, p_limit: options.limit ?? 100, p_retry_failed: options.retryFailed ?? false,
+    p_model: cfg.model, p_dimensions: cfg.dimensions ?? 0,
+    p_limit: options.limit ?? 100, p_retry_failed: options.retryFailed ?? false,
   });
   if (error) throw error;
   return Number(data ?? 0);

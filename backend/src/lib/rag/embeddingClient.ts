@@ -51,7 +51,9 @@ const DEFAULTS: Record<EmbeddingProvider, { url: string; model: string }> = {
 
 function positiveInt(value: string | undefined, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), max) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  const floored = Math.floor(parsed);
+  return floored >= 1 ? Math.min(floored, max) : fallback;
 }
 
 function normalizeProvider(raw: string | undefined): EmbeddingProvider | undefined {
@@ -103,11 +105,15 @@ function resolveKey(env: NodeJS.ProcessEnv, provider: EmbeddingProvider, url: st
     case "openai":
       return !custom || host === "api.openai.com" ? env.OPENAI_API_KEY?.trim() || undefined : undefined;
     case "mistral":
-      return !custom || host.endsWith("mistral.ai") ? env.MISTRAL_API_KEY?.trim() || undefined : undefined;
+      return !custom || host === "api.mistral.ai" || host.endsWith(".mistral.ai")
+        ? env.MISTRAL_API_KEY?.trim() || undefined
+        : undefined;
     case "ollama":
       return env.OLLAMA_API_KEY?.trim() || undefined;
     case "azure":
-      return env.AZURE_API_KEY?.trim() || undefined;
+      return host === "openai.azure.com" || host.endsWith(".openai.azure.com")
+        ? env.AZURE_API_KEY?.trim() || undefined
+        : undefined;
     default:
       return undefined;
   }
@@ -221,7 +227,7 @@ async function embedBatch(inputs: string[], cfg: EmbeddingConfig, fetchImpl: typ
       out[index] = vector as number[];
     });
     const dims = out[0]?.length;
-    if (out.some((v) => !v || v.length !== dims)) {
+    if (out.some((v) => !v || v.length !== dims) || (cfg.dimensions && dims !== cfg.dimensions)) {
       throw new AppError("rag.embedding_invalid_response", "Embedding vectors have inconsistent dimensions");
     }
     return out;
