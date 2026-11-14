@@ -1,25 +1,104 @@
+import { availableParallelism, totalmem } from "node:os";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+
+// Local worker cap. Vitest's default for `vitest run` is one fork per CPU
+// core minus one, so on a 10-12 core laptop a single `npm test` starts 9-11
+// forks, and running the frontend and backend suites together doubles that.
+// The frontend forks each boot jsdom. That was enough to crash a teammate's
+// laptop. Locally we use at most half the cores and at most one worker per
+// 4 GiB of RAM (8 GiB -> 2, 16 GiB -> 4). CI runners are dedicated machines,
+// so they keep Vitest's default. To change the cap for one run, pass
+// `--maxWorkers=<n>` or set VITEST_MAX_WORKERS.
+const localMaxWorkers = Math.max(
+    Math.min(
+        Math.floor(availableParallelism() / 2),
+        Math.floor(totalmem() / (4 * 1024 ** 3)),
+    ),
+    1,
+);
 
 const resolvePath = (relative: string) =>
     fileURLToPath(new URL(relative, import.meta.url));
 
 export default defineConfig({
     plugins: [react()],
+    // Next emits imported images as files. Match that behavior instead of
+    // Vite's inline data URLs when testing image preloads.
+    build: { assetsInlineLimit: 0 },
     resolve: {
         // Mirror the `@/*` path alias from tsconfig.json so unit tests resolve
         // the same module specifiers the app uses.
         alias: [
+            // Cross-target tests resolve runtime dependencies from this package,
+            // including on CI where word-addin/node_modules is absent.
+            {
+                find: /^react$/,
+                replacement: resolvePath("./node_modules/react/index.js"),
+            },
+            // JSX compilation adds these imports even when source imports only
+            // React. Resolve both runtimes beside the same frontend React copy.
+            {
+                find: /^react\/(jsx-runtime|jsx-dev-runtime)$/,
+                replacement: resolvePath("./node_modules/react/$1.js"),
+            },
+            {
+                find: /^@sentry\/react$/,
+                replacement: resolvePath("./node_modules/@sentry/react/build/esm/index.js"),
+            },
+            // The shared packages, by the same names tsconfig.json maps.
+            {
+                find: /^@mike\/ui$/,
+                replacement: resolvePath("../packages/ui/src/index.ts"),
+            },
+            {
+                find: /^@mike\/client$/,
+                replacement: resolvePath("../packages/client/src/index.ts"),
+            },
             {
                 find: /^@\/(.*)$/,
                 replacement: resolvePath("./src/$1"),
             },
+            // The unit tests run in jsdom, i.e. as the browser. `@sentry/nextjs`'s
+            // package entry is the Node/server build, which pulls in bundler
+            // plugins that call fileURLToPath(import.meta.url) — and under the
+            // jsdom transform import.meta.url is an http:// URL, so importing
+            // it throws before any test runs. `@sentry/react` is the exact SDK
+            // the Next package re-exports for the browser, so tests exercise
+            // the same client API the app uses.
+            {
+                find: /^@sentry\/nextjs$/,
+                replacement: resolvePath("./node_modules/@sentry/react/build/esm/index.js"),
+            },
         ],
+        // packages/ui and packages/client have no node_modules of their own.
+        // Vite resolves a bare import from the importer's directory, which
+        // for a file under packages/ never reaches frontend/node_modules;
+        // dedupe makes these resolve from this package instead. Mirror
+        // packages/*/package.json peerDependencies plus the test tooling the
+        // packages' colocated tests import.
+        dedupe: [
+            "react",
+            "react-dom",
+            "clsx",
+            "tailwind-merge",
+            "lucide-react",
+            "@radix-ui/react-dropdown-menu",
+            "vitest",
+            "@testing-library/react",
+            "@testing-library/user-event",
+            "postcss",
+        ],
+    },
+    server: {
+        // The shared packages' tests and sources sit outside this directory.
+        fs: { allow: [resolvePath("..")] },
     },
     test: {
         globals: true,
         environment: "jsdom",
+        maxWorkers: process.env.CI ? undefined : localMaxWorkers,
         setupFiles: ["./vitest.setup.ts"],
         // jsdom 27's CSS-color parser (@asamuzakjp/css-color) is CJS but
         // require()s the ESM-only @csstools/css-calc. That require() happens
@@ -29,7 +108,14 @@ export default defineConfig({
         // and enabled by this (there harmless) flag on 22.0–22.11.
         execArgv: ["--experimental-require-module"],
         // Unit tests only. Keep any Playwright e2e specs (*.spec.ts) out.
-        include: ["src/**/*.test.{ts,tsx}"],
+        include: [
+            "src/**/*.test.{ts,tsx}",
+            // The shared packages' colocated tests run here: they need the
+            // same jsdom + Testing Library setup, and this is the one Vitest
+            // the web app and the add-in both already depend on.
+            "../packages/ui/src/**/*.test.{ts,tsx}",
+            "../packages/client/src/**/*.test.{ts,tsx}",
+        ],
         exclude: ["node_modules/**", "e2e/**", "**/*.spec.ts"],
         // Generous timeouts to absorb cold-start jsdom + transform latency on CI.
         testTimeout: 20000,

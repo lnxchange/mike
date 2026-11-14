@@ -1,6 +1,5 @@
 import React, { useState } from "react";
-import type { Message } from "../../types";
-import type { ReasoningLevel } from "../../lib/wordChatTypes";
+import type { WordChatOpenHandler } from "../../lib/wordChatTypes";
 import {
   Check,
   ChevronLeft,
@@ -19,7 +18,12 @@ import {
 import {
   HeaderButtonUI,
   HeaderButtonsUI,
-} from "@mike/header-buttons-ui";
+  Dropdown,
+  DropdownContent,
+  DropdownItem,
+  DropdownSeparator,
+  DropdownTrigger,
+} from "@mike/ui";
 import chatIcon from "@icons/features/chat.svg";
 import quickActionsIcon from "@icons/features/quick-actions.svg";
 import workflowIcon from "@icons/features/workflow.svg";
@@ -27,13 +31,6 @@ import chatHistoryIcon from "@icons/features/chat-history.svg";
 import settingsIcon from "@icons/settings.svg";
 import signOutIcon from "@icons/sign-out.svg";
 import { ChatHistoryDropdown } from "../history/ChatHistoryDropdown";
-import {
-  Dropdown,
-  DropdownContent,
-  DropdownItem,
-  DropdownSeparator,
-  DropdownTrigger,
-} from "@mike/dropdown-ui";
 import type { WordChatStorageMode } from "../../lib/wordChatSettings";
 
 export type AddinSection =
@@ -48,12 +45,7 @@ interface FloatingHeaderProps {
   onSectionChange: (section: AddinSection) => void;
   onNewChat: () => void;
   hasActiveChat: boolean;
-  onSelectHistoryChat: (
-    chatId: string,
-    messages: Message[],
-    model: string | null,
-    reasoningLevel: ReasoningLevel | null,
-  ) => void;
+  onSelectHistoryChat: WordChatOpenHandler;
   workflowDetailOpen?: boolean;
   onWorkflowBack?: () => void;
   onOpenWorkflowDetails?: () => void;
@@ -66,6 +58,8 @@ interface FloatingHeaderProps {
   wordDocumentId: string;
   wordChatStorage: WordChatStorageMode;
   wordChatOwnerId: string;
+  /** The chat on screen, marked in the history menu. */
+  currentChatId?: string | null;
 }
 
 const SECTIONS = [
@@ -102,6 +96,7 @@ export function FloatingHeader({
   wordDocumentId,
   wordChatStorage,
   wordChatOwnerId,
+  currentChatId,
 }: FloatingHeaderProps): React.ReactElement {
   const [menuOpen, setMenuOpen] = useState(false);
   const [workflowActionsOpen, setWorkflowActionsOpen] = useState(false);
@@ -197,7 +192,7 @@ export function FloatingHeader({
       </div>
 
       {section === "chat" ? (
-        <HeaderButtonsUI className="pointer-events-auto relative z-10">
+        <HeaderButtonsUI className="pointer-events-auto relative z-10 backdrop-blur-2xl">
           {hasActiveChat && (
             <HeaderButtonUI
               iconOnly
@@ -213,10 +208,11 @@ export function FloatingHeader({
             documentId={wordDocumentId}
             ownerId={wordChatOwnerId}
             storageMode={wordChatStorage}
+            currentChatId={currentChatId}
           />
         </HeaderButtonsUI>
       ) : workflowDetailOpen ? (
-        <HeaderButtonsUI className="pointer-events-auto relative z-10">
+        <HeaderButtonsUI className="pointer-events-auto relative z-10 backdrop-blur-2xl">
           <Dropdown
             open={workflowActionsOpen}
             onOpenChange={setWorkflowActionsOpen}
@@ -251,7 +247,7 @@ export function FloatingHeader({
           </LiquidTextButton>
         </HeaderButtonsUI>
       ) : section === "history" ? (
-        <HeaderButtonsUI className="pointer-events-auto relative z-10">
+        <HeaderButtonsUI className="pointer-events-auto relative z-10 backdrop-blur-2xl">
           <HeaderButtonUI
             iconOnly
             onClick={onNewChat}
@@ -262,7 +258,7 @@ export function FloatingHeader({
           </HeaderButtonUI>
         </HeaderButtonsUI>
       ) : section === "workflows" ? (
-        <HeaderButtonsUI className="pointer-events-auto relative z-10">
+        <HeaderButtonsUI className="pointer-events-auto relative z-10 backdrop-blur-2xl">
           <HeaderButtonUI
             iconOnly
             onClick={onNewWorkflow}
@@ -273,7 +269,7 @@ export function FloatingHeader({
           </HeaderButtonUI>
         </HeaderButtonsUI>
       ) : section === "actions" ? (
-        <HeaderButtonsUI className="pointer-events-auto relative z-10">
+        <HeaderButtonsUI className="pointer-events-auto relative z-10 backdrop-blur-2xl">
           <HeaderButtonUI
             iconOnly
             onClick={onNewQuickAction}

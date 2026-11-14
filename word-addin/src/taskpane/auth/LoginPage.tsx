@@ -1,20 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "./useAuth";
-import { Input } from "../../shared/ui/input";
-import { Label } from "../../shared/ui/label";
-import { WordAddinLogo } from "../components/shell/WordAddinLogo";
-import { PillButtonUI as PillButton } from "@mike/pill-button-ui";
-import { GoogleIconUI } from "@mike/google-icon-ui";
-import { MicrosoftIconUI } from "@mike/microsoft-icon-ui";
-import { AuthDividerUI as AuthDivider } from "@mike/auth-divider-ui";
 import {
+  InputUI,
+  PillButtonUI as PillButton,
+  GoogleIconUI,
+  AuthDividerUI as AuthDivider,
   authGlassCardUIClassName,
   authInputUIClassName,
-} from "@mike/auth-styles-ui";
+} from "@mike/ui";
+import { MicrosoftIconUI } from "../../../../packages/ui/src/MicrosoftIconUI";
+import { Label } from "../../shared/ui/label";
+import { WordAddinLogo } from "../components/shell/WordAddinLogo";
+import { WEB_APP_URL, openExternalUrl } from "../lib/openExternalUrl";
 
-const WEB_APP_URL = (
-  process.env.REACT_APP_WEB_APP_URL || "https://app.mikeoss.com"
-).replace(/\/+$/, "");
 const API_BASE = (process.env.REACT_APP_API_BASE_URL || "/api").replace(
   /\/+$/,
   "",
@@ -25,13 +23,7 @@ function openWebAuthPage(
   path: string
 ): void {
   event.preventDefault();
-  const url = `${WEB_APP_URL}${path}`;
-  const ui = typeof Office !== "undefined" ? Office.context?.ui : undefined;
-  if (ui && typeof ui.openBrowserWindow === "function") {
-    ui.openBrowserWindow(url);
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
+  openExternalUrl(`${WEB_APP_URL}${path}`);
 }
 
 export function LoginPage(): React.ReactElement {
@@ -106,7 +98,7 @@ export function LoginPage(): React.ReactElement {
                 >
                   Email
                 </Label>
-                <Input
+                <InputUI
                   id="email"
                   type="email"
                   value={email}
@@ -137,7 +129,7 @@ export function LoginPage(): React.ReactElement {
                     Forgot password?
                   </a>
                 </div>
-                <Input
+                <InputUI
                   id="password"
                   type="password"
                   value={password}

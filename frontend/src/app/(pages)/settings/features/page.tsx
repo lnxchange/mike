@@ -1,45 +1,36 @@
 "use client";
 
 import { useState } from "react";
-import { ApiKeyField } from "@/app/components/settings/ApiKeyField";
 import {
   SettingsDescription,
   SettingsLabel,
 } from "@/app/components/settings/SettingsText";
-import { SettingsCard } from "@/app/components/settings/SettingsCard";
+import { GlassCardUI, ToggleSwitchUI } from "@mike/ui";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { WebSearchSection } from "@/app/components/settings/WebSearchSection";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 
 export default function FeaturesPage() {
   const {
     profile,
-    updateApiKey,
-    updateLegalResearchUs,
     updateLegalResearchAu,
     updateLegalResearchAuEnergy,
     updateLegalResearchAuVic,
     updateLegalResearchAuCases,
     updateQuickActionsVisible,
+    updateResponseDetailsVisible,
   } = useUserProfile();
-  const [quickActionsError, setQuickActionsError] = useState<string | null>(
-    null,
-  );
-  const [savingUs, setSavingUs] = useState(false);
   const [savingAu, setSavingAu] = useState(false);
   const [savingAuEnergy, setSavingAuEnergy] = useState(false);
   const [savingAuVic, setSavingAuVic] = useState(false);
   const [savingAuCases, setSavingAuCases] = useState(false);
   const [savingQuickActions, setSavingQuickActions] = useState(false);
-  const [usError, setUsError] = useState<string | null>(null);
+  const [savingResponseDetails, setSavingResponseDetails] = useState(false);
   const [auError, setAuError] = useState<string | null>(null);
   const [auEnergyError, setAuEnergyError] = useState<string | null>(null);
   const [auVicError, setAuVicError] = useState<string | null>(null);
   const [auCasesError, setAuCasesError] = useState<string | null>(null);
-  const [optimisticLegalResearchUs, setOptimisticLegalResearchUs] = useState<
-    boolean | null
-  >(null);
   const [optimisticLegalResearchAu, setOptimisticLegalResearchAu] = useState<
     boolean | null
   >(null);
@@ -50,14 +41,11 @@ export default function FeaturesPage() {
   const [optimisticLegalResearchAuCases, setOptimisticLegalResearchAuCases] =
     useState<boolean | null>(null);
 
-  const persistedLegalResearchUs = profile?.legalResearchUs ?? true;
   const persistedLegalResearchAu = profile?.legalResearchAu ?? false;
   const persistedLegalResearchAuEnergy =
     profile?.legalResearchAuEnergy ?? false;
   const persistedLegalResearchAuVic = profile?.legalResearchAuVic ?? false;
   const persistedLegalResearchAuCases = profile?.legalResearchAuCases ?? false;
-  const courtListenerEnabled =
-    optimisticLegalResearchUs ?? persistedLegalResearchUs;
   const auLegislationEnabled =
     optimisticLegalResearchAu ?? persistedLegalResearchAu;
   const auEnergyEnabled =
@@ -67,26 +55,22 @@ export default function FeaturesPage() {
   const auCasesEnabled =
     optimisticLegalResearchAuCases ?? persistedLegalResearchAuCases;
   const quickActionsVisible = profile?.quickActionsVisible ?? true;
+  const responseDetailsVisible = profile?.responseDetailsVisible ?? false;
 
   const setQuickActionsVisible = async (visible: boolean) => {
-    setQuickActionsError(null);
     setSavingQuickActions(true);
-    const ok = await updateQuickActionsVisible(visible);
+    // A failure is reported by the profile context's notice (with Retry);
+    // the toggle reads the profile, so it is already back where it was.
+    await updateQuickActionsVisible(visible);
     setSavingQuickActions(false);
-    if (!ok) setQuickActionsError("Could not update. Try again.");
   };
 
-  const handleCourtListenerChange = async (enabled: boolean) => {
-    if (savingUs) return;
-    setUsError(null);
-    setOptimisticLegalResearchUs(enabled);
-    setSavingUs(true);
-    const ok = await updateLegalResearchUs(enabled);
-    setSavingUs(false);
-    setOptimisticLegalResearchUs(null);
-    if (!ok) {
-      setUsError("Could not update. Try again.");
-    }
+  const setResponseDetailsVisible = async (visible: boolean) => {
+    setSavingResponseDetails(true);
+    // As with quick actions, the profile context reports a failure and the
+    // toggle, which reads the profile, stays where it was.
+    await updateResponseDetailsVisible(visible);
+    setSavingResponseDetails(false);
   };
 
   const handleAuLegislationChange = async (enabled: boolean) => {
@@ -144,19 +128,14 @@ export default function FeaturesPage() {
   return (
     <div className="space-y-8">
       <section className="space-y-3">
-        <SettingsHeading>Assistant</SettingsHeading>
-        <SettingsCard>
+        <SettingsHeading id="assistant-features">Assistant</SettingsHeading>
+        <GlassCardUI>
           <SettingsRow>
             <div className="min-w-0 space-y-1">
               <SettingsLabel>Quick actions</SettingsLabel>
               <SettingsDescription>
                 Show the quick actions row on the assistant start screen.
               </SettingsDescription>
-              {quickActionsError && (
-                <p className="text-sm text-red-600" role="alert">
-                  {quickActionsError}
-                </p>
-              )}
             </div>
             <ToggleSwitchUI
               checked={quickActionsVisible}
@@ -168,45 +147,30 @@ export default function FeaturesPage() {
               }}
             />
           </SettingsRow>
-        </SettingsCard>
+          <SettingsRow>
+            <div className="min-w-0 space-y-1">
+              <SettingsLabel>Response details</SettingsLabel>
+              <SettingsDescription>
+                Show the model, reasoning effort and token count under each
+                response and subagent.
+              </SettingsDescription>
+            </div>
+            <ToggleSwitchUI
+              checked={responseDetailsVisible}
+              disabled={savingResponseDetails}
+              aria-busy={savingResponseDetails}
+              aria-label="Response details"
+              onCheckedChange={(checked) => {
+                void setResponseDetailsVisible(checked);
+              }}
+            />
+          </SettingsRow>
+        </GlassCardUI>
       </section>
 
       <section className="space-y-3">
-        <SettingsHeading>Legal Research</SettingsHeading>
-        <SettingsCard>
-          <SettingsRow>
-            <div className="min-w-0 space-y-1">
-              <SettingsLabel>Enable CourtListener</SettingsLabel>
-              <SettingsDescription>
-                CourtListener provides access to US case law.
-              </SettingsDescription>
-              {usError && (
-                <p className="text-sm text-red-600" role="alert">
-                  {usError}
-                </p>
-              )}
-            </div>
-            <ToggleSwitchUI
-              checked={courtListenerEnabled}
-              disabled={savingUs}
-              aria-busy={savingUs}
-              aria-label="Enable CourtListener"
-              onCheckedChange={(enabled) =>
-                void handleCourtListenerChange(enabled)
-              }
-            />
-          </SettingsRow>
-          {courtListenerEnabled && (
-            <ApiKeyField
-              label="CourtListener API Key"
-              placeholder="Token..."
-              hasSavedKey={profile?.apiKeys.courtlistener.source === "user"}
-              onSave={(value) =>
-                updateApiKey("courtlistener", value.trim() || null)
-              }
-              onRemove={() => updateApiKey("courtlistener", null)}
-            />
-          )}
+        <SettingsHeading id="legal-research">Legal Research</SettingsHeading>
+        <GlassCardUI>
           <SettingsRow>
             <div className="min-w-0 space-y-1">
               <SettingsLabel>
@@ -297,8 +261,10 @@ export default function FeaturesPage() {
               onCheckedChange={(enabled) => void handleAuCasesChange(enabled)}
             />
           </SettingsRow>
-        </SettingsCard>
+        </GlassCardUI>
       </section>
+
+      <WebSearchSection />
     </div>
   );
 }

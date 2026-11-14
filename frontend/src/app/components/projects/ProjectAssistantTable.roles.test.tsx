@@ -3,16 +3,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import type { Chat } from "@/app/components/shared/types";
 import { ProjectAssistantTable } from "./ProjectAssistantTable";
 
-// Renaming a chat is `content.edit` — member and above — on the role the
-// SERVER served for that chat. The gate here used to be
-// `chat.user_id !== currentUserId`, which refused a project admin their
-// colleague's chat and offered the rename to a viewer who happened to have
-// started the thread... which is right, but only by accident: the creator
-// branch derives admin, and that is where the right comes from.
+// Managing chat titles and deletion is owner-only, regardless of authorship.
 
 const onOwnerOnlyAction = vi.fn();
 const setRenamingChatId = vi.fn();
 const setRenameChatValue = vi.fn();
+const onDeleteChat = vi.fn();
 
 function chat(overrides: Partial<Chat> = {}): Chat {
     return {
@@ -29,6 +25,7 @@ function renderTable(row: Chat) {
     const chats = [row];
     return render(
         <ProjectAssistantTable
+            canCreateChat={true}
             chats={chats}
             filteredChats={chats}
             selectedChatIds={[]}
@@ -37,7 +34,7 @@ function renderTable(row: Chat) {
             currentUserId="u1"
             onCreateChat={vi.fn()}
             onOpenChat={vi.fn()}
-            onDeleteChat={vi.fn()}
+            onDeleteChat={onDeleteChat}
             onDeleteSelectedChats={vi.fn()}
             onOwnerOnlyAction={onOwnerOnlyAction}
             submitChatRename={vi.fn()}
@@ -50,8 +47,20 @@ function renderTable(row: Chat) {
 
 /** Open the row's action menu and click Rename. */
 function clickRename() {
-    fireEvent.click(screen.getByText("···"));
+    fireEvent.pointerDown(
+        screen.getByText("···"),
+        new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
     fireEvent.click(screen.getByText("Rename"));
+}
+
+/** Open the row's action menu and click Delete. */
+function clickDelete() {
+    fireEvent.pointerDown(
+        screen.getByText("···"),
+        new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    fireEvent.click(screen.getByText("Delete"));
 }
 
 beforeEach(() => {
@@ -68,25 +77,47 @@ describe("ProjectAssistantTable rename gating", () => {
         expect(onOwnerOnlyAction).not.toHaveBeenCalled();
     });
 
-    it("lets a member rename it too — content collaboration is member-tier", () => {
-        renderTable(chat({ access_role: "editor", is_owner: false }));
-
-        clickRename();
-
-        expect(setRenamingChatId).toHaveBeenCalledWith("c1");
+    it.each(["editor", "viewer"] as const)("hides Rename for a %s", (role) => {
+        renderTable(chat({ access_role: role, is_owner: false }));
+        fireEvent.pointerDown(screen.getByText("···"), new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+        expect(screen.queryByText("Rename")).toBeNull();
+        expect(setRenamingChatId).not.toHaveBeenCalled();
     });
 
-    it("refuses a viewer, naming the role the action needs", () => {
-        renderTable(chat({ access_role: "viewer", is_owner: false }));
+});
 
-        clickRename();
+describe("ProjectAssistantTable delete confirmation", () => {
+    it("asks before deleting a colleague's chat", () => {
+        // One click used to be the whole interaction: the row was gone, and
+        // the chat with it, with nothing between the menu and the request.
+        renderTable(chat({ access_role: "owner", is_owner: false }));
 
-        expect(setRenamingChatId).not.toHaveBeenCalled();
-        // "editor", not "owner": the popup tells the viewer which tier they
-        // would have to be, and renaming does not need an admin.
-        expect(onOwnerOnlyAction).toHaveBeenCalledWith({
-            action: "rename this chat",
-            requiredRole: "editor",
-        });
+        clickDelete();
+
+        expect(onDeleteChat).not.toHaveBeenCalled();
+        expect(screen.getByText("Delete chat?")).toBeInTheDocument();
+        expect(screen.getByText("This cannot be undone.")).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+        expect(onDeleteChat).toHaveBeenCalledTimes(1);
+        expect(onDeleteChat.mock.calls[0][0]).toMatchObject({ id: "c1" });
+    });
+
+    it("deletes nothing when the confirmation is cancelled", () => {
+        renderTable(chat({ access_role: "owner", is_owner: false }));
+
+        clickDelete();
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByText("Delete chat?")).not.toBeInTheDocument();
+        expect(onDeleteChat).not.toHaveBeenCalled();
+    });
+
+    it("hides Delete for an editor", () => {
+        renderTable(chat({ access_role: "editor", is_owner: false }));
+        fireEvent.pointerDown(screen.getByText("···"), new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+        expect(screen.queryByText("Delete")).toBeNull();
+        expect(onDeleteChat).not.toHaveBeenCalled();
     });
 });

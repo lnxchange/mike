@@ -13,10 +13,8 @@ import { Modal } from "@/app/components/modals/Modal";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { FieldLabel } from "@/app/components/ui/form-field";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
+import { GlassCardUI, PillButtonUI, ToggleSwitchUI } from "@mike/ui";
 import { MarkdownEditor } from "@/app/components/ui/markdown-editor";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
 import {
     getProjectMemory,
     setProjectMemoryEnabled,
@@ -87,7 +85,7 @@ export function ProjectMemoryModal({
         changeDraft,
         setError,
         setAutosaveError,
-        useLatestConflict,
+        reloadLatest,
         keepDraftAfterConflict,
     } = useMemoryFileController({
         active: open,
@@ -102,6 +100,7 @@ export function ProjectMemoryModal({
         saveMemory,
         conflictLoadError: `${t.project} memory changed while you were editing. Reopen memory before saving again.`,
         saveError: `${t.project} memory could not be saved. Your draft has been kept.`,
+        disabledError: `${t.project} memory was turned off while you were editing, so your changes were not saved.`,
         onCurrentChange: handleCurrentChange,
     });
 
@@ -291,7 +290,7 @@ export function ProjectMemoryModal({
                                 {conflict ? (
                                     <MemoryConflictNotice
                                         project
-                                        onReload={useLatestConflict}
+                                        onReload={reloadLatest}
                                         onKeepDraft={keepDraftAfterConflict}
                                     />
                                 ) : null}

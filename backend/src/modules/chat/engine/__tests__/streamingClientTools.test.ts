@@ -145,6 +145,8 @@ describe("runLLMStream client-tool dispatch", () => {
     const names = params.tools.map((tool) => tool.function.name);
     expect(names).toContain("apply_word_edits");
     expect(names).toContain("read_document");
+    // Mirrors DEFAULT_MAX_ITERATIONS in llm/aiSdk.ts; see the note at the
+    // default in streaming.ts for why neither side imports the other here.
     expect(params.maxIterations).toBe(16);
   });
 

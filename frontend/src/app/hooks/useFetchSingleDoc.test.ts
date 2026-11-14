@@ -4,13 +4,25 @@ import { authenticatedFetch } from "@/app/lib/authEvents";
 import { useFetchSingleDoc } from "./useFetchSingleDoc";
 
 vi.mock("@/app/lib/authEvents", () => ({ authenticatedFetch: vi.fn() }));
-beforeEach(() => vi.mocked(authenticatedFetch).mockReset());
+const reporting = vi.hoisted(() => ({
+    reportError: vi.fn(),
+    reportNetworkFailure: vi.fn(),
+}));
+vi.mock("@/app/lib/errorReporting", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/app/lib/errorReporting")>()),
+    ...reporting,
+}));
+beforeEach(() => {
+    vi.mocked(authenticatedFetch).mockReset();
+    vi.clearAllMocks();
+});
 const pdfBytes = () => Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]);
 const pdf = () =>
     new Response(pdfBytes(), {
         headers: { "Content-Type": "application/pdf" },
     });
 const pdfMagic = () => new Response(pdfBytes());
+const LOAD_FAILED = "This document could not be loaded. Please try again.";
 
 it("does not refetch stable inputs, refreshes revisions, and clears a closed document", async () => {
     vi.mocked(authenticatedFetch).mockImplementation(async () => pdf());
@@ -77,11 +89,7 @@ it("surfaces a load error for a 304 or HTML body without treating it as a timeou
         ({ id }) => useFetchSingleDoc(id),
         { initialProps: { id: "d1" } },
     );
-    await waitFor(() =>
-        expect(result.current.error).toBe(
-            "This document could not be loaded. Please try again.",
-        ),
-    );
+    await waitFor(() => expect(result.current.error).toBe(LOAD_FAILED));
     expect(result.current.error).not.toBe(
         "This document is taking too long to open. Please try again.",
     );
@@ -97,11 +105,7 @@ it("surfaces a load error for a 304 or HTML body without treating it as a timeou
         }),
     );
     rerender({ id: "d2" });
-    await waitFor(() =>
-        expect(result.current.error).toBe(
-            "This document could not be loaded. Please try again.",
-        ),
-    );
+    await waitFor(() => expect(result.current.error).toBe(LOAD_FAILED));
     expect(result.current.result).toBeNull();
 });
 
@@ -112,10 +116,64 @@ it("rejects an application/pdf response that is not a PDF", async () => {
         }),
     );
     const { result } = renderHook(() => useFetchSingleDoc("d1"));
-    await waitFor(() =>
-        expect(result.current.error).toBe(
-            "This document could not be loaded. Please try again.",
-        ),
-    );
+    await waitFor(() => expect(result.current.error).toBe(LOAD_FAILED));
     expect(result.current.result).toBeNull();
+});
+
+it("reports a 5xx under documents.open with its request id, and keeps the generic message", async () => {
+    vi.mocked(authenticatedFetch).mockResolvedValue(
+        new Response("boom", {
+            status: 500,
+            headers: { "x-request-id": "11111111-2222-4333-8444-555555555555" },
+        }),
+    );
+    const { result } = renderHook(() => useFetchSingleDoc("d1"));
+    await waitFor(() => expect(result.current.error).toBe(LOAD_FAILED));
+    expect(reporting.reportError).toHaveBeenCalledTimes(1);
+    expect(reporting.reportError.mock.calls[0]![1]).toMatchObject({
+        tags: {
+            component: "mike-api",
+            operation: "documents.open",
+            http_method: "GET",
+            http_status: 500,
+            request_id: "11111111-2222-4333-8444-555555555555",
+        },
+    });
+});
+
+it("does not report a 4xx answer", async () => {
+    vi.mocked(authenticatedFetch).mockResolvedValue(new Response("gone", { status: 404 }));
+    const { result } = renderHook(() => useFetchSingleDoc("d1"));
+    await waitFor(() => expect(result.current.error).toBe(LOAD_FAILED));
+    expect(reporting.reportError).not.toHaveBeenCalled();
+    expect(reporting.reportNetworkFailure).not.toHaveBeenCalled();
+});
+
+it("hands a request that never got a response to the network reporter", async () => {
+    const failure = new TypeError("Failed to fetch");
+    vi.mocked(authenticatedFetch).mockRejectedValue(failure);
+    const { result } = renderHook(() => useFetchSingleDoc("d1", "v1"));
+    await waitFor(() => expect(result.current.error).toBe(LOAD_FAILED));
+    expect(reporting.reportNetworkFailure).toHaveBeenCalledWith(failure, {
+        method: "GET",
+        url: "/api/single-documents/d1/display?version_id=v1",
+    });
+    expect(reporting.reportError).not.toHaveBeenCalled();
+});
+
+it("does not report or set an error for a download it aborted itself", async () => {
+    vi.mocked(authenticatedFetch).mockImplementation(
+        (_url, init) =>
+            new Promise((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () =>
+                    reject(new DOMException("Aborted", "AbortError")),
+                );
+            }),
+    );
+    const { result, unmount } = renderHook(() => useFetchSingleDoc("d1"));
+    unmount();
+    await act(async () => {});
+    expect(result.current.error).toBeNull();
+    expect(reporting.reportError).not.toHaveBeenCalled();
+    expect(reporting.reportNetworkFailure).not.toHaveBeenCalled();
 });

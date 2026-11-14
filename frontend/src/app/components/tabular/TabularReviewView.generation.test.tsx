@@ -1,0 +1,516 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+    getTabularReview,
+    getTabularReviewHistoryStatuses,
+    regenerateTabularCell,
+    stopTabularGeneration,
+    streamTabularGeneration,
+    streamTabularGenerationResume,
+} from "@/app/lib/mikeApi";
+import type {
+    TabularCell,
+    TabularReview,
+    TabularReviewRow,
+} from "@/app/components/shared/types";
+import type { ReviewCellStore } from "./reviewCellStore";
+import { TRView } from "./TabularReviewView";
+import * as Sentry from "@sentry/react";
+import { clearToasts, privacyBoundaryIntegration } from "@mike/client";
+import { scrubEvent } from "@/app/lib/errorReporting";
+
+const { apiKeyState } = vi.hoisted(() => ({
+    apiKeyState: {
+        claude: { configured: true, source: "user" },
+        gemini: { configured: false, source: null },
+        openai: { configured: false, source: null },
+        openrouter: { configured: false, source: null },
+        vercel: { configured: false, source: null },
+        "opencode-go": { configured: false, source: null },
+        courtlistener: { configured: false, source: null },
+    },
+}));
+
+// This file pins the ONE question server-owned generation asks of the client:
+// who ends a run. Closing the socket no longer does — Stop is an endpoint, a
+// reload attaches to the run the server reports, and a dropped stream resumes
+// from the last frame it saw instead of replaying the grid.
+vi.mock("next/navigation", () => ({
+    useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+    useSearchParams: () => new URLSearchParams(),
+}));
+vi.mock("@/app/lib/mikeApi", async () => ({
+    reportedUpstreamMessage: (await import("@mike/client")).reportedUpstreamMessage,
+    MikeApiError: class MikeApiError extends Error {
+        status: number;
+        code: string | null;
+        constructor(args: {
+            message: string;
+            status: number;
+            code?: string | null;
+        }) {
+            super(args.message);
+            this.name = "MikeApiError";
+            this.status = args.status;
+            this.code = args.code ?? null;
+        }
+    },
+    clearTabularCells: vi.fn(),
+    deleteTabularReview: vi.fn(),
+    getTabularReview: vi.fn(),
+    getTabularReviewHistoryStatuses: vi.fn(),
+    getProject: vi.fn(),
+    getTabularReviewPeople: vi.fn(async () => ({ owner: null, members: [] })),
+    getOllamaModels: vi.fn(async () => []),
+    listProjects: vi.fn(async () => []),
+    regenerateTabularCell: vi.fn(),
+    stopTabularGeneration: vi.fn(async () => ({
+        stopped: true,
+        finished: false,
+    })),
+    streamTabularGeneration: vi.fn(),
+    streamTabularGenerationResume: vi.fn(),
+    updateTabularReview: vi.fn(async (_id: string, patch: unknown) => patch),
+    uploadReviewDocument: vi.fn(),
+}));
+vi.mock("@/app/contexts/AuthContext", () => ({
+    useAuth: () => ({ user: { id: "me", email: "me@firm.test" } }),
+}));
+vi.mock("@/app/contexts/UserProfileContext", () => ({
+    useUserProfile: () => ({
+        profile: { apiKeys: apiKeyState },
+        apiKeysDegraded: false,
+    }),
+}));
+vi.mock("@/app/contexts/SidebarContext", () => ({
+    useSidebar: () => ({ setSidebarOpen: vi.fn() }),
+}));
+vi.mock("@/app/hooks/useConfiguredModels", () => ({
+    useConfiguredModels: () => [],
+}));
+vi.mock("../assistant/ModelToggle", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../assistant/ModelToggle")>()),
+    ModelToggle: () => null,
+}));
+// The grid as TRView hands it over: the published cell list (whose identity
+// changes only on a structural update) and the per-cell store.
+const table = vi.hoisted(() => ({
+    cells: null as TabularCell[] | null,
+    store: null as ReviewCellStore | null,
+}));
+vi.mock("./TRTable", () => ({
+    TRTable: (props: {
+        cells: TabularCell[];
+        cellStore: ReviewCellStore;
+        onExpand: (cell: TabularCell) => void;
+    }) => {
+        table.cells = props.cells;
+        table.store = props.cellStore;
+        return (
+            <button type="button" onClick={() => props.onExpand(props.cells[0])}>
+                Open first cell
+            </button>
+        );
+    },
+}));
+vi.mock("./TRSidePanel", () => ({
+    TRSidePanel: (props: { onRegenerate?: () => void }) =>
+        props.onRegenerate ? (
+            <button type="button" onClick={props.onRegenerate}>
+                Regenerate cell
+            </button>
+        ) : null,
+}));
+vi.mock("./TRChatPanel", () => ({ TRChatPanel: () => null }));
+vi.mock("./AddColumnModal", () => ({ AddColumnModal: () => null }));
+vi.mock("./TRWorkflowModal", () => ({ TRWorkflowModal: () => null }));
+vi.mock("../modals/AddDocumentsModal", () => ({
+    AddDocumentsModal: () => null,
+}));
+vi.mock("../modals/AccessModal", () => ({ AccessModal: () => null }));
+vi.mock("./TabularReviewDetailsModal", () => ({
+    TabularReviewDetailsModal: () => null,
+}));
+
+const ROW: TabularReviewRow = {
+    id: "row-1",
+    review_id: "r1",
+    label: "Contract.pdf",
+    row_type: "document",
+    folder_id: null,
+    library_folder_id: null,
+    document_id: "doc-1",
+    sort_index: 0,
+    source_document_ids: ["doc-1"],
+} as TabularReviewRow;
+
+function review(over: Partial<TabularReview> = {}): TabularReview {
+    return {
+        id: "r1",
+        project_id: null,
+        user_id: "me",
+        title: "Diligence",
+        access_role: "editor",
+        model: "claude-sonnet-5",
+        columns_config: [{ index: 0, name: "Term", prompt: "Find it" }],
+        document_ids: ["doc-1"],
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+        ...over,
+    } as TabularReview;
+}
+
+function mockDetail(over: {
+    review?: Partial<TabularReview>;
+    active_generation?: { id: string; seq: number } | null;
+}) {
+    vi.mocked(getTabularReview).mockResolvedValue({
+        review: review(over.review),
+        cells: [],
+        rows: [ROW],
+        documents: [],
+        active_generation: over.active_generation ?? null,
+    });
+}
+
+/** An SSE response the test feeds frame by frame. */
+function openStream() {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+        start(c) {
+            controller = c;
+        },
+    });
+    return {
+        response: new Response(body, { status: 200 }),
+        push: (text: string) => controller.enqueue(encoder.encode(text)),
+        done: () => {
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+        },
+        fail: () => controller.error(new Error("connection reset")),
+    };
+}
+
+describe("TabularReviewView server-owned generation", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.mocked(stopTabularGeneration).mockResolvedValue({
+            stopped: true,
+            finished: false,
+        });
+        window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+            matches: true,
+            media: query,
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn(),
+        }));
+    });
+
+    it.each(["backend", undefined, "proxy"])("reports run-start failures only without explicit backend ownership (%s)", async owner => {
+        const events: Sentry.Event[] = [];
+        clearToasts();
+        Sentry.init({
+            dsn: "https://test@sentry.invalid/1", defaultIntegrations: false,
+            integrations: [privacyBoundaryIntegration()], beforeSend: scrubEvent,
+            transport: () => ({ send: async envelope => {
+                for (const [header, payload] of envelope[1]) if (header.type === "event") events.push(payload as Sentry.Event);
+                return { statusCode: 200 };
+            }, flush: async () => true }),
+        });
+        try {
+            mockDetail({});
+            const requestId = "11111111-1111-4111-8111-111111111111";
+            vi.mocked(streamTabularGeneration).mockResolvedValueOnce(Response.json({
+                detail: "PRIVATE_BACKEND_DETAIL", code: "internal_error", request_id: requestId, reporting_owner: owner,
+            }, { status: 503 }));
+            render(<TRView reviewId="r1" />);
+            fireEvent.click(await screen.findByTitle("Run review"));
+            await waitFor(() => expect(streamTabularGeneration).toHaveBeenCalledOnce());
+            await screen.findByTitle("Run review");
+            expect(await Sentry.flush(2000)).toBe(true);
+            expect(events).toHaveLength(owner === "backend" ? 0 : 1);
+            if (owner !== "backend") expect(events[0]?.tags).toMatchObject({ operation: "tabular.run", http_status: 503, request_id: requestId });
+            expect(JSON.stringify(events)).not.toContain("PRIVATE_BACKEND_DETAIL");
+        } finally {
+            await Sentry.close();
+            clearToasts();
+        }
+    });
+
+    it("uses the new review timestamp when running again after completion", async () => {
+        mockDetail({});
+        const stream = openStream();
+        vi.mocked(streamTabularGeneration).mockResolvedValueOnce(stream.response);
+        render(<TRView reviewId="r1" />);
+        fireEvent.click(await screen.findByTitle("Run review"));
+        await screen.findByTitle("Stop generation");
+        mockDetail({ review: { updated_at: "2026-10-16T01:00:00Z" } });
+        stream.done();
+        await screen.findByTitle("Run review");
+        const rerun = openStream();
+        vi.mocked(streamTabularGeneration).mockResolvedValueOnce(rerun.response);
+        fireEvent.click(screen.getByTitle("Run review"));
+        await waitFor(() => expect(streamTabularGeneration).toHaveBeenLastCalledWith(
+            "r1", "2026-10-16T01:00:00Z", expect.any(AbortSignal),
+        ));
+        rerun.done();
+        await screen.findByTitle("Run review");
+    });
+
+    it("shows a server deadline error to the user", async () => {
+        mockDetail({});
+        const stream = openStream();
+        vi.mocked(streamTabularGeneration).mockResolvedValue(stream.response);
+        render(<TRView reviewId="r1" />);
+        fireEvent.click(await screen.findByTitle("Run review"));
+        await screen.findByTitle("Stop generation");
+        const message =
+            "The request timed out because it stopped responding. Please try again.";
+        stream.push(
+            `data: ${JSON.stringify({ type: "error", message, safe_to_display: true })}\n\n`,
+        );
+        stream.done();
+        await screen.findByTitle("Run review");
+        expect(await screen.findByText(message)).toBeInTheDocument();
+    });
+
+    it("hides unsafe server error details", async () => {
+        mockDetail({});
+        const stream = openStream();
+        vi.mocked(streamTabularGeneration).mockResolvedValue(stream.response);
+        render(<TRView reviewId="r1" />);
+        fireEvent.click(await screen.findByTitle("Run review"));
+        await screen.findByTitle("Stop generation");
+        const message = "internal database credential details";
+        stream.push(
+            `data: ${JSON.stringify({ type: "error", message, safe_to_display: false })}\n\n`,
+        );
+        stream.done();
+        await screen.findByTitle("Run review");
+        expect(
+            await screen.findByText(
+                "The review could not be completed. Please try again.",
+            ),
+        ).toBeInTheDocument();
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+    });
+
+    it("stops through the endpoint instead of dropping the stream", async () => {
+        mockDetail({});
+        const stream = openStream();
+        vi.mocked(streamTabularGeneration).mockResolvedValue(stream.response);
+
+        render(<TRView reviewId="r1" />);
+        fireEvent.click(await screen.findByTitle("Run review"));
+
+        // The run is live: the toolbar offers Stop.
+        const stop = await screen.findByTitle("Stop generation");
+        const signal = vi.mocked(streamTabularGeneration).mock.calls[0][2];
+        fireEvent.click(stop);
+
+        await waitFor(() =>
+            expect(stopTabularGeneration).toHaveBeenCalledWith("r1"),
+        );
+        // Closing the socket would only detach this tab while the server kept
+        // extracting, so Stop must NOT abort the request.
+        expect(signal?.aborted).toBe(false);
+
+        // The server ends the run; the client then reloads the settled review.
+        stream.push('data: {"type":"cancelled"}\n\n');
+        stream.done();
+        await waitFor(() =>
+            expect(screen.getByTitle("Run review")).toBeInTheDocument(),
+        );
+        expect(getTabularReview).toHaveBeenCalledTimes(2);
+    });
+
+    it("falls back to dropping the stream when the server has no run to stop", async () => {
+        // An async (queue-backed) deployment, or another replica's run: there
+        // is nothing in this process to stop, so Stop means what it used to.
+        const { MikeApiError } = await import("@/app/lib/mikeApi");
+        mockDetail({});
+        const stream = openStream();
+        vi.mocked(streamTabularGeneration).mockResolvedValue(stream.response);
+        vi.mocked(stopTabularGeneration).mockRejectedValue(
+            new MikeApiError({
+                message: "no run",
+                status: 404,
+                code: "generation_not_found",
+            }),
+        );
+
+        render(<TRView reviewId="r1" />);
+        fireEvent.click(await screen.findByTitle("Run review"));
+        const signal = vi.mocked(streamTabularGeneration).mock.calls[0][2];
+        fireEvent.click(await screen.findByTitle("Stop generation"));
+
+        await waitFor(() => expect(signal?.aborted).toBe(true));
+    });
+
+    it("attaches to a run the server still owns, with Stop offered", async () => {
+        mockDetail({
+            review: { is_running: true },
+            active_generation: { id: "gen-1", seq: 4 },
+        });
+        const stream = openStream();
+        vi.mocked(streamTabularGenerationResume).mockResolvedValue(
+            stream.response,
+        );
+
+        render(<TRView reviewId="r1" />);
+
+        // A reload attaches from the first frame — replaying cell updates is
+        // idempotent — and the run is stoppable, so the button reads Stop.
+        await waitFor(() =>
+            expect(streamTabularGenerationResume).toHaveBeenCalledWith(
+                "r1",
+                expect.anything(),
+                1,
+            ),
+        );
+        expect(await screen.findByTitle("Stop generation")).toBeInTheDocument();
+
+        mockDetail({ review: { updated_at: "2026-10-16T01:00:00Z", is_running: false } });
+        stream.done();
+        await waitFor(() =>
+            expect(screen.getByTitle("Run review")).toBeInTheDocument(),
+        );
+    });
+
+    it("only watches a lease it cannot stop", async () => {
+        // `is_running` without `active_generation` is a run this process does
+        // not own (the queue, or another replica). Attaching is all we can do.
+        mockDetail({ review: { is_running: true } });
+        const stream = openStream();
+        vi.mocked(streamTabularGenerationResume).mockResolvedValue(
+            stream.response,
+        );
+
+        render(<TRView reviewId="r1" />);
+
+        await waitFor(() =>
+            expect(streamTabularGenerationResume).toHaveBeenCalled(),
+        );
+        expect(screen.queryByTitle("Stop generation")).toBeNull();
+        stream.done();
+    });
+
+    it("reconnects from the last frame it saw, not from the start", async () => {
+        mockDetail({});
+        const first = openStream();
+        const resumed = openStream();
+        vi.mocked(streamTabularGeneration).mockResolvedValue(first.response);
+        vi.mocked(streamTabularGenerationResume).mockResolvedValue(
+            resumed.response,
+        );
+
+        render(<TRView reviewId="r1" />);
+        fireEvent.click(await screen.findByTitle("Run review"));
+        await screen.findByTitle("Stop generation");
+
+        first.push(
+            'id: 5\ndata: {"type":"cell_update","row_id":"row-1","column_index":0,"content":null,"status":"generating"}\n\n',
+        );
+        await waitFor(() =>
+            expect(
+                vi.mocked(streamTabularGeneration).mock.calls.length,
+            ).toBeGreaterThan(0),
+        );
+        first.fail();
+
+        // Frames 1–5 are already applied, so the reconnect asks for 6 onwards.
+        await waitFor(() =>
+            expect(streamTabularGenerationResume).toHaveBeenCalledWith(
+                "r1",
+                expect.anything(),
+                6,
+            ),
+        );
+        resumed.done();
+    });
+});
+
+describe("TabularReviewView single-cell regeneration", () => {
+    const CELL = {
+        id: "cell-1",
+        review_id: "r1",
+        row_id: "row-1",
+        document_id: "doc-1",
+        column_index: 0,
+        content: { summary: "Old" },
+        status: "done",
+        created_at: "2026-01-01T00:00:00Z",
+    } as TabularCell;
+
+    // A review whose run reports "running" for the next `requests` reads of
+    // either its full detail or its status snapshot.
+    function serverRunsFor(requests: number) {
+        let remaining = requests;
+        const running = () => remaining-- > 0;
+        vi.mocked(getTabularReview).mockImplementation(async () => ({
+            review: review({ is_running: running() } as Partial<TabularReview>),
+            cells: [CELL],
+            rows: [ROW],
+            documents: [],
+            active_generation: null,
+        }));
+        vi.mocked(getTabularReviewHistoryStatuses).mockImplementation(
+            async () =>
+                [{ id: "r1", is_running: running(), is_complete: false }] as never,
+        );
+    }
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.mocked(getTabularReview).mockResolvedValue({
+            review: review(),
+            cells: [CELL],
+            rows: [ROW],
+            documents: [],
+            active_generation: null,
+        });
+    });
+
+    async function openCell() {
+        render(<TRView reviewId="r1" />);
+        fireEvent.click(await screen.findByRole("button", { name: "Open first cell" }));
+        return screen.findByRole("button", { name: "Regenerate cell" });
+    }
+
+    it("updates only that cell instead of republishing the grid", async () => {
+        const regenerate = await openCell();
+        const published = table.cells;
+        let finish!: (content: TabularCell["content"]) => void;
+        vi.mocked(regenerateTabularCell).mockReturnValue(
+            new Promise((resolve) => { finish = resolve as never; }),
+        );
+        fireEvent.click(regenerate);
+        await waitFor(() =>
+            expect(table.store?.get("row-1", 0)?.status).toBe("generating"),
+        );
+        expect(table.cells).toBe(published);
+        serverRunsFor(0);
+        finish({ summary: "New" });
+        await waitFor(() => expect(getTabularReview).toHaveBeenCalledTimes(2));
+    });
+
+    it("polls the run's status, not the whole review, until the run ends", async () => {
+        const regenerate = await openCell();
+        vi.mocked(regenerateTabularCell).mockResolvedValue({ summary: "New" } as never);
+        serverRunsFor(3);
+        fireEvent.click(regenerate);
+        await waitFor(
+            () => expect(getTabularReviewHistoryStatuses).toHaveBeenCalledTimes(3),
+            { timeout: 3000 },
+        );
+        // The initial load, the first read after the cell, and the one after
+        // the run ended: never one full read per poll.
+        await waitFor(() => expect(getTabularReview).toHaveBeenCalledTimes(3));
+    });
+});

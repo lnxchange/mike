@@ -6,7 +6,7 @@ These instructions apply to the entire repository. Keep changes focused,
 preserve unrelated work in the tree, and follow the more detailed guidance in
 `CONTRIBUTING.md` and `docs/` when working in a documented subsystem.
 
-The repository requires Node.js 22 or newer and contains three applications:
+The repository requires Node.js 22.19 or newer and contains three applications:
 
 - `frontend/`: Next.js web application.
 - `backend/`: Express API, document processing, database access, and LLM
@@ -25,14 +25,23 @@ decorative pill badges unless a pill is specifically requested. This does not
 apply to established interactive pill controls such as `PillButton`,
 `TabPillButton`, and `OptionPill`.
 
+Keep ordinary account identifiers and their permission/status text fully visible.
+Do not truncate a normal-length email or hide its status to make a compact card
+fit. Put independent information on separate lines, allow long unbroken values
+to wrap, and let controls or cards reflow based on available container width.
+Verify both realistic and unusually long content at narrow widths; match loading
+states to the same layout. See the content-fitting rules in `docs/design-system.md`.
+
 Before creating UI markup, search these locations in order:
 
 1. `frontend/src/app/components/ui/` contains reusable web primitives such as
    buttons, inputs, dropdowns, search, empty states, and liquid-glass surfaces.
-2. `frontend/src/shared/ui/` contains framework-light components rendered by
-   both the web app and Word add-in. Files use the `XxxUI.tsx` convention, with
-   thin web adapters or re-exports in `frontend/src/app/components/ui/` where
-   appropriate. Code here must not import from `frontend/src/app/`.
+2. `packages/ui/` (imported as `@mike/ui`) contains framework-light
+   components rendered by both the web app and Word add-in. Files use the
+   `XxxUI.tsx` convention and are exported from `packages/ui/src/index.ts`,
+   with thin web adapters or re-exports in `frontend/src/app/components/ui/`
+   where appropriate. Code here may import `@mike/client` but never an
+   application (`frontend/src/app/`, `word-addin/src/`).
 3. `frontend/src/app/components/shared/` contains web-app building blocks that
    understand the application shell, including `PageHeader`,
    `TablePrimitive`, `TableToolbar`, `FileDirectory`, and side panels.
@@ -46,9 +55,9 @@ Before creating UI markup, search these locations in order:
 For add-in-only work, low-level controls live in `word-addin/src/shared/ui/`
 and reusable task-pane compositions live in
 `word-addin/src/taskpane/components/primitives/`. If a component must render in
-both the web app and add-in, prefer `frontend/src/shared/ui/`. When adding a
-cross-target file there, also add its `@source` entry to
-`word-addin/src/taskpane/styles.css` so Tailwind discovers its classes.
+both the web app and add-in, prefer `packages/ui/`. Export a new file from
+`packages/ui/src/index.ts`; both targets already scan the package for Tailwind
+classes.
 
 The web app is configured for shadcn's `new-york` style in
 `frontend/components.json`. If no existing primitive fits a non-trivial
@@ -89,11 +98,27 @@ Preserve the accessibility baseline:
   authentication, API error parsing, and request behavior stay consistent.
 - Reusable client behavior belongs in `frontend/src/app/hooks/` or
   `frontend/src/app/lib/`, with a colocated `*.test.ts` or `*.test.tsx` file.
+  Behavior the Word add-in also needs (error classification and toasts, the
+  model catalog, upload sessions, response excerpts, Sentry event hygiene)
+  lives in `packages/client/`, imported as `@mike/client`, and must stay
+  framework-free. Its public surface is `packages/client/src/index.ts`; its
+  tests are colocated and run with the frontend's Vitest.
 - Use the `@/` alias for imports rooted at `frontend/src/`.
+- Production frontend code must not import anything outside `frontend/`
+  except through a `paths` alias in `frontend/tsconfig.json` whose target
+  `frontend/Dockerfile` copies into the image. Test files may import shared
+  fixtures and add-in sources because `frontend/tsconfig.build.json` keeps
+  them out of `next build`; `frontend/src/__tests__/architecture.test.ts`
+  enforces both rules.
 
-Do not expose raw backend, database, provider, or stack errors in the UI. Map
-known 4xx responses to intentional messages and use the generic fallback
-helpers in `frontend/src/app/lib/userFacingError.ts` for unexpected failures.
+Do not expose raw backend, database, provider, or stack errors in the UI.
+Classify a thrown value once with `describeError` and show it with
+`notifyError` (both from `frontend/src/app/lib/userFacingError.ts`), which
+draws a `WarningPopup` that offers "Retry" only when a retry is honest and
+"Contact support" only for failures the user cannot fix. Auth sentences come
+from the single table in `frontend/src/app/lib/authMessages.ts`. See
+"Reporting failures" in `docs/design-system.md` for where each kind of
+failure is shown.
 
 ## Backend Structure
 
@@ -115,19 +140,28 @@ helpers in `frontend/src/app/lib/userFacingError.ts` for unexpected failures.
   in the routes file.
 - Large modules split the service into topic files (`<name>.<topic>.ts`)
   behind the facade. Import a module from outside (another module, a worker,
-  a job, `app.ts`) only through that facade.
+  a job, `app.ts`) only through that facade. Within a module, import sibling implementations
+  directly, never through its own facade.
+- `backend/src/application/` owns cross-domain account, purge and export
+  workflows. Routes and the job registry may call it; domain implementations
+  and facades must not import or re-export it. Application services call
+  domain facades, accept explicit inputs and never depend on Express.
 - `backend/src/lib/` is the shared kernel: infrastructure and cross-domain
-  primitives. It must not import from `backend/src/modules/`, and neither may
+  primitives. It must not import from `backend/src/modules/` or `application/`, and neither may
   `backend/src/middleware/`. There is no `backend/src/routes/` directory; a
   new HTTP surface is a new module.
 - `backend/src/__tests__/architecture.test.ts` checks these rules on every
   test run. If it fails, fix the layering rather than the test; allowlist
-  entries need a comment explaining why.
+  entries need a comment explaining why. `dependencyCycles.test.ts` also parses
+  imports/re-exports, literal dynamic imports, require calls and type references
+  across all four applications, the shared `packages/` sources and every local
+  file they reach. All source cycles fail CI.
 - Document-version creation, activation, replacement, and deletion belong to
   `backend/src/modules/documents/`. Call its facade instead of writing version
   rows or lifecycle RPCs from another module. Callers authorize destination and
   copy-source scopes independently; the database trigger owns durable cleanup.
-- Domain job bodies live in their modules; `backend/src/jobs/registry.ts`
+- Domain job bodies live in their modules; cross-domain workflow adapters live
+  in `application/jobs/`; `backend/src/jobs/registry.ts`
   composes handlers and failure hooks. Keep queue transport in `lib/dbq/` and
   `workers/`, and the assistant engine in `modules/chat/engine/`.
 - Shared serialized API/event declarations live in `packages/contracts/` and
@@ -146,7 +180,9 @@ and ownership/project-sharing boundaries on every new query or mutation. Never
 send internal exception messages to clients: use the helpers in
 `backend/src/lib/httpError.ts`; logging must use the redaction helpers in
 `backend/src/lib/safeError.ts`. Intentional validation and permission failures
-should remain explicit 4xx responses.
+should remain explicit 4xx responses, and a `code` a client is expected to act
+on must be listed in `CODE_KINDS` in `packages/client/src/userError.ts` (a
+drift test keeps that table to codes some server really emits).
 
 ## Database Migrations
 
@@ -164,16 +200,36 @@ For every new migration:
    not exists`, `create or replace` for functions, drop-before-create for
    policies and constraints, and guarded data backfills or type changes.
 4. Update `backend/schema.sql` with the migration's final database shape in the
-   same change.
+   same change, and add the migration's filename to the `schema_migrations`
+   list at the end of that file (`backend/src/__tests__/migrationLedger.test.ts`
+   checks the list matches the directory).
 5. Preserve RLS, grants, ownership, security-definer settings, and explicit
    `search_path` hardening when changing database objects.
 
-Existing deployments apply only files newer than their recorded version, in
-filename order. Do not assume every historical migration is safely replayable,
+Each database records the migrations it has applied in
+`public.schema_migrations`; `backend/scripts/migrate.sh` (also run by Compose's
+`db-init`) applies the files it does not list, in filename order, exactly
+once, each inside a transaction with its ledger row. Do not write `begin` /
+`commit` in a new migration; if it cannot run in a transaction (for example
+`create index concurrently`), add a line reading `-- migrate:no-transaction`.
+Never edit or rename a migration that has shipped: deployments that ran it
+would not run the new version. Do not assume every historical migration is
+safely replayable,
 and do not apply migrations to a remote or production database unless the user
 explicitly requests it and the target has been confirmed. See
 `docs/deployment.md` for deployment procedure and `.github/workflows/schema-drift.yml`
 for the fresh-versus-upgraded schema check.
+
+## Diagnostic identity
+
+Sentry operation, error-kind, component, stage and job labels are static
+source-authored identifiers; adding one needs no central registration. Never
+interpolate user or dependency data into a diagnostic label, error name or
+computed function name. Preserve upstream errors as causes, not as labels.
+Raw messages, request payloads and arbitrary extras remain filtered centrally.
+The backend diagnostic source-contract test scans all three applications;
+review forwarded helper parameters and mappings as well. See
+`docs/observability.md` for the trust model and examples.
 
 ## Verification
 
@@ -191,6 +247,7 @@ npm run build --prefix backend
 npm test --prefix frontend
 npm run test:coverage --prefix frontend
 npm run lint --prefix frontend
+npm run typecheck --prefix frontend
 npm run build --prefix frontend
 
 npm run typecheck --prefix word-addin
@@ -201,6 +258,14 @@ npm run test:e2e
 npm run test:e2e:local
 npm run test:stack --prefix backend
 ```
+
+A change to a Dockerfile, a `.dockerignore`, a tsconfig, or an import that
+crosses an application boundary must be verified by building the affected
+image from the repository root, for example
+`docker build -f frontend/Dockerfile .`. The host-side build cannot catch a
+missing build-context file because every sibling directory exists on the
+host; `.github/workflows/docker-images.yml` builds all three images on every
+pull request for the same reason.
 
 Use targeted Vitest files while iterating, for example:
 
@@ -219,6 +284,12 @@ When changing dependencies, update the `package-lock.json` belonging to the
 affected package. Before handing off work, run `git diff --check`, inspect the
 diff for unrelated changes, and report which verification commands were run.
 
+## Branch Names
+
+Name branches after the change they contain, using a descriptive prefix such as
+`docs/`, `fix/`, `feat/`, `refactor/`, `test/`, or `chore/` (for example,
+`docs/shorten-readme-telemetry`). Never use `claude/` as a prefix.
+
 ## Pull Requests
 
 Keep a pull request focused on one feature, bug, or cleanup. Write PR
@@ -231,3 +302,17 @@ descriptions in Markdown and include:
 
 Do not commit secrets, API keys, private documents, `.env` files, build output,
 or local test artifacts.
+
+## Error reporting principles
+
+- Prefer small reporting helpers and clear ownership at the boundary that knows what happened. Reuse existing mechanisms before adding another policy layer.
+- Preserve original exceptions, causes, useful stack locations, operation/stage context, and request/job correlation. Optimize for actionable user failures.
+- Mark expected outcomes where they are actually handled. A recognized UI error code, HTTP status, or AbortError name alone does not prove handling or reporting ownership. Keep unowned terminal transport and response-body failures visible.
+- Keep the final outbound privacy allowlist protecting customer documents, credentials, and identities. Separate privacy enforcement from configurable volume policy; avoid repeat traffic starving new/severe failures.
+- Preserve the shared Sentry projects' hard ceiling of 50 total events per runtime per day. Match the resolved destination project, including explicitly configured DSNs, and keep quiet resets or issue eviction from replenishing that ceiling. Reserve capacity for new failures and severity escalations before repeats.
+- Treat console capture as a fallback, not a business-policy engine. Prefer explicit capture of the original Error with static context.
+- Keep development reporting off by default; avoid accumulating compiler-internal filename filters.
+- Verify meaningful regressions through final SDK envelopes as well as source-level tests. Test diagnostic usefulness, ownership/deduplication, and privacy.
+- Prefer focused simplification and root-cause fixes over suppressing symptoms or building new reporting frameworks.
+
+See `docs/observability.md` for reporting ownership and transport policy.

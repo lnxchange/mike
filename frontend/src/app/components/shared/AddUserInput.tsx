@@ -6,10 +6,9 @@ import {
     lookupUserByEmail,
     type UserLookupResult,
 } from "@/app/lib/mikeApi";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI, LIQUID_GLASS_SUBTLE_CLASS } from "@mike/ui";
 import { cn } from "@/app/lib/utils";
 import { userFacingApiError } from "@/app/lib/userFacingError";
-import { LIQUID_GLASS_SUBTLE_CLASS } from "@/shared/ui/LiquidGlassUI";
 import { appConfig } from "@/config";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -118,7 +117,7 @@ export function AddUserInput({
                         : "add-user-input"
                 }
                 className={cn(
-                    `flex min-h-10 items-center rounded-xl ${LIQUID_GLASS_SUBTLE_CLASS} backdrop-blur-xl transition-colors focus-within:ring-2 focus-within:ring-blue-500/40 focus-within:ring-offset-2`,
+                    `flex min-h-10 items-center rounded-xl ${LIQUID_GLASS_SUBTLE_CLASS} transition-colors focus-within:ring-2 focus-within:ring-blue-500/40 focus-within:ring-offset-2`,
                     attachedSubmit
                         ? "gap-0 overflow-hidden pl-3"
                         : "gap-2 px-3 py-1.5",

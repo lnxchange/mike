@@ -15,6 +15,9 @@ import {
 } from "../../lib/access";
 import { can } from "../../lib/permissions";
 import { failure, internalFailure } from "../../lib/serviceResult";
+import { AppError } from "../../lib/appError";
+import { ExtractionParseError } from "../../lib/extraction/failure";
+import { reportError } from "../../lib/observability/sentry";
 import {
     enqueueExtraction,
     removeQueuedExtractionJobs,
@@ -22,7 +25,7 @@ import {
 import { queryTabularCell } from "./tabular.extract";
 import { finalizeCell } from "./tabular.extractRow";
 import { awaitCellTerminal } from "./tabular.generateStream";
-import { loadReviewRows, loadRowDocumentText } from "./tabular.rows";
+import { loadReviewRow, loadRowDocumentText } from "./tabular.rows";
 import {
     isReviewGenerationRunning,
     modelFailure,
@@ -192,8 +195,9 @@ export async function regenerateTabularCell(
         .single();
     if (reviewError || !review) return failure("not_found", "Review not found");
     const access = await ensureReviewAccess(review, userId, userEmail, db);
-    if (!access.ok || !can(access.projectRole, "content.edit"))
-        return failure("not_found", "Review not found");
+    if (!access.ok) return failure("not_found", "Review not found");
+    if (!can(access.projectRole, "content.edit"))
+        return failure("forbidden", "Only a review editor can regenerate cells");
     if (isReviewGenerationRunning(review)) return RUNNING_CONFLICT;
 
     const column = (
@@ -207,20 +211,29 @@ export async function regenerateTabularCell(
     ).find((c) => c.index === columnIndex);
     if (!column) return failure("validation", "Column not found");
 
-    const rows = await loadReviewRows(db, reviewId);
-    const row = rows.find((candidate) => candidate.id === rowId);
+    const row = await loadReviewRow(db, reviewId, rowId);
     if (!row) return failure("not_found", "Review row not found");
     const sourceIds = row.source_document_ids ?? [];
-    const allowedSourceIds = await filterAccessibleDocumentIds(
-        sourceIds,
-        userId,
-        userEmail,
-        db,
-    );
+    let allowedSourceIds: string[];
+    try {
+        allowedSourceIds = await filterAccessibleDocumentIds(
+            sourceIds,
+            userId,
+            userEmail,
+            db,
+        );
+    } catch (error) {
+        return internalFailure(error);
+    }
     if (allowedSourceIds.length !== sourceIds.length)
         return failure("not_found", "Review row not found");
 
-    const selectedModel = await validateSelectedModel(review.model, userId, db);
+    const selectedModel = await validateSelectedModel(
+        review.model,
+        userId,
+        db,
+        review.org_id ?? null,
+    );
     if (!selectedModel.ok) return modelFailure(selectedModel);
     const tabular_model = selectedModel.model;
     const api_keys = selectedModel.apiKeys;
@@ -323,7 +336,16 @@ export async function regenerateTabularCell(
             } catch (err) {
                 // Nothing will ever run this cell, so we still own both the
                 // cell's terminal state and the lease (released in finally).
-                log.error("[tabular/regenerate-cell] enqueue failed", err);
+                // The queue's own error is the cause (its code reaches Sentry
+                // as failure_code); the reported object is what gets logged
+                // so the console bridge files nothing twice.
+                const enqueueFailure = new AppError(
+                    "queue.enqueue_failed",
+                    "Tabular cell extraction could not be enqueued",
+                    { cause: err },
+                );
+                reportError(enqueueFailure);
+                log.error("[tabular/regenerate-cell] enqueue failed", enqueueFailure);
                 await finalizeCell(db, {
                     reviewId,
                     rowId: row.id,
@@ -372,6 +394,8 @@ export async function regenerateTabularCell(
         );
 
         if (!result) {
+            // queryTabularCell reported the provider failure itself; this is
+            // the same failure, so it only becomes the 500.
             await db
                 .from("tabular_cells")
                 .update({ status: "error", generation_id: null })
@@ -404,7 +428,18 @@ export async function regenerateTabularCell(
             .eq("row_id", row.id)
             .eq("column_index", columnIndex)
             .eq("generation_id", generationId);
-        log.error("[tabular/regenerate-cell] generation failed", error);
+        const generationFailure = new AppError(
+            "tabular.generation_failed",
+            "Tabular cell generation failed",
+            { cause: error },
+        );
+        // An unreadable source document is the document's fault, reported
+        // at the same level as on the row path (tabular.extractRow.ts).
+        reportError(
+            generationFailure,
+            error instanceof ExtractionParseError ? { level: "warning" } : {},
+        );
+        log.error("[tabular/regenerate-cell] generation failed", generationFailure);
         return GENERATION_FAILED;
     } finally {
         clearInterval(leaseHeartbeat);

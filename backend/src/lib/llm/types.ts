@@ -2,15 +2,24 @@
 // Callers always speak OpenAI-style tools + { role, content } messages; each
 // provider translates internally.
 
+import type { WebSource } from "@mike/contracts";
+
 export type Provider =
-  | "claude"
-  | "gemini"
-  | "openai"
-  | "openai-compatible"
-  | "openrouter"
-  | "vercel"
-  | "opencode-go"
-  | "ollama";
+    | "claude"
+    | "gemini"
+    | "openai"
+    | "mistral"
+    | "openai-compatible"
+    | "openrouter"
+    | "vercel"
+    | "opencode-go"
+    | "bedrock"
+    | "azure"
+    | "azure-foundry"
+    | "vertex"
+    | "xai"
+    | "custom"
+    | "ollama";
 
 export const REASONING_LEVELS = [
   "none",
@@ -33,14 +42,21 @@ export type OpenAIToolSchema = {
 };
 
 export type LlmMessage = {
-  role: "user" | "assistant";
-  content: string;
+    role: "user" | "assistant";
+    content: string;
+    /**
+     * The reasoning this assistant turn produced, as persisted. Only sent
+     * upstream to a configured model declared with `replayReasoning`.
+     */
+    reasoning?: string;
 };
 
 export type NormalizedToolCall = {
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+    /** The SDK could not parse or validate the input, so it never runs. */
+    invalid?: true;
 };
 
 export type NormalizedToolResult = {
@@ -49,58 +65,155 @@ export type NormalizedToolResult = {
 };
 
 export type StreamCallbacks = {
-  onReasoningDelta?: (text: string) => void;
-  onReasoningBlockEnd?: () => void;
-  onContentDelta?: (text: string) => void;
-  onToolCallStart?: (call: NormalizedToolCall) => void;
+    /** Meaningful provider output, even when the consumer buffers it. */
+    onActivity?: () => void;
+    onReasoningDelta?: (text: string) => void;
+    onReasoningBlockEnd?: () => void;
+    onContentDelta?: (text: string) => void;
+    /** Server-authored terminal warning, outside any hidden model citation block. */
+    onStopNotice?: (text: string) => void;
+    onToolCallStart?: (call: NormalizedToolCall) => void;
+    onWebSearch?: (event: ProviderWebSearchEvent) => void;
+    /** Skipped when the provider reports no usage. */
+    onUsage?: (usage: TokenUsage, finishReason: string) => void;
 };
 
+export type TokenUsage = { inputTokens: number; outputTokens: number };
+
+export type ProviderWebSearchEvent =
+    | { kind: "search_started"; id: string; query?: string }
+    | {
+          kind: "search_finished";
+          id: string;
+          query?: string;
+          results: WebSource[];
+          failed: boolean;
+      }
+    | { kind: "cited_source"; source: WebSource }
+    /** The provider refused the search tool, so the turn ran without it. */
+    | { kind: "unavailable" };
+
 export type UserApiKeys = {
-  claude?: string | null;
-  gemini?: string | null;
-  openai?: string | null;
-  openrouter?: string | null;
-  vercel?: string | null;
-  "opencode-go"?: string | null;
-  courtlistener?: string | null;
+    /** Explicitly disabled providers must never fall back to deployment keys. */
+    disabledProviders?: readonly string[];
+    /**
+     * Providers where the user saved a key whose setting (region, endpoint,
+     * location, base URL) no longer validates. The user's key is unusable,
+     * and — like a disabled provider — it must never fall back to the
+     * deployment's key either: the user chose their own account.
+     */
+    unusableProviders?: readonly string[];
+    claude?: string | null;
+    gemini?: string | null;
+    openai?: string | null;
+    mistral?: string | null;
+    openrouter?: string | null;
+    vercel?: string | null;
+    "opencode-go"?: string | null;
+    bedrock?: string | null;
+    azure?: string | null;
+    "azure-foundry"?: string | null;
+    /** A Google Cloud service-account key (the JSON file's contents). */
+    vertex?: string | null;
+    xai?: string | null;
+    /** The key for the user's own OpenAI-compatible endpoint. */
+    custom?: string | null;
+    courtlistener?: string | null;
+    /** Search API keys for Mike's own web search (see lib/webSearch). */
+    brave?: string | null;
+    tavily?: string | null;
+    deepseek?: string | null;
+    /**
+     * Non-secret settings that only make sense together with the key above
+     * them: the AWS region a Bedrock key belongs to, the Azure resource an
+     * Azure key belongs to, the Vertex AI location a service account is used
+     * in, the base URL of a custom endpoint. Each entry comes from the same
+     * source (the user's saved key or the deployment's environment) as its
+     * key, so a user's key is never sent to the operator's endpoint.
+     */
+    providerSettings?: ProviderSettings;
+    /**
+     * Whose key each provider above holds: the deployment's environment
+     * ("env"), the person's own ("user") or their organization's ("org").
+     * The credential store starts from the environment and lays saved keys
+     * over it, so a non-empty key alone does not say whose it is; a rejected
+     * deployment key is the operator's to fix; a rejected saved key is
+     * handled where the user is shown its remedy. Keys built
+     * anywhere else carry no entry and count as the user's.
+     */
+    keySources?: Partial<Record<ApiKeyName, ApiKeyOrigin>>;
+};
+
+/** Where a key in UserApiKeys came from (see UserApiKeys.keySources). */
+export type ApiKeyOrigin = "env" | "user" | "org";
+
+/** The UserApiKeys fields that hold a key. */
+export type ApiKeyName = Exclude<
+    keyof UserApiKeys,
+    "disabledProviders" | "unusableProviders" | "providerSettings" | "keySources"
+>;
+
+export type ProviderSettings = {
+    bedrock?: { region: string } | null;
+    azure?: { endpoint: string } | null;
+    "azure-foundry"?: { endpoint: string } | null;
+    vertex?: { location: string } | null;
+    custom?: { baseUrl: string } | null;
 };
 
 /** Tool-loop budget for interactive chat. The last step is reserved for writing. */
 export const DEFAULT_STREAM_MAX_ITERATIONS = 16;
 
 export type StreamChatParams = {
-  model: string;
-  systemPrompt: string;
-  messages: LlmMessage[];
-  tools?: OpenAIToolSchema[];
-  maxIterations?: number;
-  callbacks?: StreamCallbacks;
-  runTools?: (calls: NormalizedToolCall[]) => Promise<NormalizedToolResult[]>;
-  apiKeys?: UserApiKeys;
-  /**
-   * Require the selected provider to preserve tool calling. Curator jobs set
-   * this so a provider capability error is retryable instead of silently
-   * degrading into a tool-less response that looks like "no change".
-   */
-  requireTools?: boolean;
-  /**
-   * AI SDK reasoning effort. Bulk extraction jobs should leave this unset;
-   * the SDK adapter maps an omitted level to "none" to save tokens and
-   * latency.
-   */
-  reasoning?: ReasoningLevel;
-  /**
-   * This turn must name its steps with create_plan before it can answer.
-   * The adapter forces that call after one look and does not open a
-   * writing step.
-   */
-  requirePlan?: boolean;
-  /**
-   * Set during the turn when update_plan finishes every item. The next
-   * model step must write the summary instead of calling more tools.
-   */
-  planSummaryNow?: { current: boolean };
-  abortSignal?: AbortSignal;
+    model: string;
+    systemPrompt: string;
+    messages: LlmMessage[];
+    tools?: OpenAIToolSchema[];
+    maxIterations?: number;
+    callbacks?: StreamCallbacks;
+    runTools?: (calls: NormalizedToolCall[]) => Promise<NormalizedToolResult[]>;
+    apiKeys?: UserApiKeys;
+    /**
+     * Require the selected provider to preserve tool calling. Curator jobs set
+     * this so a provider capability error is retryable instead of silently
+     * degrading into a tool-less response that looks like "no change".
+     */
+    requireTools?: boolean;
+    /**
+     * AI SDK reasoning effort. Bulk extraction jobs should leave this unset;
+     * the SDK adapter maps an omitted level to "none" to save tokens and
+     * latency.
+     */
+    reasoning?: ReasoningLevel;
+    /**
+     * This turn must name its steps with create_plan before it can answer.
+     * The adapter forces that call after one look and does not open a
+     * writing step.
+     */
+    requirePlan?: boolean;
+    /**
+     * Set during the turn when update_plan finishes every item. The next
+     * model step must write the summary instead of calling more tools.
+     */
+    planSummaryNow?: { current: boolean };
+    abortSignal?: AbortSignal;
+    /**
+     * Durable id of the conversation this request belongs to. Adapters use it
+     * to keep provider prefix caches warm across turns (an OpenAI
+     * prompt_cache_key, an Anthropic cache breakpoint). Leave unset for
+     * one-shot calls such as the memory curator.
+     */
+    conversationId?: string | null;
+    /**
+     * Offer the provider's own web search tool, when the adapter has one, for
+     * at most `maxSearches` searches in each request.
+     */
+    providerWebSearch?: { maxSearches: number } | null;
+    /**
+     * Withdraw every tool on the last step, so a run that reaches its step
+     * limit ends with an answer instead of an unanswered tool call.
+     */
+    finishWithoutToolsOnLastStep?: boolean;
 };
 
 export type StreamChatResult = {
@@ -117,23 +230,30 @@ export type StreamChatResult = {
 export type ModelLocation = "cloud" | "local";
 
 export type ConfiguredModel = {
-  id: string;
-  provider: "openai-compatible";
-  location: ModelLocation;
-  label?: string;
-  /** Model name to send upstream when it differs from the Mike-facing id. */
-  apiModel?: string;
-  baseUrl: string;
-  apiKeyEnv?: string;
-  apiKeyProvider?: keyof UserApiKeys;
-  apiKey?: string;
-  /**
-   * Local models frequently emit tool calls as prose rather than as
-   * structured tool-call fields. Leave unset to infer from `location`.
-   */
-  tolerateTextToolCalls?: boolean;
-  /** Request field used for the output-token limit by the compatible endpoint. */
-  maxTokensField?: "max_tokens" | "max_completion_tokens";
+    id: string;
+    provider: "openai-compatible";
+    location: ModelLocation;
+    label?: string;
+    /** Model name to send upstream when it differs from the Mike-facing id. */
+    apiModel?: string;
+    baseUrl: string;
+    apiKeyEnv?: string;
+    apiKeyProvider?: ApiKeyName;
+    apiKey?: string;
+    /**
+     * Local models frequently emit tool calls as prose rather than as
+     * structured tool-call fields. Leave unset to infer from `location`.
+     */
+    tolerateTextToolCalls?: boolean;
+    /** Request field used for the output-token limit by the compatible endpoint. */
+    maxTokensField?: "max_tokens" | "max_completion_tokens";
+    /**
+     * Send each earlier assistant turn's stored reasoning back as
+     * `reasoning_content`. Reasoning models served with a thinking-preserving
+     * chat template (Qwen3.6 with `preserve_thinking`) lose coherence across
+     * turns without it. Off by default.
+     */
+    replayReasoning?: boolean;
 };
 
 /**

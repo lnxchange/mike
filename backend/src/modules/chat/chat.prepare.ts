@@ -12,18 +12,39 @@
 // its ordering is delicate. Only the NON-streaming logic and the pre-stream
 // DB preparation live here. `prepareChatStream` returns the prepared data the
 // route needs to run the stream; it does not stream.
+import { AppError } from "../../lib/appError";
+import { getActiveAssistantTurn } from "../../lib/assistantTurnRuns";
+import { reportError } from "../../lib/observability/sentry";
 import { type Db } from "../../lib/supabase";
 import { withAuExecutionBlocksPrompt } from "../../lib/auExecutionBlocks";
 import {
     createLegalSourceStore,
     persistLegalSourceUploads,
 } from "../../lib/legalSourceStore";
-import { buildDocContext, buildMessages, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, generateSpotlightNonce, type AskInputsResponseRequest, type ChatMessage } from "./engine/index";
+import {
+    webSearchPlanFor,
+    type WebSearchPlan,
+} from "../../lib/webSearch";
+import { resolveRequestTimeZone } from "../../lib/userTime";
+import { createAssistantHistoryLoader, attachPriorReasoning, buildDocContext, buildMessages, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, loadUserMessageSentTimes, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, runApprovedConnectorActions, generateSpotlightNonce, type AskInputsResponseRequest, type ChatMessage, type SubagentDefaults } from "./engine/index";
+import type { McpToolEvent } from "@mike/contracts";
 import { getUserModelSettings, resolveUserChatSelection } from "../user/user.service";
-import { checkProjectAccess, projectHasSharedAudience, resolveContentOrgId } from "../../lib/access";
+import {
+    checkProjectAccess,
+    projectHasSharedAudience,
+    resolveContentOrgId,
+    resolveStandaloneOrgId,
+} from "../../lib/access";
+import { teamOrgIdOf } from "../../lib/personalOrgs";
+import {
+    DOCUMENT_WORKSPACE_MISMATCH_CODE,
+    DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+    findNewAttachmentsOutsideWorkspace,
+} from "../../lib/documentWorkspace";
 import { hasDirectContentGrants } from "../../lib/contentAccess";
 import { can } from "../../lib/permissions";
 import { resolveEffectiveReasoningLevel } from "../../lib/modelSelection";
+import { replaysReasoning } from "../../lib/llm/registry";
 import { beginMemoryConversationTurn, releaseMemoryConversationTurn, type MemoryConversationTurn } from "../../lib/memory/schedule";
 import { getAccessibleChat, validateAccessibleProjectId } from "./chat.access";
 
@@ -46,6 +67,9 @@ export type PreparedChatStream = {
     // An ask_inputs continuation that could not be appended is not durable,
     // and must not trigger memory consolidation.
     completedTurnPersisted: boolean;
+    // Connector actions the user approved in this continuation, already run
+    // and appended; the route streams them before the model continues.
+    approvalEvents: McpToolEvent[];
     // Whether the document-writing tools are offered this turn. A standalone
     // chat writes into the caller's own library, so it keeps them; a project
     // chat writes into the PROJECT, and that is a question about the caller's
@@ -66,10 +90,14 @@ export type PreparedChatStream = {
     legalResearchAuEnergy: boolean;
     legalResearchAuVic: boolean;
     legalResearchAuCases: boolean;
+    webSearch: WebSearchPlan | null;
     apiKeys: Awaited<ReturnType<typeof getUserModelSettings>>["api_keys"];
+    /** The organization the chat belongs to, whose keys and model lists apply. */
+    orgId: string | null;
     titleModel: Awaited<
         ReturnType<typeof getUserModelSettings>
     >["title_model"];
+    subagentDefaults: SubagentDefaults;
     selectedModel: string;
     selectedReasoningLevel: ReturnType<
         typeof resolveEffectiveReasoningLevel
@@ -77,6 +105,7 @@ export type PreparedChatStream = {
     nonce: ReturnType<typeof generateSpotlightNonce>;
 };
 
+/** Authorize and prepare a chat turn, refusing active turns before saving input. */
 export async function prepareChatStream(
     db: Db,
     args: {
@@ -98,6 +127,14 @@ export async function prepareChatStream(
         requestedReasoning:
             | ReturnType<typeof resolveEffectiveReasoningLevel>
             | undefined;
+        /** The browser's IANA time zone; unvalidated request input. */
+        requestedTimeZone?: unknown;
+        /**
+         * The organization whose workspace a NEW standalone chat is started
+         * in; unvalidated request input. Not consulted for an existing chat,
+         * or for one in a project.
+         */
+        requestedOrgId?: unknown;
     },
 ): Promise<
     | { ok: true; prepared: PreparedChatStream }
@@ -123,6 +160,9 @@ export async function prepareChatStream(
     // note in modules/project-chat/projectChat.service.ts — this is the same
     // partition on the route that serves standalone and project chats alike.
     let allowDocumentMutation = true;
+    // The organization this chat belongs to: its keys are the ones the turn
+    // runs on (see getEffectiveApiKeys).
+    let contentOrgId: string | null = null;
 
     if (chatId) {
         const access = await getAccessibleChat(db, {
@@ -155,13 +195,28 @@ export async function prepareChatStream(
             };
         }
         resolvedProjectId = existingProjectId;
-        memorySharedAudience =
-            !!existing.org_id ||
-            existing.user_id !== userId ||
-            (await hasDirectContentGrants(db, "chat", existing.id));
+        // A database error in the audience check must not escape as a
+        // rejected promise: memory bookkeeping never decides whether the
+        // user gets an answer, and an unhandled rejection here used to
+        // leave the request open with no response and no log.
+        try {
+            // A chat in an organization's project is the project's
+            // audience. One started on its own in an organization is its
+            // author's alone until it is shared, like a personal chat — and
+            // reads the author's memory for that organization, never their
+            // Personal one (see buildMemoryTurn).
+            memorySharedAudience =
+                (existingProjectId !== null &&
+                    (await teamOrgIdOf(db, existing.org_id)) !== null) ||
+                existing.user_id !== userId ||
+                (await hasDirectContentGrants(db, "chat", existing.id));
+        } catch (error) {
+            return { ok: false, internal: true, error };
+        }
         chatTitle = existing.title;
         chatModel = existing.model;
         chatReasoningLevel = existing.reasoning_level;
+        contentOrgId = existing.org_id ?? null;
         if (existingProjectId) {
             // The role above may have come from the chat's own share list;
             // creating documents in the project needs the project's verdict.
@@ -177,15 +232,87 @@ export async function prepareChatStream(
                 can(projectAccess.projectRole, "content.edit");
             allowDocumentMutation = canCurateProjectMemory;
             if (projectAccess.ok) {
-                memorySharedAudience =
-                    memorySharedAudience ||
-                    (await projectHasSharedAudience(
-                        db,
-                        existingProjectId,
-                        projectAccess.project.org_id,
-                    ));
+                try {
+                    memorySharedAudience =
+                        memorySharedAudience ||
+                        (await projectHasSharedAudience(
+                            db,
+                            existingProjectId,
+                            projectAccess.project.org_id,
+                        ));
+                } catch (error) {
+                    return { ok: false, internal: true, error };
+                }
             }
         }
+    }
+
+    if (!chatId) {
+        // If creating a chat tied to a project, the user must have access
+        // to the project (own or shared). This runs ahead of the model
+        // selection because the project decides whose keys the chat runs on.
+        const projectAccess = await validateAccessibleProjectId(db, {
+            projectId: resolvedProjectId,
+            userId,
+            userEmail,
+        });
+        if (!projectAccess.ok)
+            return {
+                ok: false,
+                status: projectAccess.status,
+                detail: projectAccess.detail,
+            };
+        if (resolvedProjectId) {
+            const resolvedOrg = await resolveContentOrgId(db, {
+                projectId: resolvedProjectId,
+            });
+            if (!resolvedOrg.ok)
+                return { ok: false, internal: true, error: resolvedOrg.detail };
+            contentOrgId = resolvedOrg.orgId;
+        } else {
+            // Started on its own, the chat belongs to the workspace its
+            // author is in: that organization's keys and models apply from
+            // this first turn.
+            const standalone = await resolveStandaloneOrgId(db, {
+                userId,
+                orgId: args.requestedOrgId,
+            });
+            if (!standalone.ok)
+                return { ok: false, status: 400, detail: standalone.detail };
+            contentOrgId = standalone.orgId;
+        }
+    }
+
+    // A chat is built from documents in its own workspace. Checked before
+    // anything is written, so a refused first message leaves no empty chat
+    // behind.
+    try {
+        let workspaceOrgId = contentOrgId;
+        if (chatId && resolvedProjectId) {
+            // The project says where a project chat lives; a chat row from
+            // before chats carried an organization has none of its own.
+            const projectOrg = await resolveContentOrgId(db, {
+                projectId: resolvedProjectId,
+            });
+            if (!projectOrg.ok)
+                return { ok: false, internal: true, error: projectOrg.detail };
+            workspaceOrgId = projectOrg.orgId;
+            contentOrgId = projectOrg.orgId;
+        }
+        const outside = await findNewAttachmentsOutsideWorkspace(db, {
+            messages,
+            chatId,
+            orgId: workspaceOrgId,
+        });
+        if (outside.length > 0)
+            return {
+                ok: false,
+                status: 400,
+                code: DOCUMENT_WORKSPACE_MISMATCH_CODE,
+                detail: DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+            };
+    } catch (error) {
+        return { ok: false, internal: true, error };
     }
 
     const selection = await resolveUserChatSelection(db, {
@@ -194,6 +321,7 @@ export async function prepareChatStream(
         chatReasoningLevel,
         requestedModel: args.requestedModel,
         requestedReasoning: args.requestedReasoning,
+        orgId: contentOrgId,
     });
     if (!selection.ok) return selection;
     const { modelSettings, selectedModel, selectedReasoningLevel } = selection;
@@ -214,34 +342,20 @@ export async function prepareChatStream(
     }
 
     if (!chatId) {
-        // If creating a chat tied to a project, the user must have access
-        // to the project (own or shared).
-        const projectAccess = await validateAccessibleProjectId(db, {
-            projectId: resolvedProjectId,
-            userId,
-            userEmail,
-        });
-        if (!projectAccess.ok)
-            return {
-                ok: false,
-                status: projectAccess.status,
-                detail: projectAccess.detail,
-            };
         canReadProjectMemory = resolvedProjectId !== null;
         canCurateProjectMemory = resolvedProjectId !== null;
 
-        const resolvedOrg = await resolveContentOrgId(db, {
-            projectId: resolvedProjectId,
-        });
-        if (!resolvedOrg.ok)
-            return { ok: false, internal: true, error: resolvedOrg.detail };
-        memorySharedAudience = resolvedProjectId
-            ? await projectHasSharedAudience(
-                  db,
-                  resolvedProjectId,
-                  resolvedOrg.orgId,
-              )
-            : false;
+        try {
+            memorySharedAudience = resolvedProjectId
+                ? await projectHasSharedAudience(
+                      db,
+                      resolvedProjectId,
+                      contentOrgId,
+                  )
+                : false;
+        } catch (error) {
+            return { ok: false, internal: true, error };
+        }
         const { data: newChat, error } = await db
             .from("chats")
             .insert({
@@ -249,12 +363,21 @@ export async function prepareChatStream(
                 project_id: resolvedProjectId,
                 model: selectedModel,
                 reasoning_level: selectedReasoningLevel,
-                org_id: resolvedOrg.orgId,
+                org_id: contentOrgId,
             })
             .select("id, title")
             .single();
         if (error || !newChat) {
-            console.error("[chat/stream] failed to create chat", error);
+            // The route answers 500 without throwing, so this is the one
+            // report; the PostgREST error is the cause (its code reaches
+            // Sentry), the same wrapper is logged so the bridge skips it.
+            const failure = new AppError(
+                "db.query_failed",
+                "Failed to create chat",
+                { cause: error ?? { result: newChat } },
+            );
+            reportError(failure, { tags: { component: "chat-stream" } });
+            console.error("[chat/stream] failed to create chat", failure);
             return { ok: false, status: 500, detail: "Failed to create chat" };
         }
         chatId = newChat.id as string;
@@ -269,11 +392,19 @@ export async function prepareChatStream(
         };
     }
 
+    if (getActiveAssistantTurn(chatId)) {
+        return {
+            ok: false, status: 409, code: "turn_in_progress",
+            detail: "A response is already being generated for this chat.",
+        };
+    }
+
     devLog("[chat/stream] resolved chatId", chatId);
 
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     let completedTurnPersisted = true;
     let memoryTurn: MemoryConversationTurn | null = null;
+    let approvalEvents: McpToolEvent[] = [];
     if (args.askInputsResponse) {
         const appendResult = await appendAskInputsResponseToAssistantMessage(
             db,
@@ -309,6 +440,16 @@ export async function prepareChatStream(
         if (!completedTurnPersisted) {
             return { ok: false, status: 500, detail: "Failed to save message" };
         }
+        // The append above is the single-use claim; only now may an approved
+        // connector action run.
+        approvalEvents = await runApprovedConnectorActions({
+            db,
+            chatId,
+            messageId: args.askInputsResponse.assistant_message_id,
+            askEventId: args.askInputsResponse.ask_event_id,
+            userId,
+            orgId: contentOrgId,
+        });
     } else if (lastUser) {
         const { error: userMessageError } = await db
             .from("chat_messages")
@@ -319,6 +460,7 @@ export async function prepareChatStream(
                 content: lastUser.content,
                 files: lastUser.files ?? null,
                 workflow: lastUser.workflow ?? null,
+                playbook: lastUser.playbook ?? null,
                 author_user_id: userId,
             });
         if (userMessageError) {
@@ -327,27 +469,31 @@ export async function prepareChatStream(
     }
 
     if (args.askInputsResponse || lastUser) {
-        try {
-            memoryTurn = await beginMemoryConversationTurn({
-                db,
-                surface: "chat",
-                conversationId: chatId,
-                actorUserId: userId,
-            });
-        } catch (error) {
-            return { ok: false, internal: true, error };
-        }
+        // The lease is optional bookkeeping: it only stops an older curator
+        // from committing mid-turn. beginMemoryConversationTurn now fails
+        // open, so a lease failure skips this turn's checkpoint instead of
+        // 500ing a request whose user message is already persisted.
+        memoryTurn = await beginMemoryConversationTurn({
+            db,
+            surface: "chat",
+            conversationId: chatId,
+            actorUserId: userId,
+        });
     }
 
     // From here on a throw (document context, workflow store) would strand
     // the conversation turn opened above: the route's finally block only runs
     // once this function has returned it. Release on the way out instead.
     try {
+        const history = createAssistantHistoryLoader(db, chatId);
         const { docIndex, docStore } = await buildDocContext(
             messages,
             userId,
             db,
             chatId,
+            "chat_messages",
+            userEmail,
+            history,
         );
         try {
             await persistLegalSourceUploads({
@@ -374,13 +520,19 @@ export async function prepareChatStream(
         }));
         // Generate the nonce before enriching prior events so document filenames
         // and workflow titles replayed from earlier turns are fenced as well.
-        const nonce = generateSpotlightNonce();
+        const nonce = generateSpotlightNonce(chatId);
+        const historyMessages = replaysReasoning(selectedModel)
+            ? await attachPriorReasoning(messages, chatId, db, "chat_messages", history)
+            : messages;
+        const timeZone = resolveRequestTimeZone(args.requestedTimeZone);
         const enrichedMessages = await enrichWithPriorEvents(
-            messages,
+            historyMessages,
             chatId,
             db,
             docIndex,
             nonce,
+            "chat_messages",
+            timeZone,
         );
         const {
             api_keys: apiKeys,
@@ -395,6 +547,13 @@ export async function prepareChatStream(
         const personalisationPrompt = buildUserPersonalisationPrompt(
             personalisation,
             nonce,
+        );
+        const userSentAt = await loadUserMessageSentTimes(
+            db,
+            "chat_messages",
+            chatId,
+            enrichedMessages,
+            !!args.askInputsResponse,
         );
         const apiMessages = buildMessages(
             enrichedMessages,
@@ -412,9 +571,11 @@ export async function prepareChatStream(
                 cases: legalResearchAuCases,
             },
             nonce,
+            "append",
+            { timeZone, now: new Date(), userSentAt },
         );
 
-        const workflowStore = await buildWorkflowStore(userId, userEmail, db);
+        const workflowStore = await buildWorkflowStore(userId, userEmail, db, contentOrgId);
 
         return {
             ok: true,
@@ -424,6 +585,7 @@ export async function prepareChatStream(
                 lastUser,
                 resolvedProjectId,
                 completedTurnPersisted,
+                approvalEvents,
                 allowDocumentMutation,
                 canReadProjectMemory,
                 canCurateProjectMemory,
@@ -438,8 +600,18 @@ export async function prepareChatStream(
                 legalResearchAuEnergy,
                 legalResearchAuVic,
                 legalResearchAuCases,
+                webSearch: webSearchPlanFor(
+                    modelSettings.web_search,
+                    selectedModel,
+                    apiKeys,
+                ),
                 apiKeys,
+                orgId: contentOrgId,
                 titleModel,
+                subagentDefaults: {
+                    model: modelSettings.subagent_model,
+                    reasoning: modelSettings.subagent_reasoning,
+                },
                 selectedModel,
                 selectedReasoningLevel,
                 nonce,

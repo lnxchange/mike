@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { Loader2 } from "lucide-react";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI, LIQUID_GLASS_FLAT_CLASS } from "@mike/ui";
 import { cn } from "@/app/lib/utils";
 import type {
     PanelDocument,
@@ -15,7 +15,6 @@ import {
     highlightDocxQuote,
     QUOTE_HIGHLIGHT_CLASS,
 } from "../shared/views/highlightDocxQuote";
-import { LIQUID_GLASS_FLAT_CLASS } from "@/shared/ui/LiquidGlassUI";
 
 const CASE_HTML_SANITIZER_CONFIG = {
     ALLOWED_TAGS: [
@@ -157,9 +156,10 @@ export function CaseView({
         root.querySelectorAll(`.${QUOTE_HIGHLIGHT_CLASS}`).forEach((element) =>
             element.classList.add("case-quote-highlight"),
         );
-        window.setTimeout(() => {
+        const timer = window.setTimeout(() => {
             match.scrollIntoView({ behavior: "smooth", block: "center" });
         }, 50);
+        return () => window.clearTimeout(timer);
     }, [activeQuote, activeSubdocument, quoteFocusKey]);
 
     const surfaceClassName = LIQUID_GLASS_FLAT_CLASS;
@@ -243,6 +243,7 @@ export function CaseView({
                         )}
                     >
                         <div
+                            data-document-scroll-viewport
                             className={cn(
                                 "h-full overflow-y-auto p-5",
                                 surfaceClassName,

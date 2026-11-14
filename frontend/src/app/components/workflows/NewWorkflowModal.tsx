@@ -5,30 +5,39 @@ import { Upload } from "lucide-react";
 import {
     copyDocumentsToWorkflowAssets,
     createWorkflow,
-    listOrgs,
     shareWorkflow,
     updateWorkflow,
-    type Org,
 } from "@/app/lib/mikeApi";
 import { userFacingApiError } from "@/app/lib/userFacingError";
-import type { Document, Workflow } from "../shared/types";
+import type {
+    ContentVisibility,
+    Document,
+    Workflow,
+} from "../shared/types";
 import { FileDirectory } from "../shared/FileDirectory";
 import { PRACTICE_OPTIONS } from "./practices";
 import { Modal } from "../modals/Modal";
 import { ModalSegmentedToggle } from "../modals/ModalSegmentedToggle";
 import { ModalSelect } from "../modals/ModalSelect";
 import { FieldLabel, FormTextInput } from "../ui/form-field";
-import { WorkflowSlashCommandUI } from "@/shared/ui/WorkflowSlashCommandUI";
+import { WorkflowSlashCommandUI } from "@mike/ui";
 import {
     ChatSkeuoIcon,
     TabularReviewSkeuoIcon,
 } from "../shared/AppSidebarSkeuoIcons";
 import {
+    CANADA_PROVINCE_OPTIONS,
     COUNTRY_OPTIONS,
     OTHER_JURISDICTION_OPTION,
+    US_STATE_OPTIONS,
 } from "@/app/onboarding/options";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
+import { AccessVisibilityField } from "../modals/AccessVisibilityField";
+import {
+    PERSONAL_WORKSPACE as ACTIVE_PERSONAL_WORKSPACE,
+    useWorkspace,
+} from "@/app/contexts/WorkspaceContext";
 import {
     CreateAccessStep,
     type PendingDirectGrant,
@@ -85,83 +94,22 @@ const JURISDICTION_OPTIONS = [
     ...COUNTRY_OPTIONS,
     OTHER_JURISDICTION_OPTION,
 ] as const;
-const US_STATE_OPTIONS = [
-    "Alabama",
-    "Alaska",
-    "Arizona",
-    "Arkansas",
-    "California",
-    "Colorado",
-    "Connecticut",
-    "Delaware",
-    "Florida",
-    "Georgia",
-    "Hawaii",
-    "Idaho",
-    "Illinois",
-    "Indiana",
-    "Iowa",
-    "Kansas",
-    "Kentucky",
-    "Louisiana",
-    "Maine",
-    "Maryland",
-    "Massachusetts",
-    "Michigan",
-    "Minnesota",
-    "Mississippi",
-    "Missouri",
-    "Montana",
-    "Nebraska",
-    "Nevada",
-    "New Hampshire",
-    "New Jersey",
-    "New Mexico",
-    "New York",
-    "North Carolina",
-    "North Dakota",
-    "Ohio",
-    "Oklahoma",
-    "Oregon",
-    "Pennsylvania",
-    "Rhode Island",
-    "South Carolina",
-    "South Dakota",
-    "Tennessee",
-    "Texas",
-    "Utah",
-    "Vermont",
-    "Virginia",
-    "Washington",
-    "West Virginia",
-    "Wisconsin",
-    "Wyoming",
-    "District of Columbia",
-] as const;
-const CANADA_PROVINCE_OPTIONS = [
-    "Alberta",
-    "British Columbia",
-    "Manitoba",
-    "New Brunswick",
-    "Newfoundland and Labrador",
-    "Northwest Territories",
-    "Nova Scotia",
-    "Nunavut",
-    "Ontario",
-    "Prince Edward Island",
-    "Quebec",
-    "Saskatchewan",
-    "Yukon",
-] as const;
 
 interface Props {
     open: boolean;
-    onClose: () => void;
+    /**
+     * `createdWithoutHandoff` is true when the dialog is dismissed after a
+     * workflow was created but never handed to `onCreated` (its access grants
+     * or asset copies failed). The caller should refetch so the new row is
+     * visible.
+     */
+    onClose: (createdWithoutHandoff?: boolean) => void;
     onCreated: (workflow: Workflow) => void;
     editWorkflow?: Workflow;
     readOnly?: boolean;
     onUpdated?: (workflow: Workflow) => void;
 }
+/** Coordinates workflow creation and initial sharing choices, preserving authorized member identities in the access step. */
 export function NewWorkflowModal({
     open,
     onClose,
@@ -186,8 +134,30 @@ export function NewWorkflowModal({
         "language" | "practice" | "jurisdiction" | "jurisdictionRegion" | null
     >(null);
     const [loading, setLoading] = useState(false);
-    const [orgs, setOrgs] = useState<Org[]>([]);
-    const [orgId, setOrgId] = useState(PERSONAL_WORKSPACE);
+    // A new workflow is created in the workspace the person is working in:
+    // an organization's, or their own. An existing one stays where it is.
+    // Neither can be chosen here: work is not shared across organizations.
+    const { workspaceId: activeWorkspaceId, activeOrganization } =
+        useWorkspace();
+    const workspaceOrgId =
+        activeWorkspaceId && activeWorkspaceId !== ACTIVE_PERSONAL_WORKSPACE
+            ? activeWorkspaceId
+            : PERSONAL_WORKSPACE;
+    const orgId = editWorkflow
+        ? (editWorkflow.org_id ?? PERSONAL_WORKSPACE)
+        : workspaceOrgId;
+    const organizationName =
+        orgId === PERSONAL_WORKSPACE
+            ? null
+            : ((editWorkflow
+                  ? editWorkflow.organization_name
+                  : activeOrganization?.name) ??
+              (activeOrganization?.id === orgId
+                  ? activeOrganization.name
+                  : null));
+    // Inside an organization a workflow is private — shared with individuals
+    // — unless it is made public on the details step.
+    const [visibility, setVisibility] = useState<ContentVisibility>("private");
     const [directGrants, setDirectGrants] = useState<PendingDirectGrant[]>([]);
     const [orgOverrides, setOrgOverrides] = useState<PendingOrgOverride[]>([]);
     const [selectedAssets, setSelectedAssets] = useState<Document[]>([]);
@@ -256,6 +226,8 @@ export function NewWorkflowModal({
                 .filter(Boolean) ?? [];
 
         return (
+            (orgId !== PERSONAL_WORKSPACE &&
+                visibility !== (editWorkflow.visibility ?? "private")) ||
             title.trim() !== editWorkflow.metadata.title.trim() ||
             (effectiveLanguage.trim() || null) !==
                 (initialLanguage.trim() || null) ||
@@ -265,6 +237,8 @@ export function NewWorkflowModal({
         );
     }, [
         editWorkflow,
+        orgId,
+        visibility,
         effectiveJurisdictions,
         effectiveLanguage,
         effectivePractice,
@@ -288,7 +262,7 @@ export function NewWorkflowModal({
         setImportedSkillMd("");
         setImportedSkillName(null);
         setMarkdownImportError("");
-        setOrgId(PERSONAL_WORKSPACE);
+        setVisibility("private");
         setStep("details");
         setDirectGrants([]);
         setOrgOverrides([]);
@@ -359,7 +333,7 @@ export function NewWorkflowModal({
                 setPractice(saved);
                 setCustomPractice("");
             }
-            setOrgId(editWorkflow.org_id ?? PERSONAL_WORKSPACE);
+            setVisibility(editWorkflow.visibility ?? "private");
             setError("");
         } else if (open) {
             resetForm();
@@ -383,21 +357,6 @@ export function NewWorkflowModal({
             setCustomPractice(preferredPractice);
         }
     }, [editWorkflow, open, preferredPractice]);
-
-    useEffect(() => {
-        if (!open) return;
-        let cancelled = false;
-        listOrgs()
-            .then((rows) => {
-                if (!cancelled) setOrgs(rows);
-            })
-            .catch(() => {
-                if (!cancelled) setOrgs([]);
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [open]);
 
     useEffect(() => {
         if (isOtherLanguage) {
@@ -434,6 +393,13 @@ export function NewWorkflowModal({
                             ? effectiveJurisdictions
                             : null,
                     },
+                    // Only when it changed: who can open a workflow is its
+                    // owner's decision, and an editor saving other details
+                    // must not be refused for a setting they did not touch.
+                    ...(orgId !== PERSONAL_WORKSPACE &&
+                    visibility !== (editWorkflow.visibility ?? "private")
+                        ? { visibility }
+                        : {}),
                 });
                 onUpdated?.(updated);
             } else {
@@ -453,22 +419,12 @@ export function NewWorkflowModal({
                 }
                 if (orgId !== PERSONAL_WORKSPACE) {
                     createPayload.org_id = orgId;
+                    createPayload.visibility = visibility;
                 }
                 const workflow =
                     createdWorkflowRef.current ??
                     (await createWorkflow(createPayload));
                 createdWorkflowRef.current = workflow;
-                const pendingAssetIds = selectedAssets
-                    .map((document) => document.id)
-                    .filter((id) => !copiedAssetIdsRef.current.has(id));
-                if (type === "assistant" && pendingAssetIds.length > 0) {
-                    await copyDocumentsToWorkflowAssets(
-                        workflow.id,
-                        pendingAssetIds,
-                    );
-                    for (const id of pendingAssetIds)
-                        copiedAssetIdsRef.current.add(id);
-                }
                 const assignments = applyAccess
                     ? orgId === PERSONAL_WORKSPACE
                         ? directGrants
@@ -478,22 +434,96 @@ export function NewWorkflowModal({
                 const recipients = assignments.filter(
                     (assignment) => !ownEmail || assignment.email !== ownEmail,
                 );
+                // Sequential, and one refusal must not take the whole submit
+                // down with it: the workflow already exists, so a rejected
+                // grant is reported against the addresses it applies to
+                // instead of surfacing as "Failed to create workflow". The
+                // share endpoint upserts, so retrying is safe.
+                const grantFailures: { email: string; detail: string }[] = [];
                 for (const assignment of recipients) {
-                    await shareWorkflow(workflow.id, {
-                        emails: [assignment.email],
-                        role: assignment.role,
-                    });
+                    try {
+                        await shareWorkflow(workflow.id, {
+                            emails: [assignment.email],
+                            role: assignment.role,
+                        });
+                    } catch (err: unknown) {
+                        grantFailures.push({
+                            email: assignment.email,
+                            detail: userFacingApiError(
+                                err,
+                                "the request failed",
+                            ),
+                        });
+                    }
+                }
+                const pendingAssetIds = selectedAssets
+                    .map((document) => document.id)
+                    .filter((id) => !copiedAssetIdsRef.current.has(id));
+                if (grantFailures.length > 0) {
+                    // Stay open on THIS dialog: createdWorkflowRef holds the
+                    // workflow, so pressing Create again retries only the
+                    // grants against the same workflow.
+                    setError(
+                        `Workflow created, but access was not granted to ${grantFailures
+                            .map((failure) => failure.email)
+                            .join(", ")}: ${grantFailures[0]!.detail}${
+                            pendingAssetIds.length > 0
+                                ? ` The ${pendingAssetIds.length} selected ${
+                                      pendingAssetIds.length === 1
+                                          ? "file is"
+                                          : "files are"
+                                  } still pending and will be copied when you try again.`
+                                : ""
+                        }`,
+                    );
+                    return;
+                }
+
+                // The asset copy used to run BEFORE the grants and outside any
+                // try of its own. A failed copy therefore threw out of the
+                // whole submit and was reported as "Failed to create workflow"
+                // — about a workflow that exists — and because nothing
+                // recorded what had been copied, the retry sent every asset
+                // again and duplicated the ones that had worked. It runs last
+                // now, one asset at a time, and each id is recorded as it
+                // lands, so a retry sends only what is still missing.
+                if (type === "assistant" && pendingAssetIds.length > 0) {
+                    let copyFailures = 0;
+                    for (const id of pendingAssetIds) {
+                        try {
+                            await copyDocumentsToWorkflowAssets(workflow.id, [
+                                id,
+                            ]);
+                            copiedAssetIdsRef.current.add(id);
+                        } catch {
+                            copyFailures += 1;
+                        }
+                    }
+                    if (copyFailures > 0) {
+                        setError(
+                            `Workflow created, but ${copyFailures} ${
+                                copyFailures === 1 ? "asset" : "assets"
+                            } could not be copied. Press Create again to retry the ${
+                                copyFailures === 1 ? "copy" : "copies"
+                            }.`,
+                        );
+                        return;
+                    }
                 }
                 onCreated({
                     ...workflow,
+                    // Belonging to an organization is not being shared with
+                    // it: the label follows what was actually chosen.
                     access_scope:
-                        orgId !== PERSONAL_WORKSPACE
+                        orgId !== PERSONAL_WORKSPACE &&
+                        visibility === "organization"
                             ? "organization"
-                            : recipients.length > 0
+                            : recipients.some(
+                                    (entry) => entry.role !== "deny",
+                                )
                               ? "shared"
                               : "private",
-                    organization_name:
-                        orgs.find((org) => org.id === orgId)?.name ?? null,
+                    organization_name: organizationName,
                     ...(orgId === PERSONAL_WORKSPACE && recipients.length > 0
                         ? { direct_grant_count: recipients.length }
                         : {}),
@@ -528,8 +558,17 @@ export function NewWorkflowModal({
     }
 
     function handleClose() {
+        // A create in flight owns the dialog: Escape, the backdrop and the
+        // close button must not dismiss it out from under an in-progress
+        // workflow creation.
+        if (loading) return;
+        // A workflow whose grants (or asset copies) failed was still created,
+        // but it never reached onCreated, so the caller's list has no row for
+        // it. Tell the caller to refetch instead of leaving it invisible
+        // until a page reload.
+        const createdWithoutHandoff = createdWorkflowRef.current !== null;
         resetForm();
-        onClose();
+        onClose(createdWithoutHandoff);
     }
 
     async function handleMarkdownImport(
@@ -650,7 +689,7 @@ export function NewWorkflowModal({
                                 ? "Add Assets"
                                 : orgId === PERSONAL_WORKSPACE
                                   ? "Access"
-                                  : "Organisational Access",
+                                  : "People",
                       ]
                     : []),
             ]}
@@ -736,21 +775,22 @@ export function NewWorkflowModal({
             <form
                 id={formId}
                 onSubmit={handleSubmit}
-                className="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-5"
+                data-modal-scroll="vertical"
+                className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-5"
             >
                 {!isEditing && step === "access" ? (
                     <CreateAccessStep
                         orgId={orgId === PERSONAL_WORKSPACE ? null : orgId}
-                        organizationName={
-                            orgs.find((org) => org.id === orgId)?.name ?? null
-                        }
+                        organizationName={organizationName}
                         currentUserEmail={user?.email ?? null}
+                        currentUserProfile={profile}
                         currentUserId={user?.id ?? null}
                         directGrants={directGrants}
                         onDirectGrantsChange={setDirectGrants}
                         orgOverrides={orgOverrides}
                         onOrgOverridesChange={setOrgOverrides}
                         ownerLabel="Workflow owners"
+                        visibility={visibility}
                     />
                 ) : !isEditing && step === "assets" ? (
                     <div className="flex min-h-0 flex-1 flex-col">
@@ -897,33 +937,39 @@ export function NewWorkflowModal({
 
                         {isEditing && jurisdictionField}
 
-                        <div>
-                            <FieldLabel htmlFor="workflow-org">
-                                {isEditing
-                                    ? "Organisation"
-                                    : "Share across Organisation"}
-                            </FieldLabel>
-                            <ModalSelect
-                                id="workflow-org"
-                                value={orgId}
-                                onChange={(value) => {
-                                    setOrgId(value);
-                                    setDirectGrants([]);
+                        {orgId !== PERSONAL_WORKSPACE && isEditing ? (
+                            <div>
+                                <FieldLabel as="p">Organisation</FieldLabel>
+                                <p
+                                    data-slot="workflow-workspace"
+                                    className="break-words text-sm text-gray-700"
+                                >
+                                    {organizationName ?? "Organisation"}
+                                </p>
+                            </div>
+                        ) : null}
+                        {orgId !== PERSONAL_WORKSPACE ? (
+                            <AccessVisibilityField
+                                visibility={visibility}
+                                onChange={(next) => {
+                                    setVisibility(next);
+                                    // What was lined up for the other
+                                    // setting does not carry over: named
+                                    // people belong to a private workflow,
+                                    // and denials to a public one.
                                     setOrgOverrides([]);
                                 }}
-                                disabled={isEditing || loading}
-                                options={[
-                                    {
-                                        value: PERSONAL_WORKSPACE,
-                                        label: "No organization",
-                                    },
-                                    ...orgs.map((org) => ({
-                                        value: org.id,
-                                        label: org.name,
-                                    })),
-                                ]}
+                                organizationName={organizationName}
+                                resourceNoun="workflow"
+                                // Who can open a workflow is its owner's
+                                // decision; an editor sees the setting.
+                                disabled={
+                                    loading ||
+                                    (isEditing &&
+                                        editWorkflow?.is_owner === false)
+                                }
                             />
-                        </div>
+                        ) : null}
                     </div>
                 )}
                 {(error || markdownImportError) && (

@@ -1,3 +1,19 @@
+import type {
+    CatalogPricing,
+    CatalogModel,
+    LocalModel,
+    ConfiguredCatalogModel,
+    CatalogFailure,
+    CatalogResult,
+} from "./models.types";
+export type {
+    CatalogPricing,
+    CatalogModel,
+    LocalModel,
+    ConfiguredCatalogModel,
+    CatalogFailure,
+    CatalogResult,
+} from "./models.types";
 // Business logic + data-access for the models module.
 //
 // Service layer behind models.routes.ts. Each function takes an explicit
@@ -14,36 +30,7 @@ import type { Db } from "../../lib/supabase";
 import { ollamaAuthHeaders as authHeaders } from "../../lib/llm/providers";
 import { isSupportedOpenCodeGoModel } from "../../lib/llm/models";
 import { configuredEndpointSummaries } from "../../lib/llm/registry";
-import { getUserApiKeys } from "../user/user.service";
-
-export type CatalogPricing = {
-    input?: string;
-    output?: string;
-    variesByProvider?: true;
-    tiered?: true;
-};
-
-export type CatalogModel = {
-    id: string;
-    label: string;
-    pricing?: CatalogPricing;
-};
-
-export type LocalModel = { id: string; label: string; group: string };
-
-export type ConfiguredCatalogModel = LocalModel & {
-    location: "cloud" | "local";
-    source: "Configured";
-};
-
-export type CatalogFailure =
-    | { ok: false; kind: "missing_api_key"; code: string; detail: string }
-    | { ok: false; kind: "upstream"; error: Error }
-    | { ok: false; kind: "error"; error: unknown };
-
-export type CatalogResult =
-    | { ok: true; models: CatalogModel[] }
-    | CatalogFailure;
+import { getEffectiveApiKeys, getUserApiKeys } from "../../lib/providerCredentials/index";
 
 function catalogPrice(value: unknown): string | undefined {
     if (typeof value !== "string" && typeof value !== "number") {
@@ -99,7 +86,10 @@ export async function listOllamaModels(): Promise<LocalModel[]> {
         process.env.OLLAMA_BASE_URL?.trim() || "http://localhost:11434/v1"
     ).replace(/\/$/, "");
     try {
-        const r = await fetch(`${base}/models`, { headers: authHeaders() });
+        const r = await fetch(`${base}/models`, {
+            headers: authHeaders(),
+            signal: AbortSignal.timeout(15_000),
+        });
         if (!r.ok) return [];
         const data = (await r.json()) as { data?: { id: string }[] };
         return (data.data ?? []).map((m) => ({
@@ -140,9 +130,10 @@ export async function listConfiguredModels(
 export async function listOpenRouterModels(
     db: Db,
     userId: string,
+    orgId?: string | null,
 ): Promise<CatalogResult> {
     try {
-        const apiKeys = await getUserApiKeys(userId, db);
+        const apiKeys = await getEffectiveApiKeys(userId, orgId, db);
         const key = apiKeys.openrouter?.trim();
         if (!key) {
             return missingApiKey(
@@ -159,7 +150,10 @@ export async function listOpenRouterModels(
         ).replace(/\/+$/, "");
         const response = await fetch(
             `${baseUrl}/models?output_modalities=text&supported_parameters=tools&sort=most-popular&limit=1000`,
-            { headers: { Authorization: `Bearer ${key}` } },
+            {
+                headers: { Authorization: `Bearer ${key}` },
+                signal: AbortSignal.timeout(15_000),
+            },
         );
         if (!response.ok) return await upstreamFailure("OpenRouter", response);
 
@@ -204,9 +198,10 @@ export async function listOpenRouterModels(
 export async function listVercelModels(
     db: Db,
     userId: string,
+    orgId?: string | null,
 ): Promise<CatalogResult> {
     try {
-        const apiKeys = await getUserApiKeys(userId, db);
+        const apiKeys = await getEffectiveApiKeys(userId, orgId, db);
         if (!apiKeys.vercel?.trim()) {
             return missingApiKey(
                 "A Vercel AI Gateway API key is required to list models.",
@@ -217,7 +212,9 @@ export async function listVercelModels(
             process.env.VERCEL_AI_GATEWAY_BASE_URL?.trim() ||
             "https://ai-gateway.vercel.sh/v1"
         ).replace(/\/+$/, "");
-        const response = await fetch(`${baseUrl}/models`);
+        const response = await fetch(`${baseUrl}/models`, {
+            signal: AbortSignal.timeout(15_000),
+        });
         if (!response.ok) {
             return await upstreamFailure("Vercel AI Gateway", response);
         }
@@ -298,9 +295,10 @@ export async function listVercelModels(
 export async function listOpenCodeGoModels(
     db: Db,
     userId: string,
+    orgId?: string | null,
 ): Promise<CatalogResult> {
     try {
-        const apiKeys = await getUserApiKeys(userId, db);
+        const apiKeys = await getEffectiveApiKeys(userId, orgId, db);
         const key = apiKeys["opencode-go"]?.trim();
         if (!key) {
             return missingApiKey(
@@ -316,6 +314,7 @@ export async function listOpenCodeGoModels(
         ).replace(/\/+$/, "");
         const response = await fetch(`${baseUrl}/models`, {
             headers: { Authorization: `Bearer ${key}` },
+            signal: AbortSignal.timeout(15_000),
         });
         if (!response.ok) return await upstreamFailure("OpenCode Go", response);
 
@@ -343,3 +342,6 @@ export async function listOpenCodeGoModels(
         return { ok: false, kind: "error", error };
     }
 }
+
+export { listBedrockModels } from "./models.bedrock";
+export { listCustomEndpointModels, listXaiModels } from "./models.compatible";

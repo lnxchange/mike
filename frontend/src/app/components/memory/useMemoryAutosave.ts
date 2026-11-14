@@ -187,12 +187,27 @@ export function useMemoryAutosave<Result>({
     value,
   ]);
 
+  // The debounce window and an in-flight request are both moments where a
+  // reload or tab close would drop an edit the status line already calls
+  // "Saving…". Ask the browser to confirm while that is true.
+  useEffect(() => {
+    if (!enabled || value === persistedValue) return;
+    const guard = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [enabled, persistedValue, value]);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
+      // An in-flight write counts as unsaved too: if the draft was reverted
+      // while it ran, it would otherwise land and overwrite the revert.
       const shouldFlush =
         flushOnUnmountRef.current &&
-        valueRef.current !== persistedValueRef.current;
+        (activeSaveRef.current ||
+          valueRef.current !== persistedValueRef.current);
       clearDebounce();
       clearSavedTimer();
       mountedRef.current = false;

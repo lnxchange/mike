@@ -16,12 +16,15 @@ import {
 } from "../../lib/documentUpload";
 import { Modal } from "../primitives/Modal";
 import { Spinner } from "../../../shared/ui/spinner";
-import { TabPillButtonUI } from "@mike/tab-pill-button-ui";
+import { TabPillButtonUI } from "@mike/ui";
 import {
   FileTypeIcon,
   ProjectSvgIcon,
   SubfolderSvgIcon,
 } from "./DirectoryIcons";
+import { reportFault } from "../../lib/notify";
+
+import { buildDirectoryIndex } from "../../lib/directoryIndex";
 
 type DirectoryTab = "files" | "templates" | "projects";
 
@@ -215,9 +218,10 @@ export function AddDocumentsModal({
       .catch((reason: unknown) => {
         if (cancelled) return;
         setError(
-          reason instanceof Error
-            ? reason.message
-            : "Failed to load documents.",
+          reportFault(reason, {
+            fallback: "Failed to load documents.",
+            operation: "documents.directory",
+          }).message,
         );
       })
       .finally(() => {
@@ -305,9 +309,10 @@ export function AddDocumentsModal({
       }));
     } catch (reason) {
       setError(
-        reason instanceof Error
-          ? reason.message
-          : "Failed to load project documents.",
+        reportFault(reason, {
+          fallback: "Failed to load project documents.",
+          operation: "documents.directory",
+        }).message,
       );
     } finally {
       setLoadingProjectLevels((current) => {
@@ -352,7 +357,10 @@ export function AddDocumentsModal({
       setProjectsHasMore(rows.length > DIRECTORY_PAGE_SIZE);
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Failed to load projects.",
+        reportFault(reason, {
+          fallback: "Failed to load projects.",
+          operation: "documents.directory",
+        }).message,
       );
     } finally {
       setLoadingMoreProjects(false);
@@ -414,9 +422,10 @@ export function AddDocumentsModal({
       }
     } catch (reason) {
       setError(
-        reason instanceof Error
-          ? reason.message
-          : "Documents could not be uploaded. Please try again.",
+        reportFault(reason, {
+          fallback: "Documents could not be uploaded. Please try again.",
+          operation: "documents.upload",
+        }).message,
       );
     } finally {
       setUploadingFilenames([]);
@@ -426,60 +435,24 @@ export function AddDocumentsModal({
   const documentFolderId = (document: Document): string | null =>
     document.folder_id ?? document.library_folder_id ?? null;
 
-  const childFolders = (
-    folders: LibraryFolder[],
-    parentId: string | null,
-  ): LibraryFolder[] =>
-    folders.filter((folder) => (folder.parent_folder_id ?? null) === parentId);
-
-  const folderDocuments = (
-    items: Document[],
-    folderId: string | null,
-  ): Document[] =>
+  const folderDocuments = (items: Document[], folderId: string | null): Document[] =>
     items.filter((document) => documentFolderId(document) === folderId);
 
-  const collectFolderDocuments = (folderId: string): Document[] => [
-    ...folderDocuments(documents, folderId),
-    ...childFolders(libraryFolders, folderId).flatMap((folder) =>
-      collectFolderDocuments(folder.id),
-    ),
-  ];
-
-  const folderTreeIsLoaded = (folderId: string): boolean =>
-    loadedLibraryFolderIds.has(folderId) &&
-    !libraryHasMoreByLevel[folderId] &&
-    childFolders(libraryFolders, folderId).every((folder) =>
-      folderTreeIsLoaded(folder.id),
-    );
-
-  const collectProjectFolderDocuments = (
-    projectId: string,
-    folderId: string,
-  ): Document[] => {
-    const folders = projectFolders[projectId] ?? [];
-    const items = projectDocuments[projectId] ?? [];
-    return [
-      ...folderDocuments(items, folderId),
-      ...childFolders(folders, folderId).flatMap((folder) =>
-        collectProjectFolderDocuments(projectId, folder.id),
-      ),
-    ];
-  };
-
-  const projectFolderTreeIsLoaded = (
-    projectId: string,
-    folderId: string,
-  ): boolean => {
-    const folders = projectFolders[projectId] ?? [];
-    const levelKey = projectLevelKey(projectId, folderId);
-    return (
-      loadedProjectLevels.has(levelKey) &&
-      !projectHasMoreByLevel[levelKey] &&
-      childFolders(folders, folderId).every((folder) =>
-        projectFolderTreeIsLoaded(projectId, folder.id),
-      )
-    );
-  };
+  const libraryIndex = useMemo(() => buildDirectoryIndex(
+    libraryFolders, documents, selectedIds,
+    (id) => loadedLibraryFolderIds.has(id) && !libraryHasMoreByLevel[id],
+  ), [libraryFolders, documents, selectedIds, loadedLibraryFolderIds, libraryHasMoreByLevel]);
+  const projectIndexes = useMemo(() => {
+    const indexes = new Map<string, ReturnType<typeof buildDirectoryIndex<LibraryFolder, Document>>>();
+    for (const id of new Set([...Object.keys(projectFolders), ...Object.keys(projectDocuments)])) {
+      indexes.set(id, buildDirectoryIndex(projectFolders[id] ?? [], projectDocuments[id] ?? [], selectedIds,
+        (folderId) => {
+          const key = projectLevelKey(id, folderId);
+          return loadedProjectLevels.has(key) && !projectHasMoreByLevel[key];
+        }));
+    }
+    return indexes;
+  }, [projectFolders, projectDocuments, selectedIds, loadedProjectLevels, projectHasMoreByLevel]);
 
   const toggleProjectFolder = async (
     projectId: string,
@@ -556,9 +529,10 @@ export function AddDocumentsModal({
       await loadLibraryFolderLevel(activeTab, folderId);
     } catch (reason) {
       setError(
-        reason instanceof Error
-          ? reason.message
-          : "Failed to load folder documents.",
+        reportFault(reason, {
+          fallback: "Failed to load folder documents.",
+          operation: "documents.directory",
+        }).message,
       );
     }
   };
@@ -584,7 +558,10 @@ export function AddDocumentsModal({
       }));
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Failed to load documents.",
+        reportFault(reason, {
+          fallback: "Failed to load documents.",
+          operation: "documents.directory",
+        }).message,
       );
     } finally {
       setLoadingMoreLibraryLevels((current) => {
@@ -628,19 +605,17 @@ export function AddDocumentsModal({
     parentId: string | null,
     depth = 0,
   ): React.ReactNode {
-    return childFolders(folders, parentId).map((folder) => {
+    return (libraryIndex.children.get(parentId) ?? []).map((folder) => {
       const expanded = expandedLibraryFolders.has(folder.id);
-      const items = collectFolderDocuments(folder.id);
-      const directItems = folderDocuments(documents, folder.id);
-      const directChildFolders = childFolders(libraryFolders, folder.id);
-      const treeLoaded = folderTreeIsLoaded(folder.id);
+      const summary = libraryIndex.summaries.get(folder.id)!;
+      const directItems = libraryIndex.directDocuments.get(folder.id) ?? [];
+      const directChildFolders = libraryIndex.children.get(folder.id) ?? [];
+      const treeLoaded = summary.loaded;
       const folderLoading = loadingLibraryFolderIds.has(folder.id);
       const allSelected =
         treeLoaded &&
-        items.length > 0 &&
-        items.every((document) => selectedIds.has(document.id));
-      const someSelected =
-        !allSelected && items.some((document) => selectedIds.has(document.id));
+        summary.count > 0 && summary.selected === summary.count;
+      const someSelected = !allSelected && summary.selected > 0;
       return (
         <div key={folder.id}>
           <button
@@ -652,17 +627,17 @@ export function AddDocumentsModal({
             <span
               role="checkbox"
               aria-checked={someSelected ? "mixed" : allSelected}
-              aria-disabled={!treeLoaded || items.length === 0}
+              aria-disabled={!treeLoaded || summary.count === 0}
               aria-label={`Select all files in ${folder.name}`}
               onClick={(event) => {
                 event.stopPropagation();
-                if (!treeLoaded || items.length === 0) return;
-                toggleDocuments(items);
+                if (!treeLoaded || summary.count === 0) return;
+                toggleDocuments(libraryIndex.collect(folder.id));
               }}
               className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
                 allSelected || someSelected
                   ? "border-gray-900 bg-gray-900"
-                  : !treeLoaded || items.length === 0
+                  : !treeLoaded || summary.count === 0
                     ? "border-gray-200 bg-gray-50"
                     : "border-gray-300"
               }`}
@@ -719,23 +694,20 @@ export function AddDocumentsModal({
     parentId: string | null,
     depth = 0,
   ): React.ReactNode {
-    const folders = projectFolders[projectId] ?? [];
-    const projectItems = projectDocuments[projectId] ?? [];
-    return childFolders(folders, parentId).map((folder) => {
+    const index = projectIndexes.get(projectId);
+    return (index?.children.get(parentId) ?? []).map((folder) => {
       const expandedKey = projectLevelKey(projectId, folder.id);
       const expanded = expandedProjectFolders.has(expandedKey);
-      const items = collectProjectFolderDocuments(projectId, folder.id);
-      const directItems = folderDocuments(projectItems, folder.id);
-      const directChildFolders = childFolders(folders, folder.id);
-      const treeLoaded = projectFolderTreeIsLoaded(projectId, folder.id);
+      const summary = index!.summaries.get(folder.id)!;
+      const directItems = index!.directDocuments.get(folder.id) ?? [];
+      const directChildFolders = index!.children.get(folder.id) ?? [];
+      const treeLoaded = summary.loaded;
       const levelKey = projectLevelKey(projectId, folder.id);
       const folderLoading = loadingProjectLevels.has(levelKey);
       const allSelected =
         treeLoaded &&
-        items.length > 0 &&
-        items.every((document) => selectedIds.has(document.id));
-      const someSelected =
-        !allSelected && items.some((document) => selectedIds.has(document.id));
+        summary.count > 0 && summary.selected === summary.count;
+      const someSelected = !allSelected && summary.selected > 0;
 
       return (
         <div key={folder.id}>
@@ -748,17 +720,17 @@ export function AddDocumentsModal({
             <span
               role="checkbox"
               aria-checked={someSelected ? "mixed" : allSelected}
-              aria-disabled={!treeLoaded || items.length === 0}
+              aria-disabled={!treeLoaded || summary.count === 0}
               aria-label={`Select all files in ${folder.name}`}
               onClick={(event) => {
                 event.stopPropagation();
-                if (!treeLoaded || items.length === 0) return;
-                toggleDocuments(items);
+                if (!treeLoaded || summary.count === 0) return;
+                toggleDocuments(index!.collect(folder.id));
               }}
               className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
                 allSelected || someSelected
                   ? "border-gray-900 bg-gray-900"
-                  : !treeLoaded || items.length === 0
+                  : !treeLoaded || summary.count === 0
                     ? "border-gray-200 bg-gray-50"
                     : "border-gray-300"
               }`}
@@ -879,7 +851,8 @@ export function AddDocumentsModal({
       <div className="my-3 flex items-center justify-between gap-2">
         <div
           data-testid="document-tabs-scroll"
-          className="-mx-2 -my-2 flex min-w-0 items-center gap-1 overflow-x-auto px-2 py-2"
+          data-modal-scroll="horizontal"
+          className="flex min-w-0 items-center gap-1 overflow-x-auto"
         >
           {TABS.map((tab) => (
             <TabPillButtonUI
@@ -900,7 +873,7 @@ export function AddDocumentsModal({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-y-auto pb-3">
+        <div data-modal-scroll="vertical" className="min-h-0 flex-1 overflow-y-auto pb-3">
           {loading ? (
             <div className="flex h-full items-center justify-center">
               <Spinner label="Loading documents…" />
@@ -915,16 +888,16 @@ export function AddDocumentsModal({
                 {filteredProjects.map((project) => {
                   const expanded = expandedProjects.has(project.id);
                   const items = projectDocuments[project.id] ?? [];
-                  const folders = projectFolders[project.id] ?? [];
-                  const rootItems = folderDocuments(items, null);
+                  const index = projectIndexes.get(project.id);
+                  const rootItems = index?.directDocuments.get(null) ?? [];
                   const rootKey = projectLevelKey(project.id, null);
                   const projectLoading = loadingProjectLevels.has(rootKey);
                   const projectLoaded = loadedProjectLevels.has(rootKey);
                   const projectSelectionReady =
                     projectLoaded &&
                     !projectHasMoreByLevel[rootKey] &&
-                    childFolders(folders, null).every((folder) =>
-                      projectFolderTreeIsLoaded(project.id, folder.id),
+                    (index?.children.get(null) ?? []).every((folder) =>
+                      index!.summaries.get(folder.id)?.loaded,
                     );
                   const allSelected =
                     projectSelectionReady &&
@@ -1011,7 +984,7 @@ export function AddDocumentsModal({
                             )}
                             {projectLoaded &&
                               rootItems.length === 0 &&
-                              childFolders(folders, null).length === 0 && (
+                              (index?.children.get(null) ?? []).length === 0 && (
                                 <p className="py-2 pl-9 text-xs text-gray-400">
                                   No documents
                                 </p>
@@ -1048,7 +1021,7 @@ export function AddDocumentsModal({
               ) : (
                 <>
                   {renderFolderRows(libraryFolders, null)}
-                  {folderDocuments(documents, null).map((document) =>
+                  {(libraryIndex.directDocuments.get(null) ?? []).map((document) =>
                     renderDocument(document),
                   )}
                   <DirectoryLoadMoreRow

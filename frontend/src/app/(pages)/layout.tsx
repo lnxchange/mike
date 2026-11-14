@@ -6,11 +6,13 @@ import { PanelLeft } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { authCallbackPathFromSearch } from "@/app/lib/authRedirects";
 import { ChatHistoryProvider } from "@/app/contexts/ChatHistoryContext";
+import { WorkspaceProvider } from "@/app/contexts/WorkspaceContext";
 import { SidebarContext } from "@/app/contexts/SidebarContext";
 import { PageChromeContext } from "@/app/contexts/PageChromeContext";
 import { AppSidebar } from "@/app/components/shared/AppSidebar";
+import { preloadSidebarIcons } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { FullScreenLoader } from "@/app/components/shared/FullScreenLoader";
-import { HeaderButtonUI, HeaderButtonsUI } from "@/shared/ui/HeaderButtonsUI";
+import { HeaderButtonUI, HeaderButtonsUI } from "@mike/ui";
 import { cn } from "@/app/lib/utils";
 
 export default function MikeLayout({
@@ -18,7 +20,15 @@ export default function MikeLayout({
 }: {
     children: React.ReactNode;
 }) {
+    preloadSidebarIcons();
     const { isAuthenticated, authLoading } = useAuth();
+    const [hasMounted, setHasMounted] = useState(false);
+    useEffect(() => {
+        // An outer auth provider may settle before this streamed boundary
+        // hydrates. Its first client render must still match the SSR loader.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- one hydration transition, independent of auth or streamed content
+        setHasMounted(true);
+    }, []);
     const router = useRouter();
     const pathname = usePathname();
     const isChatPage =
@@ -111,56 +121,65 @@ export default function MikeLayout({
         }
     }, [authLoading, isAuthenticated, router]);
 
-    if (authLoading) {
+    if (!hasMounted || authLoading) {
         return <FullScreenLoader />;
     }
 
     if (!isAuthenticated) return null;
 
     return (
-        <ChatHistoryProvider>
-            <PageChromeContext.Provider value={pageChromeValue}>
-                <SidebarContext.Provider value={sidebarValue}>
-                    <div className="h-dvh flex flex-col bg-app-background">
-                        <div className="flex-1 flex min-w-0 overflow-visible">
-                            <AppSidebar
-                                isOpen={isSidebarOpen}
-                                onToggle={handleSidebarToggle}
-                            />
-                            <div className="flex-1 flex flex-col h-dvh md:overflow-hidden relative w-full">
-                                {/* Mobile header */}
-                                <div
-                                    data-slot="mobile-header"
-                                    className={cn(
-                                        "z-30 flex items-center gap-3 overflow-visible px-4 md:hidden",
-                                        isChatPage
-                                            ? "pointer-events-none fixed inset-x-0 top-0 bg-transparent pb-2 pt-3"
-                                            : "relative shrink-0 pb-2 pt-3",
-                                    )}
-                                >
-                                    <HeaderButtonsUI className="pointer-events-auto">
-                                        <HeaderButtonUI
-                                            iconOnly
-                                            onClick={handleSidebarToggle}
-                                            title="Open sidebar"
-                                            aria-label="Open sidebar"
-                                        >
-                                            <PanelLeft className="h-4 w-4" />
-                                        </HeaderButtonUI>
-                                    </HeaderButtonsUI>
+        <WorkspaceProvider>
+            <ChatHistoryProvider>
+                <PageChromeContext.Provider value={pageChromeValue}>
+                    <SidebarContext.Provider value={sidebarValue}>
+                        <div className="h-dvh flex flex-col bg-app-background">
+                            <div className="flex-1 flex min-w-0 overflow-visible">
+                                <AppSidebar
+                                    isOpen={isSidebarOpen}
+                                    onToggle={handleSidebarToggle}
+                                />
+                                <div className="flex-1 flex flex-col h-dvh md:overflow-hidden relative w-full">
+                                    {/* Mobile header */}
                                     <div
-                                        ref={handleMobileActionsContainerRef}
-                                        className="pointer-events-auto ml-auto flex min-w-0 flex-1 items-center justify-end"
-                                    />
+                                        data-slot="mobile-header"
+                                        className={cn(
+                                            "z-30 flex items-center gap-3 overflow-visible px-4 md:hidden",
+                                            isChatPage
+                                                ? "pointer-events-none fixed inset-x-0 top-0 bg-transparent pb-2 pt-3"
+                                                : "relative shrink-0 pb-2 pt-3",
+                                        )}
+                                    >
+                                        <HeaderButtonsUI
+                                            className={cn(
+                                                "pointer-events-auto",
+                                                // Only the chat page floats this
+                                                // bar over scrolling content.
+                                                isChatPage && "backdrop-blur-2xl",
+                                            )}
+                                        >
+                                            <HeaderButtonUI
+                                                iconOnly
+                                                onClick={handleSidebarToggle}
+                                                title="Open sidebar"
+                                                aria-label="Open sidebar"
+                                            >
+                                                <PanelLeft className="h-4 w-4" />
+                                            </HeaderButtonUI>
+                                        </HeaderButtonsUI>
+                                        <div
+                                            ref={handleMobileActionsContainerRef}
+                                            className="pointer-events-auto ml-auto flex min-w-0 flex-1 items-center justify-end"
+                                        />
+                                    </div>
+                                    <main className="flex h-full w-full flex-1 flex-col overflow-y-auto md:overflow-hidden">
+                                        {children}
+                                    </main>
                                 </div>
-                                <main className="flex h-full w-full flex-1 flex-col overflow-y-auto md:overflow-hidden">
-                                    {children}
-                                </main>
                             </div>
                         </div>
-                    </div>
-                </SidebarContext.Provider>
-            </PageChromeContext.Provider>
-        </ChatHistoryProvider>
+                    </SidebarContext.Provider>
+                </PageChromeContext.Provider>
+            </ChatHistoryProvider>
+        </WorkspaceProvider>
     );
 }

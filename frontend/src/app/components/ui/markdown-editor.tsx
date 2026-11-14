@@ -19,13 +19,11 @@ import {
 } from "lucide-react";
 import { EDITOR_SURFACE_CLASS } from "@/app/components/ui/liquid-surface";
 import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-} from "@/app/components/ui/dropdown-menu";
-import {
-  LiquidDropdownContent,
-  LiquidDropdownItem,
-} from "@/app/components/ui/liquid-dropdown";
+  Dropdown,
+  DropdownContent,
+  DropdownItem,
+  DropdownTrigger,
+} from "@mike/ui";
 import { cn } from "@/app/lib/utils";
 
 export interface MarkdownEditorProps {
@@ -141,6 +139,9 @@ export function MarkdownEditor({
   allowTables = true,
 }: MarkdownEditorProps) {
   const lastEmittedRef = useRef(value);
+  // The first sync must check the initial content too; after that only an
+  // external change can alter what the editor holds.
+  const roundTripCheckedRef = useRef(false);
   const rawTextareaRef = useRef<HTMLTextAreaElement>(null);
   const tableInsertionSelectionRef = useRef<{
     from: number;
@@ -210,13 +211,35 @@ export function MarkdownEditor({
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
     const externalValueChanged = value !== lastEmittedRef.current;
-    if (value !== lastEmittedRef.current) {
+    if (externalValueChanged) {
       lastEmittedRef.current = value;
+      // Replacing the document collapses the selection to the start. When
+      // the user is mid-edit (a poll adopted a curator update, or the server
+      // normalised what was just saved) put the caret back where it was.
+      const { from, to } = editor.state.selection;
+      const restoreSelection = editor.isFocused;
       editor.commands.setContent(value, { emitUpdate: false });
+      if (restoreSelection) {
+        const size = editor.state.doc.content.size;
+        try {
+          editor.commands.setTextSelection({
+            from: Math.min(from, size),
+            to: Math.min(to, size),
+          });
+        } catch {
+          // A position that no longer exists keeps the default selection.
+        }
+      }
     }
     // Tiptap may normalize or omit Markdown syntax it cannot represent. Keep
     // such documents in the canonical raw editor so merely viewing and
-    // editing a memory file can never silently discard valid Markdown.
+    // editing a memory file can never silently discard valid Markdown. The
+    // check only means something against content the editor actually holds:
+    // after the user's own edit the document is already the source of truth
+    // (and in raw mode it is stale), so running it there produced a false
+    // "raw view preserves this Markdown" hint on every keystroke.
+    if (!externalValueChanged && roundTripCheckedRef.current) return;
+    roundTripCheckedRef.current = true;
     const roundTrips = markdownRoundTrips(value, getEditorMarkdown(editor));
     const syncFrame = window.requestAnimationFrame(() => {
       if (externalValueChanged) setRawMarkdown(value);
@@ -433,7 +456,7 @@ export function MarkdownEditor({
     >
       {!readOnly && editor && (
         <div
-          className="flex shrink-0 items-center gap-0.5 overflow-x-auto bg-app-surface px-2 py-1.5 backdrop-blur-xl"
+          className="flex shrink-0 items-center gap-0.5 overflow-x-auto bg-app-surface px-2 py-1.5"
           role="toolbar"
           aria-label="Markdown formatting"
         >
@@ -526,14 +549,14 @@ export function MarkdownEditor({
           {allowTables ? (
             <>
               <div aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-gray-200" />
-              <DropdownMenu
+              <Dropdown
                 open={tablePickerOpen}
                 onOpenChange={(open) => {
                   setTablePickerOpen(open);
                   if (!open) setTablePickerSize(null);
                 }}
               >
-                <DropdownMenuTrigger asChild>
+                <DropdownTrigger asChild>
                   <button
                     type="button"
                     disabled={suspended}
@@ -549,11 +572,11 @@ export function MarkdownEditor({
                   >
                     <Table2 className="h-4 w-4" />
                   </button>
-                </DropdownMenuTrigger>
-                <LiquidDropdownContent
+                </DropdownTrigger>
+                <DropdownContent
                   align="start"
                   aria-label="Insert table"
-                  className="z-[250] w-max p-2"
+                  className="w-max p-2"
                   onCloseAutoFocus={(event) => event.preventDefault()}
                 >
                   <div className="space-y-2">
@@ -579,7 +602,7 @@ export function MarkdownEditor({
                                 cols <= tablePickerSize.cols;
 
                               return (
-                                <LiquidDropdownItem
+                                <DropdownItem
                                   key={`${rows}-${cols}`}
                                   aria-label={`Insert ${rows} by ${cols} table`}
                                   selected={selected}
@@ -613,8 +636,8 @@ export function MarkdownEditor({
                         : "Select table size"}
                     </div>
                   </div>
-                </LiquidDropdownContent>
-              </DropdownMenu>
+                </DropdownContent>
+              </Dropdown>
             </>
           ) : null}
           <div className="ml-auto" />
@@ -634,7 +657,7 @@ export function MarkdownEditor({
         </div>
       )}
       {readOnly && (
-        <div className="flex h-9 shrink-0 items-center justify-between bg-app-surface px-5 backdrop-blur-xl">
+        <div className="flex h-9 shrink-0 items-center justify-between bg-app-surface px-5">
           <span className="text-xs font-medium text-gray-500">Read-only</span>
           {editor && (
             <AppToolbarButton
@@ -649,7 +672,10 @@ export function MarkdownEditor({
         </div>
       )}
       <div
-        className={`flex-1 overflow-y-auto transition-opacity ${
+        // A flex column so the raw textarea can take the whole editing area:
+        // `h-full` alone resolves to "auto" inside a flex item without an
+        // explicit height, which left the raw view two rows tall.
+        className={`flex flex-1 flex-col overflow-y-auto transition-opacity ${
           readOnly ? "border-t border-gray-100" : ""
         } ${suspended ? "opacity-50" : ""}`}
       >
@@ -660,7 +686,7 @@ export function MarkdownEditor({
             onChange={(event) => handleRawChange(event.target.value)}
             readOnly={readOnly || suspended}
             spellCheck={false}
-            className="h-full min-h-full w-full resize-none bg-transparent px-5 py-4 font-mono text-xs leading-6 text-gray-800 outline-none placeholder:text-gray-400 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600/40 read-only:cursor-default"
+            className="h-full min-h-full w-full flex-1 resize-none bg-transparent px-5 py-4 font-mono text-xs leading-6 text-gray-800 outline-none placeholder:text-gray-400 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600/40 read-only:cursor-default"
             aria-label={`${ariaLabel} (raw Markdown)`}
           />
         ) : (

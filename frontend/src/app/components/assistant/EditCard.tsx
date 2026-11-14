@@ -1,44 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { EditCardUI } from "@/shared/ui/EditCardUI";
+import { EditCardUI } from "@mike/ui";
 import { resolveDocumentEdit } from "@/app/lib/mikeApi";
 import type { EditAnnotation } from "../shared/types";
 import { RESPONSE_GLASS_SURFACE } from "./message/messageStyles";
-
-function normalizeText(s: string) {
-    return s.replace(/\s+/g, " ").trim();
-}
-
-function findMatch(
-    container: Element,
-    tag: "ins" | "del",
-    opts: { w_id?: string | null; text?: string },
-): HTMLElement | null {
-    if (opts.w_id) {
-        // Values are numeric strings from our own backend — CSS.escape
-        // makes them hex-encoded which works but is harder to debug.
-        const byId = container.querySelector(
-            `${tag}[data-w-id="${opts.w_id}"]`,
-        ) as HTMLElement | null;
-        if (byId) return byId;
-    }
-    const text = opts.text ?? "";
-    const target = normalizeText(text);
-    if (!target) return null;
-    const candidates = Array.from(
-        container.querySelectorAll(tag),
-    ) as HTMLElement[];
-    const byText =
-        candidates.find(
-            (el) => normalizeText(el.textContent ?? "") === target,
-        ) ??
-        candidates.find((el) =>
-            normalizeText(el.textContent ?? "").includes(target),
-        ) ??
-        null;
-    return byText;
-}
+import { docxRevisionElements } from "../shared/views/docxRevisionElements";
 
 /**
  * Ephemeral DOM mutation so the tracked change visually resolves the
@@ -110,21 +77,15 @@ export function applyOptimisticResolution(
         const container = scroll.querySelector(".docx-view-container");
         if (!container) return;
 
-        const insEl = findMatch(container, "ins", {
-            w_id: annotation.ins_w_id,
-            text: annotation.inserted_text,
-        });
-        const delEl = findMatch(container, "del", {
-            w_id: annotation.del_w_id,
-            text: annotation.deleted_text,
-        });
+        const insertions = docxRevisionElements(container, "ins", annotation.ins_w_id, annotation.inserted_text);
+        const deletions = docxRevisionElements(container, "del", annotation.del_w_id, annotation.deleted_text);
 
         if (verb === "accept") {
-            if (insEl) keep(insEl);
-            if (delEl) hide(delEl);
+            insertions.forEach(keep);
+            deletions.forEach(hide);
         } else {
-            if (insEl) hide(insEl);
-            if (delEl) keep(delEl);
+            insertions.forEach(hide);
+            deletions.forEach(keep);
         }
     });
 
@@ -143,11 +104,13 @@ interface Props {
     resolvedStatus?: "accepted" | "rejected";
     /**
      * True while an accept/reject request for any edit on this document
-     * is in flight (from here, DocPanel, or the bulk bar). When true the
+     * is in flight (from here, DocumentContent, or the bulk bar). When true the
      * Accept/Reject buttons disable so the user can't race resolutions.
      */
     isReloading?: boolean;
     onViewClick?: (ann: EditAnnotation) => void;
+    /** Renders the dismiss control. Omit where the card cannot be closed. */
+    onClose?: () => void;
     /**
      * Fires immediately when the user clicks Accept or Reject, before the
      * backend round-trip. Parents use this to show an in-progress spinner
@@ -190,6 +153,7 @@ export function EditCard({
     resolvedStatus,
     isReloading,
     onViewClick,
+    onClose,
     onResolveStart,
     onResolved,
     onError,
@@ -274,6 +238,7 @@ export function EditCard({
             className={`${RESPONSE_GLASS_SURFACE} p-2`}
             actionsDisabled={!!isReloading}
             busyAction={busyAction ?? undefined}
+            onClose={onClose}
             onAccept={() => handle("accept")}
             onReject={() => handle("reject")}
             onView={

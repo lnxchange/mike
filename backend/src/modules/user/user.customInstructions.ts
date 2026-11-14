@@ -1,6 +1,9 @@
-// Free-form text the user writes in Settings > Personalisation.
-// Read and written through its own endpoint so the profile select cascade
-// does not carry a large text column on every profile load.
+// user custom instructions — implementation behind the module facade.
+//
+// Free-form text the user writes in Settings > Personalisation. It lives
+// on user_profiles but is read and written through its own endpoint so the
+// profile select cascade (user.profile.storage.ts) does not have to carry a
+// potentially large text column on every profile load.
 import {
     failure,
     internalFailure,
@@ -69,6 +72,8 @@ export function validateCustomInstructionsPayload(
     if (typeof content !== "string") {
         return { ok: false, detail: "content must be a string" };
     }
+    // Trailing whitespace carries no meaning in a prompt; dropping it also
+    // keeps an editor's trailing newline from counting as a change.
     const normalized = content.replace(/\r\n?/g, "\n").trimEnd();
     if (normalized.length > CUSTOM_INSTRUCTIONS_MAX_LENGTH) {
         return {

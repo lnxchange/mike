@@ -1,12 +1,17 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const path = require("path");
+// Release identity shared with the web app and its Next build config.
+const { releaseName } = require(
+  path.resolve(__dirname, "..", "packages", "client", "src", "releaseName.cjs"),
+);
 const fs = require("fs");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const webpack = require("webpack");
 
-const frontendShared = (...segments) =>
-  path.resolve(__dirname, "..", "frontend", "src", "shared", ...segments);
-const frontendSharedUi = (filename) => frontendShared("ui", filename);
+// The packages shared with the web app (packages/*). Each is consumed by its
+// name only; tsconfig.json maps the same names for type-checking.
+const sharedPackage = (name) =>
+  path.resolve(__dirname, "..", "packages", name, "src", "index.ts");
 
 module.exports = async (_env, options) => {
   const isDev = options.mode !== "production";
@@ -120,11 +125,47 @@ module.exports = async (_env, options) => {
     ];
   }
 
+  // Optional source-map upload so Sentry shows readable stack traces for
+  // the minified production bundle. Only when the three upload settings are
+  // present: maps are generated as hidden (no sourceMappingURL comment),
+  // sent to Sentry, then deleted so they never ship in dist/.
+  const sentryUploadConfigured =
+    !isDev &&
+    !!process.env.SENTRY_AUTH_TOKEN &&
+    !!process.env.SENTRY_ORG &&
+    !!process.env.SENTRY_PROJECT;
+  const sentryPlugins = sentryUploadConfigured
+    ? [
+        require("@sentry/webpack-plugin").sentryWebpackPlugin({
+          org: process.env.SENTRY_ORG,
+          project: process.env.SENTRY_PROJECT,
+          authToken: process.env.SENTRY_AUTH_TOKEN,
+          // The same string the pane tags events with (errorReporting.ts),
+          // from the same build arguments, so the maps land on that release.
+          release: {
+            name: releaseName(
+              process.env.REACT_APP_SENTRY_RELEASE,
+              process.env.REACT_APP_MIKE_VERSION,
+              process.env.REACT_APP_GIT_SHA,
+            ),
+          },
+          telemetry: false,
+          sourcemaps: {
+            filesToDeleteAfterUpload: ["dist/**/*.map"],
+          },
+        }),
+      ]
+    : [];
+
   /** @type {import('webpack').Configuration} */
   const config = {
     // Keep readable stack traces locally without publishing application source
     // and embedded source content in production artifacts.
-    devtool: isDev ? "source-map" : false,
+    devtool: isDev
+      ? "source-map"
+      : sentryUploadConfigured
+        ? "hidden-source-map"
+        : false,
     entry: {
       taskpane: "./src/taskpane/index.tsx",
       commands: "./src/commands/commands.ts",
@@ -138,7 +179,11 @@ module.exports = async (_env, options) => {
     },
     resolve: {
       extensions: [".ts", ".tsx", ".js", ".jsx"],
-      modules: [path.resolve(__dirname, "node_modules"), "node_modules"],
+      // Resolve each package's nested dependencies before the add-in fallback.
+      // Sentry's build plugin and runtime SDK can require different versions.
+      // The absolute fallback is also what lets packages/ui and
+      // packages/client, which have no node_modules, find their dependencies.
+      modules: ["node_modules", path.resolve(__dirname, "node_modules")],
       alias: {
         // Cross-app source files must use the add-in's React runtime so the
         // bundle never picks up a second copy from frontend/node_modules.
@@ -149,44 +194,21 @@ module.exports = async (_env, options) => {
         // The frontend's public icon set is canonical. Webpack imports those
         // same SVGs and emits content-hashed copies for the add-in bundle.
         "@icons": path.resolve(__dirname, "..", "frontend", "public", "icons"),
-        "@mike/edit-card-ui": frontendSharedUi("EditCardUI.tsx"),
-        "@mike/edit-cards-section-ui": frontendSharedUi(
-          "EditCardsSectionUI.tsx",
-        ),
-        "@mike/pre-response-wrapper-ui": frontendSharedUi(
-          "PreResponseWrapperUI.tsx",
-        ),
-        "@mike/document-event-blocks-ui": frontendSharedUi(
-          "DocumentEventBlocksUI.tsx",
-        ),
-        "@mike/glass-card-ui": frontendSharedUi("GlassCardUI.tsx"),
-        "@mike/modal-ui": frontendSharedUi("ModalUI.tsx"),
-        "@mike/header-buttons-ui": frontendSharedUi(
-          "HeaderButtonsUI.tsx",
-        ),
-        "@mike/pill-button-ui": frontendSharedUi("PillButtonUI.tsx"),
-        "@mike/tab-pill-button-ui": frontendSharedUi(
-          "TabPillButtonUI.tsx",
-        ),
-        "@mike/toggle-switch-ui": frontendSharedUi("ToggleSwitchUI.tsx"),
-        "@mike/dropdown-ui": frontendSharedUi("DropdownUI.tsx"),
-        "@mike/citation-pill-ui": frontendSharedUi("CitationPillUI.tsx"),
-        "@mike/model-toggle-ui": frontendSharedUi("ModelToggleUI.tsx"),
-        "@mike/mike-icon-ui": frontendSharedUi("MikeIconUI.tsx"),
-        "@mike/google-icon-ui": frontendSharedUi("GoogleIconUI.tsx"),
-        "@mike/microsoft-icon-ui": frontendSharedUi("MicrosoftIconUI.tsx"),
-        "@mike/auth-styles-ui": frontendSharedUi("AuthStylesUI.ts"),
-        "@mike/auth-divider-ui": frontendSharedUi("AuthDividerUI.tsx"),
-        "@mike/workflow-slash-command-ui": frontendSharedUi(
-          "WorkflowSlashCommandUI.tsx",
-        ),
-        // Non-UI shared modules: the upload-session client and the UUID helper
-        // it mints client ids with.
-        "@mike/upload-session-client": frontendShared(
-          "api",
+        // Shared UI primitives and the framework-free client behavior behind
+        // them (error presentation, the model catalog, uploads, excerpts,
+        // Sentry hygiene): one implementation for the web app and the add-in.
+        "@mike/ui": sharedPackage("ui"),
+        "@mike/client": sharedPackage("client"),
+        // documentUpload.ts still imports this name. The module moved into
+        // @mike/client and is what accepts email and zip uploads.
+        "@mike/upload-session-client": path.resolve(
+          __dirname,
+          "..",
+          "packages",
+          "client",
+          "src",
           "uploadSessionClient.ts",
         ),
-        "@mike/secure-uuid": frontendShared("lib", "secureUuid.ts"),
       },
     },
     module: {
@@ -251,7 +273,21 @@ module.exports = async (_env, options) => {
         REACT_APP_WEB_APP_URL: isDev
           ? process.env.REACT_APP_WEB_APP_URL || "https://app.mikeoss.com"
           : undefined,
+        // Sentry is off unless a DSN is baked in at build time (the pane is
+        // a static bundle; there is no runtime environment to read).
+        REACT_APP_SENTRY_DISABLED: process.env.REACT_APP_SENTRY_DISABLED || "",
+        REACT_APP_SENTRY_DSN: process.env.REACT_APP_SENTRY_DSN || "",
+        REACT_APP_SENTRY_INSTALL: process.env.REACT_APP_SENTRY_INSTALL || "",
+        REACT_APP_SENTRY_ENVIRONMENT:
+          process.env.REACT_APP_SENTRY_ENVIRONMENT || "",
+        REACT_APP_SENTRY_RELEASE: process.env.REACT_APP_SENTRY_RELEASE || "",
+        REACT_APP_GIT_SHA: process.env.REACT_APP_GIT_SHA || "",
+        REACT_APP_MIKE_VERSION: process.env.REACT_APP_MIKE_VERSION || "",
+        REACT_APP_SENTRY_MAX_REPEAT_EVENTS_PER_DAY: process.env.REACT_APP_SENTRY_MAX_REPEAT_EVENTS_PER_DAY || "",
+        REACT_APP_SENTRY_TRACES_SAMPLE_RATE:
+          process.env.REACT_APP_SENTRY_TRACES_SAMPLE_RATE || "",
       }),
+      ...sentryPlugins,
     ],
     devServer: devServerConfig,
   };

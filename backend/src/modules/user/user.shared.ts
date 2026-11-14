@@ -1,10 +1,6 @@
-// Shared types + helpers for the user module service layer.
-//
-// The user service is split by concern across sibling files
-// (user.profile.ts, user.mfa.ts, user.apiKeys.ts, user.mcp.ts,
-// user.account.ts, user.export.ts). Anything used by more than one of them
-// lives here, and user.service.ts re-exports the whole public surface so
-// route/test importers see a single module.
+// Shared types + helpers for the user module service layer. Anything used
+// by more than one topic file lives here; user.service.ts re-exports the
+// public surface.
 
 import type { Db } from "../../lib/supabase";
 export type { Db };

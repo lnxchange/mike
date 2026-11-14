@@ -7,19 +7,17 @@ const { updatePersonalisation } = vi.hoisted(() => ({
   updatePersonalisation: vi.fn(),
 }));
 
-vi.mock("@/app/lib/mikeApi", () => ({
+vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/app/lib/mikeApi")>()),
   getCustomInstructions: vi.fn(async () => ({ content: "" })),
-  saveCustomInstructions: vi.fn(async () => ({ content: "" })),
+  updateCustomInstructions: vi.fn(async (content: string) => ({ content })),
   getResponseStyle: vi.fn(async () => ({
     verbosity: "balanced",
     formatting: "balanced",
     tone: "balanced",
+    language: "auto",
   })),
-  saveResponseStyle: vi.fn(async () => ({
-    verbosity: "balanced",
-    formatting: "balanced",
-    tone: "balanced",
-  })),
+  updateResponseStyle: vi.fn(async (style: unknown) => style),
 }));
 
 vi.mock("@/app/contexts/UserProfileContext", () => ({
@@ -40,13 +38,30 @@ describe("PersonalisationPage", () => {
     updatePersonalisation.mockResolvedValue(true);
   });
 
+  it("shows the background, response style, and custom instruction sections", async () => {
+    render(<PersonalisationPage />);
+
+    expect(
+      screen.getByRole("heading", { name: "Your background" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Response style" }),
+    ).toBeInTheDocument();
+    for (const setting of ["Verbosity", "Headers and Lists", "Tone", "Language"]) {
+      expect(
+        await screen.findByRole("button", { name: setting }),
+      ).toBeInTheDocument();
+    }
+  });
+
   it("updates the user's professional profile", async () => {
     const user = userEvent.setup();
     const { container } = render(<PersonalisationPage />);
 
+    // Four background rows plus the four response style rows.
     expect(
       container.querySelectorAll('[data-slot="settings-row"]'),
-    ).toHaveLength(4);
+    ).toHaveLength(8);
 
     await user.click(screen.getByRole("button", { name: "Title" }));
     await user.click(
@@ -108,6 +123,22 @@ describe("PersonalisationPage", () => {
         practiceAreas: ["Litigation"],
       }),
     );
+  });
+
+  it("reports a failed save only through the notice", async () => {
+    // updatePersonalisation raises the notice (with Retry) itself; the form
+    // must not add a second, inline report of the same failure.
+    updatePersonalisation.mockResolvedValue(false);
+    const user = userEvent.setup();
+    render(<PersonalisationPage />);
+
+    await user.click(screen.getByRole("button", { name: "Title" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "Partner" }));
+    await waitFor(() => expect(updatePersonalisation).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
   it("does not drop an earlier pending edit when an Other box turns invalid", async () => {

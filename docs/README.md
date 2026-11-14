@@ -12,11 +12,21 @@
 
 ## Features and clients
 
+- [Organization offboarding](organization-offboarding.md) — member removal,
+  account deletion, shared-work transfer and owner-only recovery
+- [MCP connectors](connectors.md) — hosted presets, custom servers, OAuth,
+  redirect URIs, and Slack/Google deployment setup
 - [Scoped memory](memory.md) — app and project Markdown memory, permissions,
   correspondence-derived matter status, asynchronous learning, deletion, and
   operations
+- [Google Workspace](google-workspace.md) — Drive, Gmail, and Calendar
+  connectors: setup, permissions, approvals, limits, and acceptance tests
 - [CourtListener integration](courtlistener.md) — live US case-law tools and
   optional bulk data
+- [Web search](web-search.md) — provider search and search services, page
+  reading, keys, and safety
+- [Subagents](subagents.md) — delegated tasks, what they may do, approvals,
+  and limits
 - [Australian Commonwealth legislation](au-legislation.md) — live Federal
   Register of Legislation tools
 - [Australian energy law](au-energy.md) — ESC instruments, national energy
@@ -52,6 +62,11 @@
 - [Backend unit-test coverage](testing-coverage.md)
 - [Frontend unit-test coverage](frontend-testing.md)
 - [Mutation testing and the SSE load harness](test-depth.md)
+
+## Open-source acknowledgments
+
+- [Open-source credits](../CREDITS.md) — the libraries, tools, and
+  infrastructure behind Mike
 
 ## Historical design and investigation notes
 

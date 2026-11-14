@@ -10,6 +10,14 @@ const mocks = vi.hoisted(() => ({
   rpc: vi.fn(),
   session: null as Record<string, unknown> | null,
   files: [] as Array<Record<string, unknown>>,
+  setOperation: vi.fn(),
+  reportError: vi.fn(),
+}));
+
+vi.mock("../../lib/observability/sentry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/observability/sentry")>()),
+  setOperation: mocks.setOperation,
+  reportError: mocks.reportError,
 }));
 
 vi.mock("../../middleware/auth", () => ({
@@ -96,14 +104,37 @@ vi.mock("../../lib/supabase", () => ({
   }),
 }));
 
+// The route maps this class to 503; the class the route imports is the one
+// this mock exports, so a mocked deleteFile can throw it. Hoisted because
+// vi.mock factories run before module-level declarations.
+const { StorageOperationError } = vi.hoisted(() => {
+  class StorageOperationError extends Error {
+    constructor(operation: string, options?: { cause?: unknown }) {
+      super(`Object storage ${operation} failed`, options);
+      this.name = "StorageOperationError";
+    }
+  }
+  return { StorageOperationError };
+});
+
 vi.mock("../../lib/storage", () => ({
+  StorageOperationError,
   storageEnabled: true,
   getSignedUploadUrl: mocks.getSignedUploadUrl,
   copyFile: mocks.copyFile,
   deleteFile: mocks.deleteFile,
+  deleteFileBestEffort: (key: string) =>
+    Promise.resolve(mocks.deleteFile(key)).catch(() => undefined),
+  deleteFilesBestEffort: async (keys: Array<string | null | undefined>) => {
+    for (const key of keys.filter(Boolean)) {
+      await Promise.resolve(mocks.deleteFile(key)).catch(() => undefined);
+    }
+  },
   headFile: mocks.headFile,
 }));
 
+import { AppError } from "../../lib/appError";
+import { resetSchemaOutOfDateReportsForTests } from "../../lib/schemaOutOfDate";
 import { uploadSessionsRouter } from "../../modules/uploads/uploads.routes";
 
 const app = express();
@@ -188,6 +219,33 @@ describe("upload session completion", () => {
       status: "uploaded",
       observed_size_bytes: 4,
     });
+    // Sealing reads and copies the object: a storage flow, named as one.
+    expect(mocks.setOperation).toHaveBeenCalledWith("upload_session.storage");
+  });
+
+  it("answers 503, not 500, when object storage fails while sealing", async () => {
+    mocks.headFile
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ size: 4, etag: "staged-etag", contentType: "application/pdf" })
+      .mockResolvedValueOnce({ size: 4, etag: "sealed-etag", contentType: "application/pdf" });
+    // deleteFile wraps every real SDK failure in StorageOperationError (see
+    // storageBestEffortDelete.test.ts); sealing must treat that like a HEAD or
+    // copy failure: a retryable storage outage, not a bug.
+    mocks.deleteFile.mockRejectedValueOnce(
+      new StorageOperationError("delete", {
+        cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:9000"), {
+          code: "ECONNREFUSED",
+        }),
+      }),
+    );
+
+    const response = await request(app).post(
+      "/upload-sessions/22222222-2222-4222-8222-222222222222/files/33333333-3333-4333-8333-333333333333/complete",
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({ code: "internal_error" });
+    expect(JSON.stringify(response.body)).not.toContain("ECONNREFUSED");
   });
 
   it("queues one verified file while another file is still uploading", async () => {
@@ -367,6 +425,46 @@ describe("upload session completion", () => {
     expect(response.status).toBe(200);
     expect(log).toHaveBeenCalled();
     log.mockRestore();
+  });
+
+  it("reports a database without the extend RPC once, not once per file", async () => {
+    // MIKE-BACKEND-1H: an install behind on migrations has no
+    // extend_upload_session_expiry, and every completed file used to file a
+    // console error event.
+    resetSchemaOutOfDateReportsForTests();
+    mocks.rpc.mockImplementation(async (name: string) => {
+      if (name === "extend_upload_session_expiry") {
+        return {
+          data: null,
+          error: { code: "PGRST202", message: "Could not find the function" },
+        };
+      }
+      return name === "queue_upload_session_file_processing"
+        ? { data: "job-1", error: null }
+        : { data: "pending_upload", error: null };
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    for (let upload = 0; upload < 2; upload++) {
+      mocks.files[0]!.status = "uploaded";
+      const response = await request(app).post(
+        "/upload-sessions/22222222-2222-4222-8222-222222222222/files/33333333-3333-4333-8333-333333333333/complete",
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(
+      mocks.rpc.mock.calls.filter(([name]) => name === "extend_upload_session_expiry"),
+    ).toHaveLength(2);
+    expect(mocks.reportError).toHaveBeenCalledOnce();
+    const [failure, options] = mocks.reportError.mock.calls[0]!;
+    expect(failure).toBeInstanceOf(AppError);
+    expect((failure as AppError).kind).toBe("schema_out_of_date");
+    expect(options).toMatchObject({ level: "error" });
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+    warnings.mockRestore();
   });
 
   it("does not extend the deadline when the client reports a failed transfer", async () => {

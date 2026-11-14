@@ -1,34 +1,16 @@
 @import "tailwindcss";
 
-/* Local design tokens shared by the task pane's reusable UI components. */
+/* Design tokens: one source shared with the web app's globals.css. */
+@import "../../../packages/ui/styles/DesignTokensUI.css";
+/* Add-in base layer (borders, body colors, button cursor). */
 @import "../shared/styles/tokens.css";
-@import "../../../frontend/src/shared/ui/LiquidGlassUI.css";
-@import "../../../frontend/src/shared/ui/ThemeTokensUI.css";
+@import "../../../packages/ui/styles/LiquidGlassUI.css";
+@import "../../../packages/ui/styles/ThemeTokensUI.css";
 
 /* Tailwind v4 content detection: scan all add-in component sources. */
 @source "../";
-@source "../../../frontend/src/shared/ui/EditCardUI.tsx";
-@source "../../../frontend/src/shared/ui/EditCardsSectionUI.tsx";
-@source "../../../frontend/src/shared/ui/PreResponseWrapperUI.tsx";
-@source "../../../frontend/src/shared/ui/DocumentEventBlocksUI.tsx";
-@source "../../../frontend/src/shared/ui/GlassCardUI.tsx";
-@source "../../../frontend/src/shared/ui/GlassIconButtonUI.tsx";
-@source "../../../frontend/src/shared/ui/ModalUI.tsx";
-@source "../../../frontend/src/shared/ui/HeaderButtonsUI.tsx";
-@source "../../../frontend/src/shared/ui/PillButtonUI.tsx";
-@source "../../../frontend/src/shared/ui/PillButtonUI.styles.ts";
-@source "../../../frontend/src/shared/ui/TabPillButtonUI.tsx";
-@source "../../../frontend/src/shared/ui/TabPillButtonUI.styles.ts";
-@source "../../../frontend/src/shared/ui/ToggleSwitchUI.tsx";
-@source "../../../frontend/src/shared/ui/DropdownUI.tsx";
-@source "../../../frontend/src/shared/ui/CitationPillUI.tsx";
-@source "../../../frontend/src/shared/ui/ModelToggleUI.tsx";
-@source "../../../frontend/src/shared/ui/MikeIconUI.tsx";
-@source "../../../frontend/src/shared/ui/AuthStylesUI.ts";
-@source "../../../frontend/src/shared/ui/AuthDividerUI.tsx";
-@source "../../../frontend/src/shared/ui/MicrosoftIconUI.tsx";
-@source "../../../frontend/src/shared/ui/WorkflowSlashCommandUI.tsx";
-@source "../../../frontend/src/shared/ui/LiquidGlassUI.ts";
+/* The shared primitives (@mike/ui) live outside this application. */
+@source "../../../packages/ui/src";
 
 /* Fonts load from the task pane link tag. The profile block below matches
    frontend/src/app/themes/libris-colleague.css. */

@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
     csvCell,
-    escapeLikePattern,
     parseQuery,
     queryEvents,
 } from "../audit.service";
@@ -122,80 +121,106 @@ describe("parseQuery", () => {
 /**
  * Chainable Supabase mock.
  *
- * `owned` answers the personal-projects lookup (.eq on user_id, .is org_id
- * null) and `shared` answers the `project_access_grants` lookup, which is
- * where direct sharing lives; lib/access re-reads the granted ids back out of
- * `projects` to confirm they are personal, which the `.in("id", …)` branch
- * below answers. The caller belongs to no organization, so `org_members` is
- * empty and the organization branch never runs.
+ * `owned` answers the personal `projects` lookup, `shared` answers the
+ * `project_access_grants` lookup (where direct sharing lives), and `org`
+ * supplies the third branch: the caller's memberships, that org's projects,
+ * and any per-project deny override.
+ *
+ * The project-access helper tests below compose .eq/.in/.is chains across
+ * these tables. Personal activity no longer consults that helper.
  */
+type Filters = {
+    eq: Record<string, unknown>;
+    in: Record<string, unknown>;
+    is: Record<string, unknown>;
+};
+
 function makeDb(
     owned: string[],
     shared: string[],
     events: Record<string, unknown>[] = [],
     profiles: Record<string, unknown>[] = [],
+    org: {
+        memberships?: { org_id: string; role: string }[];
+        projects?: { id: string; user_id: string | null; org_id: string; visibility?: "private" | "organization" }[];
+        denies?: string[];
+    } = {},
 ) {
     const calls: {
         or?: string;
+        in: [string, unknown][];
         eq: [string, unknown][];
         order?: [string, { ascending: boolean; nullsFirst: boolean }];
         ilike?: [string, string];
         profileUserIds?: string[];
         grantEmail?: unknown;
-    } = { eq: [] };
+    } = { eq: [], in: [] };
 
-    function projectsBuilder() {
-        let rows = () => owned;
-        const b: any = {
-            select: () => b,
-            eq: () => b,
-            is: () => b,
-            in: (column: string, ids: string[]) => {
-                // `.in("id", …)` is the grant re-read; `.in("org_id", …)` is the
-                // organization branch, which this caller never reaches.
-                rows = column === "id" ? () => ids : () => [];
-                return b;
-            },
-            then: (resolve: (v: { data: { id: string }[] }) => unknown) =>
-                Promise.resolve({
-                    data: rows().map((id) => ({ id })),
-                }).then(resolve),
-        };
-        return b;
-    }
+    const memberships = org.memberships ?? [];
+    const orgProjects = org.projects ?? [];
+    const denied = new Set(org.denies ?? []);
 
-    function grantsBuilder() {
+    function filterBuilder(resolve: (filters: Filters) => unknown[]) {
+        const filters: Filters = { eq: {}, in: {}, is: {} };
         const b: any = {
             select: () => b,
             eq: (column: string, value: unknown) => {
                 if (column === "email") calls.grantEmail = value;
+                filters.eq[column] = value;
                 return b;
             },
-            then: (
-                resolve: (v: { data: { project_id: string }[] }) => unknown,
-            ) =>
+            in: (column: string, value: unknown) => {
+                filters.in[column] = value;
+                return b;
+            },
+            is: (column: string, value: unknown) => {
+                filters.is[column] = value;
+                return b;
+            },
+            order: () => b,
+            // listAccessibleProjectIds pages its scans; one page is enough here.
+            range: () =>
+                Promise.resolve({ data: resolve(filters), error: null }),
+            maybeSingle: () =>
                 Promise.resolve({
-                    data: shared.map((id) => ({ project_id: id })),
-                }).then(resolve),
+                    data: resolve(filters)[0] ?? null,
+                    error: null,
+                }),
+            then: (resolveFn: (v: unknown) => unknown) =>
+                Promise.resolve({ data: resolve(filters), error: null }).then(
+                    resolveFn,
+                ),
         };
         return b;
     }
 
-    function orgMembersBuilder() {
-        const b: any = {
-            select: () => b,
-            eq: () => b,
-            then: (resolve: (v: { data: { org_id: string }[] }) => unknown) =>
-                Promise.resolve({ data: [] }).then(resolve),
-        };
-        return b;
-    }
+    // Personal-owned, org-scoped, per-id and single-project lookups all hit
+    // `projects`; only the filters tell them apart.
+    const projectsResolver = (filters: Filters): unknown[] => {
+        if (filters.eq.id)
+            return orgProjects.filter(
+                (project) => project.id === filters.eq.id,
+            );
+        if (filters.in.org_id)
+            return orgProjects.filter((project) =>
+                (filters.in.org_id as string[]).includes(project.org_id),
+            );
+        if (filters.in.id)
+            return (filters.in.id as string[])
+                .filter((id) => shared.includes(id))
+                .map((id) => ({ id }));
+        return owned.map((id) => ({ id }));
+    };
 
     function auditBuilder() {
         const b: any = {
             select: () => b,
             or: (expr: string) => {
                 calls.or = expr;
+                return b;
+            },
+            in: (col: string, val: unknown) => {
+                calls.in.push([col, val]);
                 return b;
             },
             eq: (col: string, val: unknown) => {
@@ -212,7 +237,7 @@ function makeDb(
                 column: string,
                 options: { ascending: boolean; nullsFirst: boolean },
             ) => {
-                calls.order = [column, options];
+                if (column !== "id") calls.order = [column, options];
                 return b;
             },
             range: () =>
@@ -238,9 +263,40 @@ function makeDb(
 
     const db = {
         from(table: string) {
-            if (table === "projects") return projectsBuilder();
-            if (table === "org_members") return orgMembersBuilder();
-            if (table === "project_access_grants") return grantsBuilder();
+            if (table === "projects") return filterBuilder(projectsResolver);
+            if (table === "project_access_grants")
+                return filterBuilder(() =>
+                    shared.map((id) => ({ project_id: id })),
+                );
+            if (table === "org_members")
+                return filterBuilder((filters) =>
+                    memberships.filter(
+                        (membership) =>
+                            !filters.eq.org_id ||
+                            membership.org_id === filters.eq.org_id,
+                    ),
+                );
+            if (table === "project_org_access_overrides")
+                // Two readers: the per-project verdict (eq project_id) and
+                // the batched scan keyed by the caller's org memberships
+                // (in org_id + eq user_id + eq role).
+                return filterBuilder((filters) => {
+                    if (filters.eq.project_id)
+                        return denied.has(filters.eq.project_id as string)
+                            ? [{ role: "deny" }]
+                            : [];
+                    const orgIds = (filters.in.org_id as string[]) ?? [];
+                    return orgProjects
+                        .filter(
+                            (project) =>
+                                denied.has(project.id) &&
+                                orgIds.includes(project.org_id),
+                        )
+                        .map((project) => ({
+                            project_id: project.id,
+                            role: "deny",
+                        }));
+                });
             if (table === "user_profiles") return profilesBuilder();
             return auditBuilder();
         },
@@ -256,14 +312,15 @@ describe("queryEvents visibility scoping", () => {
         sortDirection: "desc",
     } as const;
 
-    it("scopes to own events OR accessible project events (owned + shared)", async () => {
+    it("scopes only to the caller even when projects are owned or shared", async () => {
         const { db, calls } = makeDb(["p-own"], ["p-shared"]);
         await queryEvents(db, "u1", "u1@example.com", query);
-        expect(calls.or).toBe("user_id.eq.u1,project_id.in.(p-own,p-shared)");
-        expect(calls.eq).toEqual([]);
+        expect(calls.eq).toContainEqual(["user_id", "u1"]);
+        expect(calls.in.find(([column]) => column === "project_id")).toBeUndefined();
+        expect(calls.or).toBeUndefined();
     });
 
-    it("falls back to own-events-only when no projects are accessible", async () => {
+    it("scopes to own events when no projects are accessible", async () => {
         const { db, calls } = makeDb([], []);
         await queryEvents(db, "u1", "u1@example.com", query);
         expect(calls.or).toBeUndefined();
@@ -293,6 +350,40 @@ describe("queryEvents visibility scoping", () => {
             db,
         );
         expect(visible).toContain("p-granted");
+    });
+
+    // Project access also covers organization membership and detached owners.
+    it("admits an organization project the caller does not own", async () => {
+        const { db } = makeDb([], [], [], [], {
+            memberships: [{ org_id: "o1", role: "member" }],
+            projects: [
+                { id: "p-colleague", user_id: "u2", org_id: "o1", visibility: "organization" },
+                { id: "p-detached", user_id: null, org_id: "o1", visibility: "organization" },
+            ],
+        });
+
+        const visible = await listAccessibleProjectIds("u1", "u1@example.com", db);
+
+        expect(visible).toEqual(
+            expect.arrayContaining(["p-colleague", "p-detached"]),
+        );
+    });
+
+    // Project-access consumers must respect explicit deny overrides.
+    it("excludes an organization project the caller is denied on", async () => {
+        const { db } = makeDb([], [], [], [], {
+            memberships: [{ org_id: "o1", role: "member" }],
+            projects: [
+                { id: "p-open", user_id: "u2", org_id: "o1", visibility: "organization" },
+                { id: "p-walled", user_id: "u2", org_id: "o1", visibility: "organization" },
+            ],
+            denies: ["p-walled"],
+        });
+
+        const visible = await listAccessibleProjectIds("u1", "u1@example.com", db);
+
+        expect(visible).toContain("p-open");
+        expect(visible).not.toContain("p-walled");
     });
 
     it("applies categorical filters and the requested sort", async () => {
@@ -382,5 +473,20 @@ describe("queryEvents visibility scoping", () => {
                 user_display_name: null,
             },
         ]);
+    });
+});
+
+describe("queryEvents independent of project access", () => {
+    it("does not query project access tables for personal activity", async () => {
+        const builder: any = {};
+        for (const method of ["select", "eq", "order"]) builder[method] = () => builder;
+        builder.range = async () => ({ data: [], count: 0, error: null });
+        const db: any = { from: (table: string) => {
+            if (table !== "audit_events") throw new Error("Project access unavailable");
+            return builder;
+        } };
+        expect(await queryEvents(db, "u1", "u1@example.com", {
+            sortBy: "created_at", sortDirection: "desc", page: 1, limit: 50,
+        })).toMatchObject({ data: [], count: 0, error: null });
     });
 });

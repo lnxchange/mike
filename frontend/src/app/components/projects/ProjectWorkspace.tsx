@@ -47,11 +47,12 @@ import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import type {
     Chat,
     ColumnConfig,
+    ContentVisibility,
     Folder as ProjectFolder,
     Project,
 } from "@/app/components/shared/types";
 import { TableToolbar } from "@/app/components/shared/TableToolbar";
-import { TabPillButtonUI } from "@/shared/ui/TabPillButtonUI";
+import { TabPillButtonUI } from "@mike/ui";
 import { NewTRModal } from "@/app/components/tabular/NewTRModal";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import {
@@ -59,7 +60,11 @@ import {
     type AccessContact,
 } from "@/app/components/popups/PermissionDeniedPopup";
 import { AccessModal } from "@/app/components/modals/AccessModal";
+import { notifyError } from "@/app/lib/userFacingError";
+import { useAssignLatest } from "@/app/hooks/useLatestRef";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { DocumentWorkspaceScope } from "@/app/contexts/WorkspaceContext";
+import { useItemWorkspace } from "@/app/hooks/useItemWorkspace";
 import {
     type Capability,
     type ProjectRole,
@@ -176,10 +181,6 @@ export function useProjectWorkspace() {
     return value;
 }
 
-export function useProjectWorkspaceOptional() {
-    return useContext(ProjectWorkspaceContext);
-}
-
 function activeSectionFromSegments(
     segments: string[],
 ): ProjectWorkspaceSection {
@@ -214,6 +215,11 @@ export function ProjectWorkspaceProvider({
     // Direct access grants, loaded only when the share dialog is opened: every
     // project page would otherwise pay for a roster nobody looked at.
     const [grants, setGrants] = useState<ProjectGrant[] | null>(null);
+    // The grant list failed to load. `grants` stays null so the Access panel
+    // says the list is unavailable instead of rendering an empty list, which
+    // reads as "nobody has access to this project".
+    const [grantsUnavailable, setGrantsUnavailable] = useState(false);
+    const [projectReloadToken, setProjectReloadToken] = useState(0);
     const [projectDetailsOpen, setProjectDetailsOpen] = useState(false);
     const [projectMemoryOpen, setProjectMemoryOpen] = useState(false);
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<OwnerGate | null>(
@@ -419,11 +425,17 @@ export function ProjectWorkspaceProvider({
                 setFolders(loaded.folders ?? []);
             })
             .catch((error) => {
-                console.error("[project workspace] failed to load project", error);
-                if (!cancelled) {
-                    setProject(null);
-                    setFolders([]);
-                }
+                if (cancelled) return;
+                // Without this the workspace just renders as an empty
+                // project: no documents, no chats, no explanation.
+                setProject(null);
+                setFolders([]);
+                notifyError(error, {
+                    action: "load this project",
+                    dedupeKey: `project-load:${projectId}`,
+                    onRetry: () =>
+                        setProjectReloadToken((token) => token + 1),
+                });
             })
             .finally(() => {
                 if (!cancelled) setProjectLoading(false);
@@ -431,7 +443,7 @@ export function ProjectWorkspaceProvider({
         return () => {
             cancelled = true;
         };
-    }, [projectId, showShell]);
+    }, [projectId, showShell, projectReloadToken]);
 
     const search = searchBySection[activeSection];
     const setSearch = useCallback(
@@ -469,8 +481,13 @@ export function ProjectWorkspaceProvider({
     // The memory dialog owns its own reads and writes; this keeps the loaded
     // project row agreeing with them.
     const syncProjectMemoryEnabled = useCallback((enabled: boolean) => {
+        // Called on every memory load and poll; only a real change may
+        // produce a new project object, or the whole workspace re-renders
+        // every few seconds while a curator runs.
         setProject((current) =>
-            current ? { ...current, memory_enabled: enabled } : current,
+            current && current.memory_enabled !== enabled
+                ? { ...current, memory_enabled: enabled }
+                : current,
         );
     }, []);
 
@@ -505,18 +522,28 @@ export function ProjectWorkspaceProvider({
         [roleKnown],
     );
 
+    const refreshGrantsRef = useRef<(() => void) | null>(null);
     const refreshGrants = useCallback(async () => {
         try {
             const access = await getProjectAccess(projectId);
             setGrants(access.grants);
+            setGrantsUnavailable(false);
         } catch (error) {
-            console.error("[project workspace] failed to load access", error);
-            setGrants([]);
+            setGrantsUnavailable(true);
+            notifyError(error, {
+                action: "load who has access",
+                dedupeKey: `project-access:${projectId}`,
+                onRetry: () => refreshGrantsRef.current?.(),
+            });
         }
     }, [projectId]);
 
+    // "Retry" re-runs the current closure, not the one that failed.
+    useAssignLatest(refreshGrantsRef, () => void refreshGrants());
+
     useEffect(() => {
         setGrants(null);
+        setGrantsUnavailable(false);
     }, [projectId]);
 
     useEffect(() => {
@@ -525,9 +552,16 @@ export function ProjectWorkspaceProvider({
         // one consumer, render only at that tier anyway. Below admin the
         // modal shows the /people roster, so there is nothing to fetch and
         // no point collecting a 403 on every open.
-        if (accessModalOpen && grants === null && canDo("access.manage"))
+        // `grantsUnavailable` also stops this from re-firing forever once a
+        // load has failed: the user retries from the notice.
+        if (
+            accessModalOpen &&
+            grants === null &&
+            !grantsUnavailable &&
+            canDo("access.manage")
+        )
             void refreshGrants();
-    }, [accessModalOpen, grants, refreshGrants, canDo]);
+    }, [accessModalOpen, grants, grantsUnavailable, refreshGrants, canDo]);
 
     const createChat = useCallback(() => {
         if (!canDo("content.edit")) {
@@ -588,6 +622,7 @@ export function ProjectWorkspaceProvider({
         name: string;
         cmNumber: string;
         practice: string;
+        visibility?: ContentVisibility;
     }) {
         if (!canDo("access.manage")) {
             denyUnlessLoading({
@@ -604,6 +639,7 @@ export function ProjectWorkspaceProvider({
             name,
             cm_number: cmNumber,
             practice: practice || null,
+            ...(values.visibility ? { visibility: values.visibility } : {}),
         });
         setProject((prev) =>
             prev
@@ -612,6 +648,7 @@ export function ProjectWorkspaceProvider({
                       name: updated.name,
                       cm_number: updated.cm_number,
                       practice: updated.practice,
+                      visibility: updated.visibility ?? prev.visibility,
                   }
                 : updated,
         );
@@ -634,8 +671,16 @@ export function ProjectWorkspaceProvider({
             setDeleteProjectStatus("deleted");
             window.setTimeout(() => router.push("/projects"), 500);
         } catch (error) {
-            console.error("deleteProject failed", error);
+            // The dialog otherwise drops back to its resting state with the
+            // project still listed, which reads as "nothing happened".
             setDeleteProjectStatus("idle");
+            notifyError(error, {
+                action: "delete this project",
+                dedupeKey: `project-delete:${projectId}`,
+                // Retry re-opens the confirmation rather than deleting from
+                // the notice: a destructive action is always confirmed.
+                onRetry: () => setDeleteProjectConfirmOpen(true),
+            });
         }
     }
 
@@ -687,168 +732,184 @@ export function ProjectWorkspaceProvider({
         ],
     );
 
+    // Pickers and uploads anywhere in the project use the project's own
+    // workspace; unknown until the project has loaded.
+    const projectOrgId = project ? (project.org_id ?? null) : undefined;
+    // Opening a project opens its workspace.
+    useItemWorkspace(project?.id, projectOrgId);
+
     if (!showShell) {
         return (
             <ProjectWorkspaceContext.Provider value={value}>
-                {children}
+                <DocumentWorkspaceScope orgId={projectOrgId}>
+                    {children}
+                </DocumentWorkspaceScope>
             </ProjectWorkspaceContext.Provider>
         );
     }
 
     return (
         <ProjectWorkspaceContext.Provider value={value}>
-            <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-                <ProjectPageHeader
-                    project={project}
-                    search={search}
-                    activeSection={activeSection}
-                    creatingReview={creatingReview}
-                    canManageProject={canDo("access.manage")}
-                    roleKnown={roleKnown}
-                    onBackToProjects={() => router.push("/projects")}
-                    onProjectRoot={openProjectRoot}
-                    onOpenDetails={() => setProjectDetailsOpen(true)}
-                    onOpenMemory={() => setProjectMemoryOpen(true)}
-                    onDeleteProject={requestProjectDelete}
-                    onSearchChange={setSearch}
-                    onOpenAccess={() => setAccessModalOpen(true)}
-                    onNewChat={() => void createChat()}
-                    onNewReview={openNewReview}
-                    onSavedFiles={documentUploadActions.savedFiles}
-                    onUploadFiles={documentUploadActions.uploadFiles}
-                    onUploadFolder={documentUploadActions.uploadFolder}
-                    documentFolderBreadcrumbs={documentFolderBreadcrumbs}
-                    matterSync={
-                        matterSyncEnabled &&
-                        (matterSyncStatus?.found || justPulled)
-                            ? {
-                                  statusLine: matterSyncStatus?.found
-                                      ? describeMatterSync(matterSyncStatus, {
-                                            visibleDocumentCount,
-                                        })
-                                      : "Syncing from SharePoint",
-                                  onSyncNow: () => void requestSyncNow(),
-                                  syncing:
-                                      syncNowPending || matterSyncUnsettled,
-                              }
-                            : null
-                    }
-                />
+            <DocumentWorkspaceScope orgId={projectOrgId}>
+                <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+                    <ProjectPageHeader
+                        project={project}
+                        search={search}
+                        activeSection={activeSection}
+                        creatingReview={creatingReview}
+                        canManageProject={canDo("access.manage")}
+                        roleKnown={roleKnown}
+                        onBackToProjects={() => router.push("/projects")}
+                        onProjectRoot={openProjectRoot}
+                        onOpenDetails={() => setProjectDetailsOpen(true)}
+                        onOpenMemory={() => setProjectMemoryOpen(true)}
+                        onDeleteProject={requestProjectDelete}
+                        onSearchChange={setSearch}
+                        onOpenAccess={() => setAccessModalOpen(true)}
+                        onNewChat={() => void createChat()}
+                        onNewReview={openNewReview}
+                        onSavedFiles={documentUploadActions.savedFiles}
+                        onUploadFiles={documentUploadActions.uploadFiles}
+                        onUploadFolder={documentUploadActions.uploadFolder}
+                        documentFolderBreadcrumbs={documentFolderBreadcrumbs}
+                        matterSync={
+                            matterSyncEnabled &&
+                            (matterSyncStatus?.found || justPulled)
+                                ? {
+                                      statusLine: matterSyncStatus?.found
+                                          ? describeMatterSync(matterSyncStatus, {
+                                                visibleDocumentCount,
+                                            })
+                                          : "Syncing from SharePoint",
+                                      onSyncNow: () => void requestSyncNow(),
+                                      syncing:
+                                          syncNowPending || matterSyncUnsettled,
+                                  }
+                                : null
+                        }
+                    />
 
-                {children}
+                    {children}
 
-                <WarningPopup
-                    open={syncNowError !== null}
-                    title="Sync not started"
-                    message={syncNowError ?? ""}
-                    onClose={() => setSyncNowError(null)}
-                />
+                    <WarningPopup
+                        open={syncNowError !== null}
+                        title="Sync not started"
+                        message={syncNowError ?? ""}
+                        onClose={() => setSyncNowError(null)}
+                    />
 
-                <NewTRModal
-                    open={newTRModalOpen}
-                    onClose={() => setNewTRModalOpen(false)}
-                    onAdd={handleCreateReview}
-                    projectId={projectId}
-                    projectDocs={
-                        project?.documents?.filter(
-                            (d) => d.status === "ready",
-                        ) ?? []
-                    }
-                    projectFolders={folders}
-                    projectName={project?.name}
-                    projectCmNumber={project?.cm_number}
-                />
+                    <NewTRModal
+                        open={newTRModalOpen}
+                        onClose={() => setNewTRModalOpen(false)}
+                        onAdd={handleCreateReview}
+                        projectId={projectId}
+                        projectDocs={
+                            project?.documents?.filter(
+                                (d) => d.status === "ready",
+                            ) ?? []
+                        }
+                        projectFolders={folders}
+                        projectName={project?.name}
+                        projectCmNumber={project?.cm_number}
+                    />
 
-                <PermissionDeniedPopup
-                    {...permissionDeniedProps(
-                        ownerOnlyAction,
-                        project?.admin_contacts,
-                    )}
-                    onClose={() => setOwnerOnlyAction(null)}
-                />
+                    <PermissionDeniedPopup
+                        {...permissionDeniedProps(
+                            ownerOnlyAction,
+                            project?.admin_contacts,
+                        )}
+                        onClose={() => setOwnerOnlyAction(null)}
+                    />
 
-                <ProjectMemoryModal
-                    key={projectId}
-                    open={projectMemoryOpen}
-                    onClose={() => setProjectMemoryOpen(false)}
-                    projectId={projectId}
-                    projectName={project?.name ?? null}
-                    projectLoading={projectLoading}
-                    canEdit={canDo("content.edit")}
-                    canManage={canDo("access.manage")}
-                    onMemoryEnabledChange={syncProjectMemoryEnabled}
-                />
+                    <ProjectMemoryModal
+                        key={projectId}
+                        open={projectMemoryOpen}
+                        onClose={() => setProjectMemoryOpen(false)}
+                        projectId={projectId}
+                        projectName={project?.name ?? null}
+                        projectLoading={projectLoading}
+                        canEdit={canDo("content.edit")}
+                        canManage={canDo("access.manage")}
+                        onMemoryEnabledChange={syncProjectMemoryEnabled}
+                    />
 
-                <ProjectDetailsModal
-                    open={projectDetailsOpen}
-                    project={project}
-                    canEdit={canDo("access.manage")}
-                    onClose={() => setProjectDetailsOpen(false)}
-                    onSave={handleProjectDetailsSave}
-                    onShareProject={() => {
-                        setProjectDetailsOpen(false);
-                        setAccessModalOpen(true);
-                    }}
-                />
-
-                <ConfirmPopup
-                    open={deleteProjectConfirmOpen}
-                    title={`Delete ${t.projectLower}?`}
-                    message={`This will permanently delete the ${t.projectLower} and its related documents, chats, and tabular reviews.`}
-                    confirmLabel="Delete"
-                    confirmVariant="danger"
-                    confirmStatus={
-                        deleteProjectStatus === "deleting"
-                            ? "loading"
-                            : deleteProjectStatus === "deleted"
-                              ? "complete"
-                              : "idle"
-                    }
-                    cancelLabel="Cancel"
-                    onCancel={() => {
-                        if (deleteProjectStatus === "deleting") return;
-                        setDeleteProjectConfirmOpen(false);
-                        setDeleteProjectStatus("idle");
-                    }}
-                    onConfirm={() => void confirmProjectDelete()}
-                />
-
-                {project && (
-                    <AccessModal
-                        open={accessModalOpen}
-                        onClose={() => setAccessModalOpen(false)}
-                        resource={project}
-                        fetchAccess={getProjectPeople}
-                        currentUserEmail={user?.email ?? null}
-                        breadcrumb={[
-                            t.projects,
-                            project.name +
-                                (project.cm_number
-                                    ? ` (${project.cm_number})`
-                                    : ""),
-                            "Access",
-                        ]}
-                        access={{
-                            grants: grants ?? [],
-                            orgId: project.org_id ?? null,
-                            ownerLabel: `${t.project} owners`,
-                            canManage: canDo("access.manage"),
-                            onGrant: async (email, role) => {
-                                await grantProjectAccess(
-                                    projectId,
-                                    email,
-                                    role,
-                                );
-                                await refreshGrants();
-                            },
-                            onRevoke: async (email) => {
-                                await revokeProjectAccess(projectId, email);
-                                await refreshGrants();
-                            },
+                    <ProjectDetailsModal
+                        open={projectDetailsOpen}
+                        project={project}
+                        canEdit={canDo("access.manage")}
+                        onClose={() => setProjectDetailsOpen(false)}
+                        onSave={handleProjectDetailsSave}
+                        onShareProject={() => {
+                            setProjectDetailsOpen(false);
+                            setAccessModalOpen(true);
                         }}
                     />
-                )}
-            </div>
+
+                    <ConfirmPopup
+                        open={deleteProjectConfirmOpen}
+                        title={`Delete ${t.projectLower}?`}
+                        message={`This will permanently delete the ${t.projectLower} and its related documents, chats, and tabular reviews.`}
+                        confirmLabel="Delete"
+                        confirmVariant="danger"
+                        confirmStatus={
+                            deleteProjectStatus === "deleting"
+                                ? "loading"
+                                : deleteProjectStatus === "deleted"
+                                  ? "complete"
+                                  : "idle"
+                        }
+                        cancelLabel="Cancel"
+                        onCancel={() => {
+                            if (deleteProjectStatus === "deleting") return;
+                            setDeleteProjectConfirmOpen(false);
+                            setDeleteProjectStatus("idle");
+                        }}
+                        onConfirm={() => void confirmProjectDelete()}
+                    />
+
+                    {project && (
+                        <AccessModal
+                            open={accessModalOpen}
+                            onClose={() => setAccessModalOpen(false)}
+                            resource={project}
+                            fetchAccess={getProjectPeople}
+                            currentUserEmail={user?.email ?? null}
+                            // Both identifiers: a roster row without an email
+                            // would otherwise offer the caller a Remove that locks
+                            // them out of their own project.
+                            currentUserId={user?.id ?? null}
+                            breadcrumb={[
+                                t.projects,
+                                project.name +
+                                    (project.cm_number
+                                        ? ` (${project.cm_number})`
+                                        : ""),
+                                "Access",
+                            ]}
+                            access={{
+                                grants: grants ?? [],
+                                grantsUnavailable,
+                                orgId: project.org_id ?? null,
+                                ownerLabel: `${t.project} owners`,
+                                canManage: canDo("access.manage"),
+                                visibility: project.visibility ?? "private",
+                                onGrant: async (email, role) => {
+                                    await grantProjectAccess(
+                                        projectId,
+                                        email,
+                                        role,
+                                    );
+                                    await refreshGrants();
+                                },
+                                onRevoke: async (email) => {
+                                    await revokeProjectAccess(projectId, email);
+                                    await refreshGrants();
+                                },
+                            }}
+                        />
+                    )}
+                </div>
+            </DocumentWorkspaceScope>
         </ProjectWorkspaceContext.Provider>
     );
 }
@@ -888,7 +949,7 @@ export function ProjectSectionToolbar({
             }}
             leading={
                 backAction ? (
-                    <TabPillButtonUI onClick={backAction}>
+                    <TabPillButtonUI onClick={backAction} className="pl-2">
                         <ChevronLeft className="h-3.5 w-3.5" />
                         Back
                     </TabPillButtonUI>

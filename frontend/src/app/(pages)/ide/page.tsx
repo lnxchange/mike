@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
+import { SvgAssetIcon } from "@/app/components/ui/svg-asset-icon";
+import ide from "../../../../public/icons/features/ide-new.svg";
 import { useRouter } from "next/navigation";
 import { FolderOpen, Plus } from "lucide-react";
 import { EmptyState } from "@/app/components/ui/empty-state";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI } from "@mike/ui";
 import { ProjectPickerModal } from "@/app/components/modals/ProjectPickerModal";
 import { NewProjectModal } from "@/app/components/projects/NewProjectModal";
 import type { Project } from "@/app/components/shared/types";
@@ -41,12 +42,10 @@ export default function IdePage() {
                 <EmptyState
                     className="w-full max-w-md"
                     icon={
-                        <Image
-                            src="/icons/features/ide.svg"
-                            alt=""
+                        <SvgAssetIcon
+                            src={ide}
                             width={32}
                             height={32}
-                            unoptimized
                         />
                     }
                     title="Integrated Drafting Environment"
@@ -89,6 +88,7 @@ export default function IdePage() {
                 breadcrumbs={["IDE", `Open ${t.projectLower}`]}
                 primaryAction={{
                     label: `Open ${t.projectLower}`,
+                    variant: "blue",
                     type: "button",
                     onClick: openSelectedProject,
                     disabled: !projectPicker.selectedId,

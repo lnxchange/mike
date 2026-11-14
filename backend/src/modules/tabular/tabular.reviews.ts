@@ -5,6 +5,10 @@
 // reconciling the cell grid to the active column set.
 
 import { recordAudit } from "../../lib/audit";
+import { chunkArray } from "../../lib/arrays";
+import { mutateInBatches, selectAllByKey, selectInBatches } from "../../lib/batchedQuery";
+import { walkFolderGraph } from "../../lib/folderTree";
+import type { TabularReviewHistoryStatus } from "@mike/contracts";
 import {
     checkProjectAccess,
     creatorScopedAllowed,
@@ -12,9 +16,17 @@ import {
     filterAccessibleDocumentIds,
     normalizeEmail,
     resolveContentOrgId,
+    resolveStandaloneOrgId,
 } from "../../lib/access";
+import { teamOrgIdOf } from "../../lib/personalOrgs";
+import {
+    DOCUMENT_WORKSPACE_MISMATCH_CODE,
+    DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+    findDocumentsOutsideWorkspace,
+} from "../../lib/documentWorkspace";
 import { can, type ProjectRole } from "../../lib/permissions";
-import { loadProfileUsersByEmail } from "../../lib/userLookup";
+import { loadCreatorProfiles, loadProfileUsersByEmail } from "../../lib/userLookup";
+import { type WorkspaceFilter } from "../../lib/workspace";
 import {
     deleteContentGrant,
     listContentGrants,
@@ -35,6 +47,8 @@ import {
 } from "./tabular.overview";
 import {
     fetchSourceDocuments,
+    filterReadableReviewRows,
+    loadReviewCells,
     loadReviewRows,
     type ReviewRow,
     type SourceDocument,
@@ -81,6 +95,20 @@ function buildFolderPathMap(
     return paths;
 }
 
+type FolderRow = {
+    id: string;
+    name: string;
+    parent_folder_id: string | null;
+    project_id?: string | null;
+};
+
+/**
+ * Path labels for the folders `docs` sit in. Only those folders and their
+ * ancestors are read (one batched round trip per tree level), not every
+ * folder of every source project and the caller's whole library. The scope
+ * is unchanged: project folders must belong to a source document's project,
+ * library folders to the caller.
+ */
 async function getFolderPathMaps(
     db: Db,
     userId: string,
@@ -89,122 +117,126 @@ async function getFolderPathMaps(
     project: Map<string, string>;
     library: Map<string, string>;
 }> {
-    const projectIds = [
-        ...new Set(
-            docs
-                .map((doc) => doc.project_id)
-                .filter((id): id is string => !!id),
+    const projectIds = new Set(
+        docs.map((doc) => doc.project_id).filter((id): id is string => !!id),
+    );
+    const [projectFolders, libraryFolders] = await Promise.all([
+        walkFolderGraph<FolderRow>(
+            docs.filter((doc) => doc.project_id).map((doc) => doc.folder_id),
+            async (ids) =>
+                (
+                    await selectInBatches<FolderRow>("project folder paths", ids, (batch) =>
+                        db
+                            .from("project_subfolders")
+                            .select("id, name, parent_folder_id, project_id")
+                            .in("id", batch),
+                    )
+                ).filter((folder) => projectIds.has(folder.project_id ?? "")),
+            (folder) => [folder.parent_folder_id],
         ),
-    ];
-    const [projectResult, libraryResult] = await Promise.all([
-        projectIds.length
-            ? db
-                  .from("project_subfolders")
-                  .select("id, name, parent_folder_id")
-                  .in("project_id", projectIds)
-            : Promise.resolve({ data: [] }),
-        db
-            .from("library_folders")
-            .select("id, name, parent_folder_id")
-            .eq("user_id", userId),
+        walkFolderGraph<FolderRow>(
+            docs.map((doc) => doc.library_folder_id),
+            (ids) =>
+                selectInBatches<FolderRow>("library folder paths", ids, (batch) =>
+                    db
+                        .from("library_folders")
+                        .select("id, name, parent_folder_id")
+                        .eq("user_id", userId)
+                        .in("id", batch),
+                ),
+            (folder) => [folder.parent_folder_id],
+        ),
     ]);
     return {
-        project: buildFolderPathMap(projectResult.data ?? []),
-        library: buildFolderPathMap(libraryResult.data ?? []),
+        project: buildFolderPathMap(projectFolders),
+        library: buildFolderPathMap(libraryFolders),
     };
 }
 
-export async function createRowsForReview(
-    db: Db,
-    reviewId: string,
-    userId: string,
-    documentIds: string[],
-    columns: Column[],
-    grouping: DocumentGrouping,
-): Promise<void> {
-    const docs = await fetchSourceDocuments(db, documentIds);
-    const folderPaths = await getFolderPathMaps(db, userId, docs);
-    const inputs: {
-        label: string;
-        row_type: "document" | "folder";
-        folder_id: string | null;
-        library_folder_id: string | null;
-        document_id: string | null;
-        sourceIds: string[];
-    }[] = [];
+type RowInput = {
+    label: string;
+    row_type: "document" | "folder";
+    folder_id: string | null;
+    library_folder_id: string | null;
+    document_id: string | null;
+    sourceIds: string[];
+};
 
-    if (grouping === "folder") {
-        const byFolder = new Map<
-            string,
-            {
-                folder_id: string | null;
-                library_folder_id: string | null;
-                docs: SourceDocument[];
-            }
-        >();
-        for (const doc of docs) {
-            const folderKey = doc.folder_id
-                ? `project:${doc.folder_id}`
-                : doc.library_folder_id
-                  ? `library:${doc.library_folder_id}`
-                  : null;
-            if (!folderKey) {
-                inputs.push({
-                    label: doc.filename,
-                    row_type: "document",
-                    folder_id: null,
-                    library_folder_id: null,
-                    document_id: doc.id,
-                    sourceIds: [doc.id],
-                });
-                continue;
-            }
-            const existing = byFolder.get(folderKey);
-            if (existing) {
-                existing.docs.push(doc);
-            } else {
-                byFolder.set(folderKey, {
-                    folder_id: doc.folder_id ?? null,
-                    library_folder_id: doc.library_folder_id ?? null,
-                    docs: [doc],
-                });
-            }
-        }
-        for (const folder of byFolder.values()) {
-            const label = folder.folder_id
-                ? folderPaths.project.get(folder.folder_id)
-                : folder.library_folder_id
-                  ? folderPaths.library.get(folder.library_folder_id)
-                  : null;
+/** The row a document belongs to under `grouping`: its folder's, or its own. */
+function rowKeyOf(
+    grouping: DocumentGrouping,
+    item: { id?: string; folder_id?: string | null; library_folder_id?: string | null },
+    documentId: string | null,
+): string {
+    if (grouping === "folder" && item.folder_id) return `project:${item.folder_id}`;
+    if (grouping === "folder" && item.library_folder_id)
+        return `library:${item.library_folder_id}`;
+    return `document:${documentId}`;
+}
+
+/** Group fetched documents into row inputs (one per document or folder). */
+async function buildRowInputs(
+    db: Db,
+    userId: string,
+    docs: SourceDocument[],
+    grouping: DocumentGrouping,
+): Promise<RowInput[]> {
+    const groups = new Map<string, SourceDocument[]>();
+    for (const doc of docs) {
+        const key = rowKeyOf(grouping, doc, doc.id);
+        const group = groups.get(key);
+        if (group) group.push(doc);
+        else groups.set(key, [doc]);
+    }
+    const needsPaths = [...groups.keys()].some((key) => !key.startsWith("document:"));
+    const folderPaths = needsPaths
+        ? await getFolderPathMaps(db, userId, docs)
+        : { project: new Map<string, string>(), library: new Map<string, string>() };
+    const inputs: RowInput[] = [];
+    for (const [key, group] of groups) {
+        const [first] = group;
+        if (key.startsWith("document:")) {
             inputs.push({
-                label: label ?? "Unknown folder",
-                row_type: "folder",
-                folder_id: folder.folder_id,
-                library_folder_id: folder.library_folder_id,
-                document_id: null,
-                sourceIds: folder.docs.map((doc) => doc.id),
-            });
-        }
-    } else {
-        for (const doc of docs) {
-            inputs.push({
-                label: doc.filename,
+                label: first.filename,
                 row_type: "document",
                 folder_id: null,
                 library_folder_id: null,
-                document_id: doc.id,
-                sourceIds: [doc.id],
+                document_id: first.id,
+                sourceIds: [first.id],
             });
+            continue;
         }
+        const folder_id = key.startsWith("project:") ? first.folder_id ?? null : null;
+        const library_folder_id = folder_id ? null : first.library_folder_id ?? null;
+        const label = folder_id
+            ? folderPaths.project.get(folder_id)
+            : library_folder_id
+              ? folderPaths.library.get(library_folder_id)
+              : null;
+        inputs.push({
+            label: label ?? "Unknown folder",
+            row_type: "folder",
+            folder_id,
+            library_folder_id,
+            document_id: null,
+            sourceIds: group.map((doc) => doc.id),
+        });
     }
+    return inputs;
+}
 
-    inputs.sort((a, b) => a.label.localeCompare(b.label));
+/** Insert rows (at the given sort positions), their sources and pending cells. */
+async function insertRows(
+    db: Db,
+    reviewId: string,
+    inputs: { input: RowInput; sort_index: number }[],
+    columns: Column[],
+): Promise<void> {
     if (inputs.length === 0) return;
-
     const { data, error } = await db
         .from("tabular_review_rows")
         .insert(
-            inputs.map((input, sort_index) => ({
+            inputs.map(({ input, sort_index }) => ({
                 review_id: reviewId,
                 label: input.label,
                 row_type: input.row_type,
@@ -216,11 +248,10 @@ export async function createRowsForReview(
         )
         .select("*");
     if (error) throw new Error(error.message);
-    const rows = ((data ?? []) as ReviewRow[]).sort(
-        (a, b) => a.sort_index - b.sort_index,
-    );
+    const inputBySortIndex = new Map(inputs.map((entry) => [entry.sort_index, entry.input]));
+    const rows = (data ?? []) as ReviewRow[];
     const sources = rows.flatMap((row) =>
-        (inputs[row.sort_index]?.sourceIds ?? []).map(
+        (inputBySortIndex.get(row.sort_index)?.sourceIds ?? []).map(
             (document_id, sort_index) => ({
                 row_id: row.id,
                 document_id,
@@ -251,6 +282,26 @@ export async function createRowsForReview(
     }
 }
 
+export async function createRowsForReview(
+    db: Db,
+    reviewId: string,
+    userId: string,
+    documentIds: string[],
+    columns: Column[],
+    grouping: DocumentGrouping,
+): Promise<void> {
+    const docs = await fetchSourceDocuments(db, documentIds);
+    const inputs = await buildRowInputs(db, userId, docs, grouping);
+    inputs.sort((a, b) => a.label.localeCompare(b.label));
+    await insertRows(
+        db,
+        reviewId,
+        inputs.map((input, sort_index) => ({ input, sort_index })),
+        columns,
+    );
+}
+
+/** Delete every row and build them again: only for a grouping change. */
 export async function rebuildRowsForReview(
     db: Db,
     reviewId: string,
@@ -274,40 +325,153 @@ export async function rebuildRowsForReview(
     );
 }
 
+/**
+ * Apply a change to a review's document set without touching unaffected
+ * rows. Deleting a row cascades to its cells (tabular_cells.row_id is ON
+ * DELETE CASCADE), so the old delete-everything rebuild threw away every
+ * finished — paid-for — answer whenever one document was added or removed.
+ * Here a row is kept only when its group is unchanged: the same documents
+ * would form it today. Under document grouping that is "its document is
+ * still selected". Under folder grouping it is compared against the
+ * documents' CURRENT folders, not just the selection: a document that moved
+ * folders since the row was built changes both its old and its new group,
+ * whether or not the selection change touched them. Every other row is
+ * rebuilt (its cells start over), and rows are renumbered by label exactly
+ * as a rebuild would order them.
+ */
+export async function syncRowsForDocumentChange(
+    db: Db,
+    reviewId: string,
+    userId: string,
+    documentIds: string[],
+    columns: Column[],
+    grouping: DocumentGrouping,
+): Promise<void> {
+    const next = new Set(documentIds);
+    const rows = await loadReviewRows(db, reviewId);
+    const rowKey = (row: ReviewRow) => {
+        if (row.row_type !== "folder")
+            return `document:${row.source_document_ids?.[0] ?? row.document_id}`;
+        // A folder row whose folder was deleted (folder_id set null) matches
+        // no current group, so it is rebuilt from its documents.
+        const key = rowKeyOf("folder", row, null);
+        return key === "document:null" ? `row:${row.id}` : key;
+    };
+    const kept = new Map<string, ReviewRow>();
+    const dropped: ReviewRow[] = [];
+    let docs: SourceDocument[];
+    if (grouping === "folder") {
+        // One batched read of every selected document's current folder; the
+        // groups are derived once and each row is compared with its group.
+        docs = await fetchSourceDocuments(db, [...next]);
+        const members = new Map<string, Set<string>>();
+        for (const doc of docs) {
+            const key = rowKeyOf(grouping, doc, doc.id);
+            const group = members.get(key);
+            if (group) group.add(doc.id);
+            else members.set(key, new Set([doc.id]));
+        }
+        for (const row of rows) {
+            const key = rowKey(row);
+            const sources = new Set(row.source_document_ids ?? []);
+            const group = members.get(key);
+            const unchanged =
+                !!group &&
+                !kept.has(key) &&
+                group.size === sources.size &&
+                [...group].every((id) => sources.has(id));
+            if (unchanged) kept.set(key, row);
+            else dropped.push(row);
+        }
+        docs = docs.filter((doc) => !kept.has(rowKeyOf(grouping, doc, doc.id)));
+    } else {
+        for (const row of rows) {
+            const sources = row.source_document_ids ?? [];
+            const intact = sources.length > 0 && sources.every((id) => next.has(id));
+            if (intact && !kept.has(rowKey(row))) kept.set(rowKey(row), row);
+            else dropped.push(row);
+        }
+        const covered = new Set([...kept.values()].flatMap((row) => row.source_document_ids ?? []));
+        docs = await fetchSourceDocuments(
+            db,
+            [...next].filter((id) => !covered.has(id)),
+        );
+    }
+
+    // Every read (folder labels included) happens before the first write: a
+    // failure here must leave the grid as it was, not with rows deleted
+    // (their finished cells cascading away) and nothing inserted.
+    const inputs = await buildRowInputs(db, userId, docs, grouping);
+
+    await mutateInBatches(
+        "review row delete",
+        dropped.map((row) => row.id),
+        (batch) =>
+            db
+                .from("tabular_review_rows")
+                .delete()
+                .eq("review_id", reviewId)
+                .in("id", batch),
+    );
+    const order = [
+        ...[...kept.values()].map((row) => ({ label: row.label, row, input: null as RowInput | null })),
+        ...inputs.map((input) => ({ label: input.label, row: null as ReviewRow | null, input })),
+    ].sort((a, b) => a.label.localeCompare(b.label));
+    await insertRows(
+        db,
+        reviewId,
+        order.flatMap((entry, sort_index) =>
+            entry.input ? [{ input: entry.input, sort_index }] : [],
+        ),
+        columns,
+    );
+    // Renumber only kept rows whose position moved; one upsert per page.
+    const moved = order.flatMap((entry, sort_index) => {
+        if (!entry.row || entry.row.sort_index === sort_index) return [];
+        const { source_document_ids: _sources, ...row } = entry.row;
+        return [{ ...row, sort_index }];
+    });
+    for (const batch of chunkArray(moved, 500)) {
+        const { error } = await db
+            .from("tabular_review_rows")
+            .upsert(batch, { onConflict: "id" });
+        if (error) throw new Error(error.message);
+    }
+}
+
 export async function syncCellsForReviewRows(
     db: Db,
     reviewId: string,
     columns: Column[],
 ): Promise<void> {
-    const { data: rows, error: rowsError } = await db
-        .from("tabular_review_rows")
-        .select("id,document_id")
-        .eq("review_id", reviewId);
-    if (rowsError) throw new Error(rowsError.message);
-    const { data: cells, error: cellsError } = await db
-        .from("tabular_cells")
-        .select("id,row_id,column_index")
-        .eq("review_id", reviewId);
-    if (cellsError) throw new Error(cellsError.message);
+    // Both reads are paged: a truncated cell read made every cell past the
+    // first max_rows look missing, and the insert below then duplicated it.
+    const rows = await selectAllByKey<{ id: string; document_id: string | null }>("review rows", () =>
+              db
+                .from("tabular_review_rows")
+                .select("id,document_id")
+                .eq("review_id", reviewId));
+    const cells = await loadReviewCells<{ id: string; row_id: string; column_index: number }>(
+        db,
+        reviewId,
+        "id,row_id,column_index",
+    );
 
     const activeColumnIndexes = new Set(columns.map((column) => column.index));
-    const staleCellIds = (cells ?? [])
-        .filter((cell) => !activeColumnIndexes.has(cell.column_index))
-        .map((cell) => cell.id);
-    if (staleCellIds.length) {
-        const { error } = await db
-            .from("tabular_cells")
-            .delete()
-            .in("id", staleCellIds);
-        if (error) throw new Error(error.message);
-    }
+    await mutateInBatches(
+        "stale review cell delete",
+        cells
+            .filter((cell) => !activeColumnIndexes.has(cell.column_index))
+            .map((cell) => cell.id),
+        (batch) => db.from("tabular_cells").delete().in("id", batch),
+    );
 
     const existingKeys = new Set(
-        (cells ?? [])
+        cells
             .filter((cell) => activeColumnIndexes.has(cell.column_index))
             .map((cell) => `${cell.row_id}:${cell.column_index}`),
     );
-    const missingCells = (rows ?? []).flatMap((row) =>
+    const missingCells = rows.flatMap((row) =>
         columns
             .filter((column) => !existingKeys.has(`${row.id}:${column.index}`))
             .map((column) => ({
@@ -333,6 +497,21 @@ export async function syncCellsForReviewRows(
 // `db` and returns a typed result; the route only maps that result onto a
 // status code.
 
+export async function getTabularReviewHistoryStatuses(
+    db: Db,
+    userId: string,
+    userEmail: string | undefined,
+    reviewIds: string[],
+): Promise<TabularResult<TabularReviewHistoryStatus[]>> {
+    const { data, error } = await db.rpc("get_tabular_review_history_status", {
+        p_user_id: userId,
+        p_user_email: userEmail?.trim().toLowerCase() ?? null,
+        p_review_ids: reviewIds,
+    });
+    if (error) return internalFailure(error);
+    return { ok: true, data: data ?? [] };
+}
+
 export type ListReviewsFilters = {
     userId: string;
     userEmail: string | undefined;
@@ -341,6 +520,9 @@ export type ListReviewsFilters = {
     pagination: { limit: number; offset: number };
     searchTerm: string | null;
     sort: { key: string; direction: string };
+    workspace?: WorkspaceFilter;
+    includeStatus?: boolean;
+    ownerUserIdFilter?: string | null;
 };
 
 export async function listTabularReviews(
@@ -353,7 +535,87 @@ export async function listTabularReviews(
         rpcArgs,
     );
     if (error) return internalFailure(error);
-    return { ok: true, data: (data ?? []) as unknown[] };
+    const reviews = (data ?? []) as {
+        id: string;
+        project_id?: string | null;
+        project_name?: string | null;
+        user_id?: string | null;
+        owner_display_name?: string | null;
+        owner_profile_photo?: string | null;
+    }[];
+    // Both review lists show a Creator column with each creator's name and photo.
+    const profileByUserId = await loadCreatorProfiles(db, reviews);
+    for (const review of reviews) {
+        if (!review.user_id) continue;
+        const profile = profileByUserId.get(review.user_id);
+        review.owner_display_name = profile?.display_name ?? null;
+        review.owner_profile_photo = profile?.profile_photo ?? null;
+    }
+    if (filters.includeStatus && reviews.length) {
+        // Only resolve projects from this authorized page, including those
+        // outside the sidebar's independently paginated Recent Projects list.
+        const projectIds = [...new Set(reviews.flatMap(review => review.project_id ? [review.project_id] : []))];
+        if (projectIds.length) {
+            const { data: projects, error: projectError } = await db
+                .from("projects")
+                .select("id, name")
+                .in("id", projectIds);
+            if (projectError) return internalFailure(projectError);
+            const names = new Map((projects ?? []).map(project => [project.id, project.name]));
+            for (const review of reviews) {
+                review.project_name = review.project_id ? names.get(review.project_id) ?? null : null;
+            }
+        }
+        const result = await getTabularReviewHistoryStatuses(
+            db, filters.userId, filters.userEmail, reviews.map(review => review.id),
+        );
+        if (!result.ok) return result;
+        const byId = new Map(result.data.map(status => [status.id, status]));
+        return { ok: true, data: reviews.map(review => ({ ...review, ...byId.get(review.id) })) };
+    }
+    return { ok: true, data: reviews };
+}
+
+export type ReviewCreator = {
+    user_id: string;
+    display_name: string | null;
+    email: null;
+    profile_photo: string | null;
+};
+
+/**
+ * Everyone who created a review in a project, for its Creator filter. Every
+ * project review inherits the project's access, so a caller who can open the
+ * project can see each of these rows and therefore who made them.
+ */
+export async function listProjectReviewCreators(
+    db: Db,
+    args: { projectId: string; userId: string; userEmail: string | undefined },
+): Promise<TabularResult<ReviewCreator[]>> {
+    const access = await checkProjectAccess(
+        args.projectId,
+        args.userId,
+        args.userEmail,
+        db,
+    );
+    if (!access.ok) return failure("not_found", "Project not found");
+    const { data, error } = await db
+        .from("tabular_reviews")
+        .select("user_id")
+        .eq("project_id", args.projectId)
+        .not("user_id", "is", null);
+    if (error) return internalFailure(error);
+    const rows = (data ?? []) as { user_id: string }[];
+    const profileByUserId = await loadCreatorProfiles(db, rows);
+    const creators = [...new Set(rows.map((row) => row.user_id))].map(
+        (userId) => ({
+            user_id: userId,
+            display_name: profileByUserId.get(userId)?.display_name ?? null,
+            email: null,
+            profile_photo: profileByUserId.get(userId)?.profile_photo ?? null,
+        }),
+    );
+    return { ok: true, data: creators };
 }
 
 // PostgREST enforces its own row cap on every RPC response (db-max-rows),
@@ -374,6 +636,8 @@ export async function listTabularReviewIds(
         projectIdFilter: string | null;
         scope: TabularReviewScope;
         searchTerm: string | null;
+        workspace?: WorkspaceFilter;
+        ownerUserIdFilter?: string | null;
     },
 ): Promise<TabularResult<ReviewIdRow[]>> {
     const ids: ReviewIdRow[] = [];
@@ -410,6 +674,7 @@ export type CreateReviewInput = {
     model?: unknown;
 };
 
+/** Create an authorized review, returning lookup failures before any review is saved. */
 export async function createTabularReview(
     db: Db,
     input: CreateReviewInput,
@@ -434,9 +699,9 @@ export async function createTabularReview(
         });
     }
 
-    const selectedModel = await validateSelectedModel(model, userId, db);
-    if (!selectedModel.ok) return modelFailure(selectedModel);
-
+    // The project is checked before the model: it decides whose keys the
+    // review runs on (its organization's, when it has one).
+    let projectOrgId: string | null = null;
     if (project_id) {
         // Creating a review inside a project contributes content to it.
         const access = await checkProjectAccess(
@@ -445,24 +710,69 @@ export async function createTabularReview(
             userEmail,
             db,
         );
-        if (!access.ok || !can(access.projectRole, "content.edit"))
-            return failure("not_found", "Project not found");
+        // A Viewer can open the project, so "not found" would be a lie; the
+        // read-only tier gets a refusal that names itself.
+        if (!access.ok) return failure("not_found", "Project not found");
+        if (!can(access.projectRole, "content.edit"))
+            return failure(
+                "forbidden",
+                "You do not have permission to write in this project.",
+            );
+        projectOrgId = access.project.org_id ?? null;
     }
-    const allowedDocumentIds = Array.isArray(document_ids)
-        ? await filterAccessibleDocumentIds(document_ids, userId, userEmail, db)
-        : [];
+
+    // A review started on its own belongs to the workspace it was started
+    // in: the organization the client names, or Personal when it names none.
+    // Inside a project the project decides, and `org_id` is not consulted.
+    let standaloneOrgId: string | null = null;
+    if (!project_id) {
+        const standalone = await resolveStandaloneOrgId(db, {
+            userId,
+            orgId: org_id,
+        });
+        if (!standalone.ok) return failure("validation", standalone.detail);
+        standaloneOrgId = standalone.orgId;
+    }
+
+    const selectedModel = await validateSelectedModel(
+        model,
+        userId,
+        db,
+        project_id ? projectOrgId : standaloneOrgId,
+    );
+    if (!selectedModel.ok) return modelFailure(selectedModel);
+    let allowedDocumentIds: string[];
+    try {
+        allowedDocumentIds = Array.isArray(document_ids)
+            ? await filterAccessibleDocumentIds(document_ids, userId, userEmail, db)
+            : [];
+    } catch (error) {
+        return internalFailure(error);
+    }
     const grouping = normalizeGrouping(document_grouping);
     // Project reviews inherit their project's organization as tenant
-    // provenance. Standalone reviews are always direct-scoped.
-    const resolvedOrg = await resolveContentOrgId(db, {
-        projectId: project_id ?? null,
-    });
+    // provenance.
+    const resolvedOrg = project_id
+        ? await resolveContentOrgId(db, { projectId: project_id })
+        : ({ ok: true, orgId: standaloneOrgId } as const);
     if (!resolvedOrg.ok) return internalFailure(resolvedOrg.detail);
-    if (org_id != null) {
-        return failure(
-            "validation",
-            "Tabular reviews cannot be organization-scoped. Create the review inside an organization project instead.",
+    // A review is built from documents in its own workspace. Refused rather
+    // than dropped: a review that quietly came out with fewer rows than were
+    // chosen would look like a fault.
+    try {
+        const outside = await findDocumentsOutsideWorkspace(
+            db,
+            allowedDocumentIds,
+            resolvedOrg.orgId,
         );
+        if (outside.length > 0)
+            return failure(
+                "validation",
+                DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+                DOCUMENT_WORKSPACE_MISMATCH_CODE,
+            );
+    } catch (error) {
+        return internalFailure(error);
     }
     const { data: review, error } = await db
         .from("tabular_reviews")
@@ -495,18 +805,14 @@ export async function createTabularReview(
         );
     } catch (rowsError) {
         await db.from("tabular_reviews").delete().eq("id", review.id);
-        return statusFailure(500, {
-            detail:
-                rowsError instanceof Error
-                    ? rowsError.message
-                    : "Failed to create review rows",
-        });
+        return internalFailure(rowsError);
     }
 
     void recordAudit(db, {
         userId,
         userEmail,
         action: "tabular.created",
+        orgId: resolvedOrg.orgId,
         title: (review as { title?: string | null }).title ?? null,
         surface: "tabular",
         projectId: project_id ?? null,
@@ -530,6 +836,7 @@ export type ReviewDetail = {
     documents: Record<string, unknown>[];
 };
 
+/** Load an accessible review with rows, cells and metadata limited to readable sources. */
 export async function getTabularReviewDetail(
     db: Db,
     args: { reviewId: string; userId: string; userEmail: string | undefined },
@@ -545,25 +852,52 @@ export async function getTabularReviewDetail(
     const access = await ensureReviewAccess(review, userId, userEmail, db);
     if (!access.ok) return failure("not_found", "Review not found");
 
-    const { data: cells, error: cellsError } = await db
-        .from("tabular_cells")
-        .select("*")
-        .eq("review_id", reviewId);
-    if (cellsError) return internalFailure(cellsError);
-    const rows = await loadReviewRows(db, reviewId);
-    const rowDocIds = rows.flatMap((row) => row.source_document_ids ?? []);
-    const docIds = Array.isArray(review.document_ids)
+    let cells: Record<string, unknown>[];
+    let allRows: ReviewRow[];
+    try {
+        cells = await loadReviewCells(db, reviewId);
+        allRows = await loadReviewRows(db, reviewId);
+    } catch (loadError) {
+        return internalFailure(loadError);
+    }
+    const allRowDocIds = allRows.flatMap(
+        (row) => row.source_document_ids ?? [],
+    );
+    const allDocIds = Array.isArray(review.document_ids)
         ? (review.document_ids as string[])
-        : rowDocIds;
-    const docsResult =
-        docIds.length > 0
-            ? await db.from("documents").select("*").in("id", docIds)
-            : { data: [] as Record<string, unknown>[] };
-    const docs = (docsResult.data ?? []) as unknown as {
+        : allRowDocIds;
+    // Review access says who may open the grid, not whose documents they may
+    // read. Rows, cells, and document metadata are narrowed to the caller's
+    // own document access (see filterReadableReviewRows).
+    let rows: ReviewRow[];
+    let readableDocumentIds: Set<string>;
+    try {
+        ({ rows, readableDocumentIds } = await filterReadableReviewRows(
+            db,
+            allRows,
+            allDocIds,
+            userId,
+            userEmail,
+        ));
+    } catch (lookupError) {
+        return internalFailure(lookupError);
+    }
+    const visibleRowIds = new Set(rows.map((row) => row.id));
+    const docIds = allDocIds.filter((id) => readableDocumentIds.has(id));
+    const docs: {
         id: string;
         current_version_id?: string | null;
-    }[];
-    await attachActiveVersionPaths(db, docs);
+    }[] = [];
+    for (const batch of chunkArray([...new Set(docIds)], 50)) {
+        const { data, error: documentError } = await db
+            .from("documents")
+            .select("*")
+            .in("id", batch);
+        if (documentError) return internalFailure(documentError);
+        const batchDocs = data ?? [];
+        await attachActiveVersionPaths(db, batchDocs);
+        docs.push(...batchDocs);
+    }
     const clientReview = { ...review };
     delete clientReview.active_generation_id;
     delete clientReview.generation_lease_expires_at;
@@ -577,10 +911,12 @@ export async function getTabularReviewDetail(
                 access_role: access.projectRole,
                 is_running: isReviewGenerationRunning(review),
             },
-            cells: (cells ?? []).map((cell) => ({
-                ...cell,
-                content: parseCellContent(cell.content),
-            })),
+            cells: cells
+                .filter((cell) => visibleRowIds.has(cell.row_id as string))
+                .map((cell) => ({
+                    ...cell,
+                    content: parseCellContent(cell.content),
+                })),
             rows,
             documents: docs as unknown as Record<string, unknown>[],
         },
@@ -695,7 +1031,9 @@ export async function getTabularReviewAccess(
         ok: true,
         data: {
             scope: "direct",
-            org_id: null,
+            // The organization whose members it can be shared with, or null
+            // for a personal review, which can be shared with anyone.
+            org_id: await teamOrgIdOf(db, review.org_id),
             access_role: projectRole,
             grants: listed.grants,
         },
@@ -734,13 +1072,17 @@ export async function grantTabularReviewAccess(
             "validation",
             "Deny is only available for organization members",
         );
-    const { userById } = await loadProfileUsersByEmail(db);
+    const { userById } = await loadProfileUsersByEmail(db, {
+        userIds: gate.review.user_id ? [gate.review.user_id] : [],
+        emails: [],
+    });
     const result = await upsertContentGrant(db, {
         kind: "tabular_review",
         resourceId: args.reviewId,
         email: args.email,
         role: args.role,
         createdBy: args.userId,
+        orgId: await teamOrgIdOf(db, gate.review.org_id),
         creatorEmail: gate.review.user_id
             ? userById.get(gate.review.user_id)?.email
             : null,
@@ -781,6 +1123,11 @@ export async function revokeTabularReviewAccess(
     return { ok: true, data: null };
 }
 
+/**
+ * Apply authorized review settings while preserving sources hidden from editors.
+ * Rebuild rows only for effective document-set or grouping changes, retaining
+ * saved results for project moves and legacy duplicate-ID normalization.
+ */
 export async function updateTabularReview(
     db: Db,
     args: {
@@ -852,6 +1199,7 @@ export async function updateTabularReview(
             body.model,
             userId,
             db,
+            existingReview.org_id ?? null,
         );
         if (!selectedModel.ok) return modelFailure(selectedModel);
         updates.model = selectedModel.model;
@@ -878,18 +1226,47 @@ export async function updateTabularReview(
         updates.document_grouping = body.document_grouping;
     }
     if (Array.isArray(body.document_ids)) {
-        updates.document_ids = await filterAccessibleDocumentIds(
-            body.document_ids as string[],
-            userId,
-            userEmail,
-            db,
-        );
+        const requestedIds = body.document_ids;
+        if (requestedIds.some((id) => typeof id !== "string"))
+            return failure("validation", "document_ids must contain only strings");
+        const existingIds = (existingReview.document_ids ?? []) as string[];
+        let readableIds: Set<string>;
+        try {
+            readableIds = new Set(await filterAccessibleDocumentIds(
+                [...new Set([...existingIds, ...requestedIds as string[]])],
+                userId,
+                userEmail,
+                db,
+            ));
+        } catch (error) {
+            return internalFailure(error);
+        }
+        // Preserve sources hidden from a collaborating editor, even when the
+        // picker only submits the documents that editor can see.
+        // Sets, not nested includes(): document_ids has no cap, and the old
+        // existing x requested scans were quadratic in the selection size.
+        const requested = new Set(requestedIds as string[]);
+        const existing = new Set(existingIds);
+        updates.document_ids = [...new Set([
+            ...existingIds.filter((id) => !readableIds.has(id) || requested.has(id)),
+            ...(requestedIds as string[]).filter((id) => !existing.has(id) && readableIds.has(id)),
+        ])];
     }
     if (projectIdUpdateProvided) {
         if (!creatorScopedAllowed(access, existingReview.user_id)) {
             return failure(
                 "forbidden",
                 "Only the review's creator can move a review",
+            );
+        }
+        // Authorship is not standing. A creator whose role on the review's
+        // current project was reduced to Viewer must not be able to pull the
+        // review (cells, document list) out of that matter into personal
+        // scope, so moving needs write access where the review lives now…
+        if (!can(access.projectRole, "content.edit")) {
+            return failure(
+                "forbidden",
+                "You do not have permission to move this review.",
             );
         }
         if (projectIdUpdate) {
@@ -902,22 +1279,87 @@ export async function updateTabularReview(
             if (!projectAccess.ok) {
                 return failure("not_found", "Target project not found");
             }
+            // …and where it is going: a move contributes the review to the
+            // destination's members exactly as creating it there would, so it
+            // takes the same content.edit gate as the create path.
+            if (!can(projectAccess.projectRole, "content.edit")) {
+                return failure(
+                    "forbidden",
+                    "You do not have permission to write in this project.",
+                );
+            }
         }
         updates.project_id = projectIdUpdate;
-        // `tabular_reviews.org_id` is a DENORMALIZED copy of the project's
-        // tenant, stamped at creation and read directly by the SQL visibility
-        // predicates (`tr.org_id is not null and exists (select 1 from
-        // org_members …)`). Moving the review to another project changes
-        // which tenant owns it, so the copy has to be restamped from the
-        // destination — otherwise a review moved out of an org project into a
-        // personal one keeps answering yes to that org arm and stays visible
-        // to every member of an organization it no longer belongs to. Same
-        // helper and argument shape as the create path.
-        const movedOrg = await resolveContentOrgId(db, {
-            projectId: projectIdUpdate ?? null,
-        });
-        if (!movedOrg.ok) return internalFailure(movedOrg.detail);
-        updates.org_id = movedOrg.orgId;
+        // `tabular_reviews.org_id` is the organization the review belongs
+        // to, read directly by the SQL access rule (review_access_role). In a
+        // project it is a copy of the project's, so a move restamps it from
+        // the destination.
+        //
+        // What belongs to a team organization stays in it. Taken out of its
+        // project, such a review becomes a standalone review of the same
+        // organization rather than its mover's personal property; and it
+        // cannot be moved into a project somewhere else.
+        const currentOrgId = await teamOrgIdOf(
+            db,
+            (existingReview.org_id as string | null | undefined) ?? null,
+        );
+        if (projectIdUpdate) {
+            const movedOrg = await resolveContentOrgId(db, {
+                projectId: projectIdUpdate,
+            });
+            if (!movedOrg.ok) return internalFailure(movedOrg.detail);
+            if (currentOrgId && movedOrg.orgId !== currentOrgId)
+                return failure(
+                    "validation",
+                    "This review belongs to an organization and can only be moved to a project in the same organization.",
+                );
+            updates.org_id = movedOrg.orgId;
+        } else {
+            updates.org_id = currentOrgId;
+        }
+    }
+
+    // A review is built from documents in its own workspace. Documents it
+    // already has are let through while it stays where it is — a review from
+    // before this rule keeps working — but a move into another workspace
+    // takes every document with it, so there all of them are looked at.
+    if (Array.isArray(body.document_ids) || projectIdUpdateProvided) {
+        try {
+            const existingDocumentIds = (existingReview.document_ids ??
+                []) as string[];
+            const nextDocumentIds =
+                (updates.document_ids as string[] | undefined) ??
+                existingDocumentIds;
+            const currentOrgId = await teamOrgIdOf(
+                db,
+                (existingReview.org_id as string | null | undefined) ?? null,
+            );
+            const nextOrgId = projectIdUpdateProvided
+                ? await teamOrgIdOf(db, updates.org_id as string | null)
+                : currentOrgId;
+            const moved = nextOrgId !== currentOrgId;
+            const existingDocumentIdSet = new Set(existingDocumentIds);
+            const toCheck = moved
+                ? nextDocumentIds
+                : nextDocumentIds.filter(
+                      (id) => !existingDocumentIdSet.has(id),
+                  );
+            const outside = await findDocumentsOutsideWorkspace(
+                db,
+                toCheck,
+                nextOrgId,
+            );
+            if (outside.length > 0)
+                return failure(
+                    "validation",
+                    moved
+                        ? "This review uses documents from the workspace it is in, so it cannot be moved to a project in another one."
+                        : DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+                    DOCUMENT_WORKSPACE_MISMATCH_CODE,
+                );
+        } catch (error) {
+            return internalFailure(error);
+        }
     }
 
     const { data: updatedReview, error: updateError } = await db
@@ -931,13 +1373,24 @@ export async function updateTabularReview(
             updateError ?? new Error("Review update returned no data"),
         );
 
+    // Legacy selections can contain duplicates. Normalizing their representation
+    // must not rebuild rows, whose deletion cascades to the saved cell results.
+    const previousDocumentIds = new Set((existingReview.document_ids ?? []) as string[]);
+    const nextDocumentIds = new Set(
+        (updates.document_ids ?? existingReview.document_ids ?? []) as string[],
+    );
+    const documentSetChanged = previousDocumentIds.size !== nextDocumentIds.size ||
+        [...nextDocumentIds].some(id => !previousDocumentIds.has(id));
     const rowShapeChanged =
-        Array.isArray(body.document_ids) ||
-        body.document_grouping != null ||
-        projectIdUpdateProvided;
+        documentSetChanged ||
+        (body.document_grouping != null &&
+            body.document_grouping !== existingReview.document_grouping);
     try {
         const activeColumns = (updatedReview.columns_config ?? []) as Column[];
-        if (rowShapeChanged) {
+        const groupingChanged =
+            body.document_grouping != null &&
+            body.document_grouping !== existingReview.document_grouping;
+        if (groupingChanged) {
             await rebuildRowsForReview(
                 db,
                 reviewId,
@@ -946,16 +1399,26 @@ export async function updateTabularReview(
                 activeColumns,
                 normalizeGrouping(updatedReview.document_grouping),
             );
-        } else if (Array.isArray(body.columns_config)) {
-            await syncCellsForReviewRows(db, reviewId, activeColumns);
+        } else {
+            if (rowShapeChanged)
+                await syncRowsForDocumentChange(
+                    db,
+                    reviewId,
+                    userId,
+                    (updatedReview.document_ids ?? []) as string[],
+                    activeColumns,
+                    normalizeGrouping(updatedReview.document_grouping),
+                );
+            // The grid sends its columns with every document change, so both
+            // can change in one PATCH: rows the sync kept still need cells for
+            // an added column and must lose those of a removed one.
+            if (Array.isArray(body.columns_config))
+                await syncCellsForReviewRows(db, reviewId, activeColumns);
         }
     } catch (syncError) {
-        return statusFailure(500, {
-            detail:
-                syncError instanceof Error
-                    ? syncError.message
-                    : "Failed to synchronize review rows",
-        });
+        // The cause stays in the server log; a database message is not a
+        // client-facing detail.
+        return internalFailure(syncError);
     }
 
     return { ok: true, data: updatedReview as Record<string, unknown> };

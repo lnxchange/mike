@@ -1,5 +1,11 @@
-import Image from "next/image";
 import { File, FolderArchive, Mail } from "lucide-react";
+import { SvgAssetIcon } from "@/app/components/ui/svg-asset-icon";
+import pdf from "../../../../public/icons/file-types/pdf.svg";
+import word from "../../../../public/icons/file-types/word.svg";
+import excel from "../../../../public/icons/file-types/excel.svg";
+import ppt from "../../../../public/icons/file-types/ppt.svg";
+
+const icons = { pdf, word, excel, ppt };
 
 export type FileTypeKind =
     | "pdf"
@@ -44,89 +50,14 @@ export function FileTypeIcon({
 }) {
     const cls = `${className} shrink-0`;
     const kind = fileTypeKind(fileType);
-    if (muted) {
-        const src =
-            kind === "pdf"
-                ? "/icons/file-types/pdf.svg"
-                : kind === "word"
-                  ? "/icons/file-types/word.svg"
-                  : kind === "excel"
-                    ? "/icons/file-types/excel.svg"
-                    : kind === "ppt"
-                      ? "/icons/file-types/ppt.svg"
-                      : null;
-        return src ? (
-            <Image
-                src={src}
-                alt=""
-                aria-hidden="true"
-                width={64}
-                height={64}
-                unoptimized
-                className={`${cls} object-contain grayscale opacity-35`}
-            />
-        ) : kind === "email" ? (
-            <Mail className={`${cls} text-gray-300`} />
-        ) : kind === "archive" ? (
-            <FolderArchive className={`${cls} text-gray-300`} />
-        ) : (
-            <File className={`${cls} text-gray-300`} />
-        );
-    }
-    switch (kind) {
-        case "email":
-            return <Mail className={`${cls} text-gray-500`} />;
-        case "archive":
-            return <FolderArchive className={`${cls} text-gray-500`} />;
-        case "pdf":
-            return (
-                <Image
-                    src="/icons/file-types/pdf.svg"
-                    alt=""
-                    aria-hidden="true"
-                    width={64}
-                    height={64}
-                    unoptimized
-                    className={`${cls} object-contain`}
-                />
-            );
-        case "word":
-            return (
-                <Image
-                    src="/icons/file-types/word.svg"
-                    alt=""
-                    aria-hidden="true"
-                    width={64}
-                    height={64}
-                    unoptimized
-                    className={`${cls} object-contain`}
-                />
-            );
-        case "excel":
-            return (
-                <Image
-                    src="/icons/file-types/excel.svg"
-                    alt=""
-                    aria-hidden="true"
-                    width={64}
-                    height={64}
-                    unoptimized
-                    className={`${cls} object-contain`}
-                />
-            );
-        case "ppt":
-            return (
-                <Image
-                    src="/icons/file-types/ppt.svg"
-                    alt=""
-                    aria-hidden="true"
-                    width={64}
-                    height={64}
-                    unoptimized
-                    className={`${cls} object-contain`}
-                />
-            );
-        default:
-            return <File className={`${cls} text-gray-500`} />;
-    }
+    const tone = muted ? "text-gray-300" : "text-gray-500";
+    if (kind === "email") return <Mail className={`${cls} ${tone}`} />;
+    if (kind === "archive") return <FolderArchive className={`${cls} ${tone}`} />;
+    if (kind === "other") return <File className={`${cls} ${tone}`} />;
+    return (
+        <SvgAssetIcon
+            src={icons[kind]}
+            className={`${cls}${muted ? " grayscale opacity-35" : ""}`}
+        />
+    );
 }

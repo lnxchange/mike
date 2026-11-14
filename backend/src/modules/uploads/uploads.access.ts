@@ -15,11 +15,8 @@ import {
   checkWorkflowAccess,
   creatorScopedAllowed,
   ensureDocAccess,
+  resolveStandaloneOrgId,
 } from "../../lib/access";
-import {
-  resolveLibraryActor,
-  resolveLibraryWriteTarget,
-} from "../library/library.service";
 import type { Db } from "../../lib/supabase";
 import type { ParsedUploadSessionRequest } from "./uploads.manifest";
 import {
@@ -27,6 +24,13 @@ import {
   internalFailure,
   type UploadOutcome,
 } from "./uploads.shared";
+
+/**
+ * "Not found" is for workflows the caller cannot see at all. A Viewer who can
+ * open a workflow but not change it gets a refusal that names the reason.
+ */
+const WORKFLOW_EDIT_FORBIDDEN =
+  "You do not have permission to add documents to this workflow.";
 
 export async function validateDestinationAccess(
   manifest: ParsedUploadSessionRequest,
@@ -37,6 +41,17 @@ export async function validateDestinationAccess(
   const destination = manifest.destination as Record<string, unknown>;
 
   if (manifest.purpose === "document_create") {
+    // Uploaded on its own, a document belongs to the workspace the manifest
+    // names: an organization the caller belongs to, or Personal.
+    let workspaceOrgId: string | null = null;
+    if (destination.scope === "standalone" || destination.scope === "library") {
+      const workspace = await resolveStandaloneOrgId(db, {
+        userId,
+        orgId: destination.org_id,
+      });
+      if (!workspace.ok) return failure(400, { detail: workspace.detail });
+      workspaceOrgId = workspace.orgId;
+    }
     if (destination.scope === "standalone") return { ok: true };
     if (destination.scope === "workflow") {
       const workflowId = destination.workflow_id as string;
@@ -55,20 +70,26 @@ export async function validateDestinationAccess(
         userEmail,
         db,
       );
-      if (
-        workflowAccess.ok &&
-        can(workflowAccess.projectRole, "content.edit")
-      )
-        return { ok: true };
-      return failure(404, { detail: "Workflow not found or not editable" });
+      // Same split as the project branch below: a workflow the caller cannot
+      // see is "not found"; a workflow they can open but not edit is refused
+      // with the reason, so a Viewer is not told it vanished.
+      if (!workflowAccess.ok)
+        return failure(404, { detail: "Workflow not found or not editable" });
+      if (!can(workflowAccess.projectRole, "content.edit"))
+        return failure(403, { detail: WORKFLOW_EDIT_FORBIDDEN });
+      return { ok: true };
     }
     if (destination.scope === "project") {
       const projectId = destination.project_id as string;
       const access = await checkProjectAccess(projectId, userId, userEmail, db);
       // Uploading into a project is content work: a viewer can open the
-      // project but must not be able to open an upload session into it.
-      if (!access.ok || !can(access.projectRole, "content.edit"))
-        return failure(404, { detail: "Project not found" });
+      // project but must not be able to open an upload session into it. That
+      // viewer is refused, not told the project vanished.
+      if (!access.ok) return failure(404, { detail: "Project not found" });
+      if (!can(access.projectRole, "content.edit"))
+        return failure(403, {
+          detail: "You do not have permission to write in this project.",
+        });
       const folderIds = Array.from(
         new Set(
           [
@@ -91,8 +112,6 @@ export async function validateDestinationAccess(
       return { ok: true };
     }
 
-    const actor = await resolveLibraryActor(db, userId);
-    const libraryKind = destination.library_kind as "file" | "template";
     const folderIds = Array.from(
       new Set(
         [
@@ -101,28 +120,22 @@ export async function validateDestinationAccess(
         ].filter((value): value is string => !!value),
       ),
     );
-    const primary = await resolveLibraryWriteTarget(db, actor, libraryKind, {
-      folder_id: folderIds[0] ?? null,
-      org_id: (destination.org_id as string | null | undefined) ?? null,
-    });
-    if (!primary.ok) {
-      return primary.failure === "internal"
-        ? internalFailure(primary.error)
-        : failure(primary.status === 403 ? 403 : 404, { detail: primary.detail });
-    }
-    for (const folderId of folderIds.slice(1)) {
-      const next = await resolveLibraryWriteTarget(db, actor, libraryKind, {
-        folder_id: folderId,
-        org_id: primary.data.orgId,
-      });
-      if (!next.ok) {
-        return next.failure === "internal"
-          ? internalFailure(next.error)
-          : failure(next.status === 403 ? 403 : 404, { detail: next.detail });
-      }
-      if (next.data.orgId !== primary.data.orgId) {
-        return failure(400, { detail: "Cannot upload into more than one library" });
-      }
+    if (!folderIds.length) return { ok: true };
+    // A folder is in one workspace: a document filed under an organization
+    // cannot land in a Personal folder, nor the other way round.
+    const folders = db
+      .from("library_folders")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("library_kind", destination.library_kind as string);
+    const { data, error } = await (
+      workspaceOrgId
+        ? folders.eq("org_id", workspaceOrgId)
+        : folders.is("org_id", null)
+    ).in("id", folderIds);
+    if (error) return internalFailure(error);
+    if ((data ?? []).length !== folderIds.length) {
+      return failure(404, { detail: "Folder not found" });
     }
     return { ok: true };
   }
@@ -149,13 +162,19 @@ export async function validateDestinationAccess(
       access.ok &&
       (creatorScopedAllowed(access, document.user_id) ||
         (Boolean(document.workflow_id) && canEditContent));
-    if (
-      !access.ok ||
-      !canEditContent ||
-      (manifest.purpose === "document_version_replace" && !canReplace)
-    ) {
-      return failure(404, { detail: "Document not found" });
-    }
+    // Split, the way the project branch above already splits: no verdict at
+    // all is a 404, and a caller who can open the document but not write to
+    // it is refused by name. Collapsing both into 404 told every Viewer
+    // their document had disappeared the moment they tried to upload.
+    if (!access.ok) return failure(404, { detail: "Document not found" });
+    if (!canEditContent)
+      return failure(403, {
+        detail: "You do not have permission to edit content in this project.",
+      });
+    if (manifest.purpose === "document_version_replace" && !canReplace)
+      return failure(403, {
+        detail: "You do not have permission to replace this version.",
+      });
     if (manifest.purpose === "document_version_create") return { ok: true };
 
     const { data: version, error: versionError } = await db
@@ -196,10 +215,11 @@ export async function validateDestinationAccess(
     userEmail,
     db,
   );
-  const canEdit =
-    workflowAccess.ok && can(workflowAccess.projectRole, "content.edit");
-  if (!canEdit) {
+  if (!workflowAccess.ok) {
     return failure(404, { detail: "Workflow not found or not editable" });
+  }
+  if (!can(workflowAccess.projectRole, "content.edit")) {
+    return failure(403, { detail: WORKFLOW_EDIT_FORBIDDEN });
   }
   if (workflow.type === "tabular") {
     return failure(400, {

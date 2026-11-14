@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { MikeIcon } from "@/app/components/chat/mike-icon";
+import { MikeIcon } from "@mike/ui";
 import { appConfig } from "@/config";
 
 interface BrandMarkProps {

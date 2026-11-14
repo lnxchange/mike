@@ -12,16 +12,41 @@ import {
     createProject,
     grantProjectAccess,
     listOrgMembers,
-    listOrgs,
     lookupUserByEmail,
   setProjectMemoryEnabled,
+  updateProject,
   uploadProjectDocuments,
 } from "@/app/lib/mikeApi";
-import { takePendingProjectUploads } from "@/app/lib/pendingProjectUploads";
+import {
+  hasPendingProjectUploads,
+  takePendingProjectUploads,
+} from "@/app/lib/pendingProjectUploads";
 import { NewProjectModal } from "./NewProjectModal";
 
-const { useUserProfile } = vi.hoisted(() => ({
+const { useUserProfile, activeWorkspace } = vi.hoisted(() => ({
     useUserProfile: vi.fn(),
+    // `null` is "no workspace provider": the modal behaves as it always has.
+    activeWorkspace: { id: null as string | null, name: "Acme LLP" },
+}));
+
+vi.mock("@/app/contexts/WorkspaceContext", async (importOriginal) => ({
+    ...(await importOriginal<
+        typeof import("@/app/contexts/WorkspaceContext")
+    >()),
+    useWorkspace: () => ({
+        workspaceId: activeWorkspace.id,
+        organizations: null,
+        activeOrganization:
+            activeWorkspace.id && activeWorkspace.id !== "personal"
+                ? {
+                      id: activeWorkspace.id,
+                      name: activeWorkspace.name,
+                      role: "member",
+                  }
+                : null,
+        setWorkspace: vi.fn(),
+        refreshOrganizations: vi.fn(),
+    }),
 }));
 
 // `importOriginal` keeps the real `MikeApiError`, which `userFacingApiError`
@@ -33,11 +58,11 @@ vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
     grantProjectAccess: vi.fn(),
     addDocumentToProject: vi.fn(),
     uploadProjectDocument: vi.fn(),
-    listOrgs: vi.fn(),
+    uploadProjectDocuments: vi.fn(),
     listOrgMembers: vi.fn(),
+    updateProject: vi.fn(),
     lookupUserByEmail: vi.fn(),
-  setProjectMemoryEnabled: vi.fn(),
-  uploadProjectDocuments: vi.fn(),
+    setProjectMemoryEnabled: vi.fn(),
 }));
 vi.mock("@/app/contexts/AuthContext", () => ({
     useAuth: () => ({ user: { id: "me", email: "me@firm.test" } }),
@@ -47,8 +72,16 @@ vi.mock("@/app/contexts/UserProfileContext", () => ({
 }));
 vi.mock("../shared/FileDirectory", () => ({ FileDirectory: () => null }));
 vi.mock("./ProjectPracticeField", () => ({
-    ProjectPracticeField: ({ id, value }: { id: string; value: string }) => (
-        <button id={id} type="button">
+    ProjectPracticeField: ({
+        id,
+        value,
+        disabled,
+    }: {
+        id: string;
+        value: string;
+        disabled?: boolean;
+    }) => (
+        <button id={id} type="button" disabled={disabled}>
             {value || "None"}
         </button>
     ),
@@ -115,7 +148,8 @@ function renderModal(onCreated = vi.fn()) {
 describe("NewProjectModal sharing", () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        vi.mocked(listOrgs).mockResolvedValue([]);
+        activeWorkspace.id = null;
+        activeWorkspace.name = "Acme LLP";
         vi.mocked(listOrgMembers).mockResolvedValue([]);
         vi.mocked(createProject).mockResolvedValue(CREATED as never);
         vi.mocked(grantProjectAccess).mockResolvedValue({} as never);
@@ -154,20 +188,92 @@ describe("NewProjectModal sharing", () => {
         );
     });
 
-    it("warns when organizations cannot be loaded", async () => {
-        vi.mocked(listOrgs).mockRejectedValue(new Error("network unavailable"));
+  it("creates a new project in the active workspace's organization, private unless made public", async () => {
+    activeWorkspace.id = "org-1";
+    const user = userEvent.setup({ delay: null });
+    renderModal();
 
-        renderModal();
+    // No choosing a workspace here: it is the one being worked in.
+    expect(
+      screen.queryByLabelText("Share across Organisation"),
+    ).not.toBeInTheDocument();
+    // Access: Private by default, Public as the other pill.
+    const access = screen.getByRole("group", { name: "Organisational Access" });
+    expect(
+      within(access).getByRole("button", { name: "Private" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      within(access).getByRole("button", { name: "Public" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      screen.getByText(
+        "Only the people you share this project with can open it.",
+      ),
+    ).toBeInTheDocument();
 
-        expect(
-            await screen.findByText("Organizations unavailable"),
-        ).toBeInTheDocument();
-        expect(
-            screen.getByText(
-                "Your organizations could not be loaded. Close this message and try opening the project form again.",
-            ),
-        ).toBeInTheDocument();
-    });
+    await user.type(screen.getByPlaceholderText("Add project name"), "P");
+    while (!screen.queryByRole("button", { name: "Create project" })) {
+      const next = screen.getByRole("button", { name: "Next" });
+      await waitFor(() => expect(next).toBeEnabled());
+      await user.click(next);
+    }
+    await user.click(screen.getByRole("button", { name: "Create project" }));
+
+    await waitFor(() =>
+      expect(createProject).toHaveBeenCalledWith(
+        "P",
+        undefined,
+        undefined,
+        "org-1",
+        true,
+        "private",
+      ),
+    );
+  });
+
+  it("offers no Public toggle for a personal project", () => {
+    activeWorkspace.id = "personal";
+    renderModal();
+    expect(
+      screen.queryByRole("group", { name: "Organisational Access" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("starts a new project as personal in the personal workspace", async () => {
+    activeWorkspace.id = "personal";
+    const user = userEvent.setup({ delay: null });
+    renderModal();
+
+    await user.type(screen.getByPlaceholderText("Add project name"), "P");
+    await submit(user);
+
+    await waitFor(() =>
+      expect(createProject).toHaveBeenCalledWith(
+        "P",
+        undefined,
+        undefined,
+        undefined,
+        true,
+      ),
+    );
+  });
+
+  it("labels project memory once, and reads On or Off beside the switch", async () => {
+    const user = userEvent.setup({ delay: null });
+    renderModal();
+
+    expect(screen.getByText("Project memory")).toBeInTheDocument();
+    // The label says what it is; no second line explaining it.
+    expect(
+      screen.queryByText("Let Mike remember shared project context"),
+    ).not.toBeInTheDocument();
+
+    const memory = screen.getByRole("switch", { name: "Enable project memory" });
+    expect(memory).toHaveTextContent("On");
+    await user.click(memory);
+    expect(memory).toHaveTextContent("Off");
+    expect(memory).toHaveAttribute("aria-checked", "false");
+  });
 
   it("creates new projects with memory enabled by default", async () => {
     const user = userEvent.setup({ delay: null });
@@ -235,6 +341,27 @@ describe("NewProjectModal sharing", () => {
         undefined,
         true,
       ),
+    );
+  });
+
+  it("resets to the account default, not to on, after a project is created", async () => {
+    // resetForm hard-coded `true`, so the next project started from this
+    // still-open modal silently opted into project memory against the
+    // account's saved default.
+    useUserProfile.mockReturnValue({
+      profile: { practiceAreas: [], projectMemoryDefault: false },
+    });
+    const user = userEvent.setup({ delay: null });
+    renderModal();
+
+    await user.type(screen.getByPlaceholderText("Add project name"), "P");
+    await submit(user);
+    await waitFor(() => expect(createProject).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "Enable project memory" }),
+      ).not.toBeChecked(),
     );
   });
 
@@ -527,131 +654,490 @@ describe("NewProjectModal sharing", () => {
         ).toEqual(["Owner", "Editor", "Viewer"]);
     });
 
-    it("adds organization Owners and denied members through typeahead fields", async () => {
+    const ORG_MEMBERS = [
+        {
+            user_id: "me",
+            email: "me@firm.test",
+            display_name: "Project Creator",
+            role: "member",
+            created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+            user_id: "member-lead",
+            email: "lead@elite.test",
+            display_name: "Project Lead",
+            role: "member",
+            created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+            user_id: "member-denied",
+            email: "blocked@elite.test",
+            display_name: "Blocked Member",
+            role: "member",
+            created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+            user_id: "org-admin",
+            email: "admin@elite.test",
+            display_name: "Organization Admin",
+            role: "admin",
+            created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+            user_id: "org-owner",
+            email: "owner@elite.test",
+            display_name: "Organization Owner",
+            role: "owner",
+            created_at: "2026-01-01T00:00:00Z",
+        },
+    ];
+
+    it("shares a private organization project with individual members", async () => {
         const user = userEvent.setup({ delay: null });
-        vi.mocked(listOrgs).mockResolvedValue([
-            { id: "org-1", name: "Elite Law LLP" } as never,
-        ]);
-        vi.mocked(listOrgMembers).mockResolvedValue([
-            {
-                user_id: "me",
-                email: "me@firm.test",
-                display_name: "Project Creator",
-                role: "member",
-                created_at: "2026-01-01T00:00:00Z",
-            },
-            {
-                user_id: "member-owner",
-                email: "lead@elite.test",
-                display_name: "Project Lead",
-                role: "member",
-                created_at: "2026-01-01T00:00:00Z",
-            },
-            {
-                user_id: "member-denied",
-                email: "blocked@elite.test",
-                display_name: "Blocked Member",
-                role: "member",
-                created_at: "2026-01-01T00:00:00Z",
-            },
-            {
-                user_id: "org-admin",
-                email: "admin@elite.test",
-                display_name: "Organization Admin",
-                role: "admin",
-                created_at: "2026-01-01T00:00:00Z",
-            },
-        ] as never);
+        activeWorkspace.id = "org-1";
+        activeWorkspace.name = "Elite Law LLP";
+        vi.mocked(listOrgMembers).mockResolvedValue(ORG_MEMBERS as never);
         renderModal();
-        await user.click(screen.getByLabelText("Share across Organisation"));
-        await user.click(
-            await screen.findByRole("menuitem", { name: "Elite Law LLP" }),
-        );
     await user.type(screen.getByPlaceholderText("Add project name"), "Matter");
+        // Left private on the details step.
         await user.click(screen.getByRole("button", { name: "Next" }));
         expect(
-            screen.getByRole("dialog", { name: "Organisational Access" }),
+            screen.getByRole("dialog", { name: "People" }),
         ).toBeVisible();
-        await screen.findByRole("searchbox", { name: "Project owners" });
+        // The setting was made on the details step, not here.
         expect(
-            screen.getByText(
-                "Add Elite Law LLP members as owners with rights to manage access, settings and delete the project.",
-            ),
-        ).not.toHaveClass("pl-3");
-        expect(screen.queryByText("Project Lead")).not.toBeInTheDocument();
-        expect(screen.queryByText("Blocked Member")).not.toBeInTheDocument();
+            screen.queryByRole("group", { name: "Organisational Access" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Deny list" }),
+        ).not.toBeInTheDocument();
 
-        const ownerPicker = screen.getByRole("searchbox", {
-            name: "Project owners",
+        const peoplePicker = await screen.findByRole("searchbox", {
+            name: "People",
         });
-        const denyToggle = screen.getByRole("button", { name: "Deny list" });
-        expect(denyToggle).toHaveAttribute("aria-expanded", "false");
+        // Neither the organization's owner nor an admin can open a private
+        // project unless it is shared with them, so both are offered.
+        await user.type(peoplePicker, "Organization");
         expect(
-            screen.queryByRole("searchbox", { name: "Deny list" }),
-        ).not.toBeInTheDocument();
-        await user.click(denyToggle);
-        const denyPicker = screen.getByRole("searchbox", {
-            name: "Deny list",
-        });
+            await screen.findByRole("option", { name: /Organization Admin/ }),
+        ).toBeInTheDocument();
         expect(
-            screen.getByText(
-                "Deny Elite Law LLP members from accessing this project.",
-            ),
-        ).not.toHaveClass("pl-3");
-        await user.type(ownerPicker, "Organization Admin");
-        expect(
-            screen.queryByRole("option", { name: /Organization Admin/ }),
-        ).not.toBeInTheDocument();
-        await user.clear(ownerPicker);
-        await user.type(denyPicker, "Organization Admin");
-        expect(
-            screen.queryByRole("option", { name: /Organization Admin/ }),
-        ).not.toBeInTheDocument();
-        await user.clear(denyPicker);
+            screen.getByRole("option", { name: /Organization Owner/ }),
+        ).toBeInTheDocument();
+        await user.clear(peoplePicker);
 
-        await user.type(ownerPicker, "lead");
+        await user.type(peoplePicker, "lead");
         await user.click(
             await screen.findByRole("option", { name: /Project Lead/ }),
         );
-        await user.type(denyPicker, "blocked");
-        await user.click(
-            await screen.findByRole("option", { name: /Blocked Member/ }),
-        );
-
-        const ownerList = screen.getByRole("list", {
-            name: "Project owners list",
-        });
-        const denyList = screen.getByRole("list", {
-            name: "Deny list entries",
-        });
-        expect(within(ownerList).getByText("Project Lead")).toBeInTheDocument();
-    expect(within(ownerList).getByText("Project Creator")).toBeInTheDocument();
-        expect(within(ownerList).getByText("lead@elite.test")).toHaveClass(
-            "justify-self-end",
+        const people = screen.getByRole("list", { name: "People with access" });
+        expect(within(people).getByText("Project Lead")).toBeInTheDocument();
+        expect(within(people).getByText("Project Creator")).toBeInTheDocument();
+        expect(within(people).getByText("lead@elite.test")).toHaveClass(
+            "sm:justify-self-end",
         );
         expect(
-            within(ownerList).queryByRole("button", {
-                name: "Remove me@firm.test",
+            within(people).queryByRole("button", {
+                name: "Actions for me@firm.test",
             }),
         ).not.toBeInTheDocument();
-    expect(within(denyList).getByText("Blocked Member")).toBeInTheDocument();
-        expect(ownerList.parentElement).toHaveClass("h-28", "overflow-y-auto");
-        expect(denyList.parentElement).toHaveClass("h-28", "overflow-y-auto");
-        expect(
-            ownerList.closest('[data-slot="organization-access-editor"]'),
-        ).not.toHaveClass("overflow-y-auto");
+        expect(people.parentElement).toHaveClass(
+            "min-h-28", "max-h-72", "overflow-y-auto",
+        );
+
         await submit(user);
+        await waitFor(() =>
+            expect(createProject).toHaveBeenCalledWith(
+                "Matter",
+                undefined,
+                undefined,
+                "org-1",
+                true,
+                "private",
+            ),
+        );
         await waitFor(() =>
             expect(grantProjectAccess).toHaveBeenCalledWith(
                 "p1",
                 "lead@elite.test",
-                "owner",
+                "editor",
+            ),
+        );
+    });
+
+    it("makes an organization project public from its details, and walls a member off", async () => {
+        const user = userEvent.setup({ delay: null });
+        activeWorkspace.id = "org-1";
+        activeWorkspace.name = "Elite Law LLP";
+        vi.mocked(listOrgMembers).mockResolvedValue(ORG_MEMBERS as never);
+        renderModal();
+    await user.type(screen.getByPlaceholderText("Add project name"), "Matter");
+        const publicToggle = screen.getByRole("button", { name: "Public" });
+        await user.click(publicToggle);
+        expect(publicToggle).toHaveAttribute("aria-pressed", "true");
+        expect(
+            screen.getByText(
+                "Everyone in Elite Law LLP can open and edit this project.",
+            ),
+        ).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        expect(
+            screen.getByRole("dialog", { name: "People" }),
+        ).toBeVisible();
+        // Everybody can already open and edit it, so what is offered is
+        // adding owners — not a general people picker.
+        expect(
+            screen.queryByRole("searchbox", { name: "People" }),
+        ).not.toBeInTheDocument();
+        const ownerPicker = await screen.findByRole("searchbox", {
+            name: "Project owners",
+        });
+        await user.type(ownerPicker, "lead");
+        await user.click(
+            await screen.findByRole("option", { name: /Project Lead/ }),
+        );
+        const owners = screen.getByRole("list", { name: "Project owners list" });
+        expect(within(owners).getByText("Project Lead")).toBeInTheDocument();
+    expect(within(owners).getByText("Project Creator")).toBeInTheDocument();
+
+        await user.click(
+            await screen.findByRole("button", { name: "Deny list" }),
+        );
+        const denyPicker = screen.getByRole("searchbox", { name: "Deny list" });
+        await user.type(denyPicker, "blocked");
+        await user.click(
+            await screen.findByRole("option", { name: /Blocked Member/ }),
+        );
+        const denyList = screen.getByRole("list", { name: "Deny list entries" });
+    expect(within(denyList).getByText("Blocked Member")).toBeInTheDocument();
+
+        await submit(user);
+        await waitFor(() =>
+            expect(createProject).toHaveBeenCalledWith(
+                "Matter",
+                undefined,
+                undefined,
+                "org-1",
+                true,
+                "organization",
+            ),
+        );
+        await waitFor(() =>
+            expect(grantProjectAccess).toHaveBeenCalledWith(
+                "p1",
+                "blocked@elite.test",
+                "deny",
             ),
         );
         expect(grantProjectAccess).toHaveBeenCalledWith(
             "p1",
-            "blocked@elite.test",
-            "deny",
+            "lead@elite.test",
+            "owner",
         );
+        expect(grantProjectAccess).toHaveBeenCalledTimes(2);
+    });
+
+    it("drops the people lined up for a private project when it is made public", async () => {
+        // Named people belong to a private project. Carried into a public
+        // one they would be applied where nothing on screen shows them.
+        const user = userEvent.setup({ delay: null });
+        activeWorkspace.id = "org-1";
+        activeWorkspace.name = "Elite Law LLP";
+        vi.mocked(listOrgMembers).mockResolvedValue(ORG_MEMBERS as never);
+        renderModal();
+    await user.type(screen.getByPlaceholderText("Add project name"), "Matter");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        const peoplePicker = await screen.findByRole("searchbox", {
+            name: "People",
+        });
+        await user.type(peoplePicker, "lead");
+        await user.click(
+            await screen.findByRole("option", { name: /Project Lead/ }),
+        );
+
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.click(screen.getByRole("button", { name: "Public" }));
+        while (!screen.queryByRole("button", { name: "Create project" })) {
+            await user.click(screen.getByRole("button", { name: "Next" }));
+        }
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+
+        await waitFor(() => expect(createProject).toHaveBeenCalled());
+        expect(grantProjectAccess).not.toHaveBeenCalled();
+    });
+
+    it("applies a changed Public setting to a project that already exists on retry", async () => {
+        // A refused grant leaves the created project in place. Going Back
+        // and changing who can open it must reach that project, which the
+        // retry reuses rather than creating again.
+        const user = userEvent.setup({ delay: null });
+        activeWorkspace.id = "org-1";
+        activeWorkspace.name = "Elite Law LLP";
+        vi.mocked(listOrgMembers).mockResolvedValue(ORG_MEMBERS as never);
+        vi.mocked(updateProject).mockResolvedValue({} as never);
+        vi.mocked(grantProjectAccess).mockRejectedValueOnce(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+        renderModal();
+    await user.type(screen.getByPlaceholderText("Add project name"), "Matter");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        const peoplePicker = await screen.findByRole("searchbox", {
+            name: "People",
+        });
+        await user.type(peoplePicker, "lead");
+        await user.click(
+            await screen.findByRole("option", { name: /Project Lead/ }),
+        );
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+        await screen.findByText(/Project created, but access was not granted/);
+        // Created private; nothing to re-save on the first attempt.
+        expect(updateProject).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.click(screen.getByRole("button", { name: "Public" }));
+        while (!screen.queryByRole("button", { name: "Create project" })) {
+            await user.click(screen.getByRole("button", { name: "Next" }));
+        }
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+
+        await waitFor(() =>
+            expect(updateProject).toHaveBeenCalledWith("p1", {
+                visibility: "organization",
+            }),
+        );
+        expect(createProject).toHaveBeenCalledTimes(1);
+    });
+
+    async function attachPendingFile(filename: string) {
+        const fileInput = document.querySelector(
+            'input[type="file"]',
+        ) as HTMLInputElement;
+        expect(fileInput).not.toBeNull();
+        fireEvent.change(fileInput, {
+            target: { files: [new File(["contents"], filename)] },
+        });
+        await screen.findByRole("button", { name: /Upload \(1\)/ });
+    }
+
+    it("hands an attached file to the project page once when a refused grant is retried", async () => {
+        // The grant refusal used to return with the pending files still
+        // queued, so the retry — which correctly skipped creation — attached
+        // the same document twice. Grants still run first; the files are
+        // stashed for the project page only after they succeed.
+        const user = userEvent.setup({ delay: null });
+        const onCreated = vi.fn();
+        render(
+            <NewProjectModal open onClose={vi.fn()} onCreated={onCreated} />,
+        );
+        vi.mocked(grantProjectAccess).mockRejectedValueOnce(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+
+        await fillAndAdd(user, "counsel@firm.test", "editor");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        await attachPendingFile("brief.pdf");
+
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+        expect(
+            await screen.findByText(
+                /Project created, but access was not granted to counsel@firm\.test/,
+            ),
+        ).toBeInTheDocument();
+        // Grants run first, so a refusal leaves nothing for the project page.
+        expect(uploadProjectDocuments).not.toHaveBeenCalled();
+        expect(hasPendingProjectUploads("p1")).toBe(false);
+
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+        await waitFor(() => expect(onCreated).toHaveBeenCalled());
+        expect(createProject).toHaveBeenCalledTimes(1);
+        expect(uploadProjectDocuments).not.toHaveBeenCalled();
+        expect(takePendingProjectUploads("p1")).toHaveLength(1);
+        expect(takePendingProjectUploads("p1")).toEqual([]);
+    });
+
+    it("tells the caller to refetch when a created project is never handed over", async () => {
+        const user = userEvent.setup({ delay: null });
+        const onClose = vi.fn();
+        const onCreated = vi.fn();
+        render(<NewProjectModal open onClose={onClose} onCreated={onCreated} />);
+        vi.mocked(grantProjectAccess).mockRejectedValue(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+
+        await fillAndAdd(user, "counsel@firm.test", "editor");
+        await submit(user);
+        await screen.findByText(/Project created, but access was not granted/);
+
+        await user.click(screen.getByRole("button", { name: "Close" }));
+        expect(onCreated).not.toHaveBeenCalled();
+        expect(onClose).toHaveBeenCalledWith(true);
+    });
+
+    it("cannot be dismissed while the project is being created", async () => {
+        const user = userEvent.setup({ delay: null });
+        const onClose = vi.fn();
+        // Never settles: the create is still in flight when the user tries to
+        // leave, and dismissing then would strand the outcome.
+        vi.mocked(createProject).mockReturnValue(new Promise(() => {}) as never);
+        render(<NewProjectModal open onClose={onClose} onCreated={vi.fn()} />);
+
+        await user.type(screen.getByPlaceholderText("Add project name"), "P");
+        await submit(user);
+        await waitFor(() => expect(createProject).toHaveBeenCalled());
+
+        await user.click(screen.getByRole("button", { name: "Close" }));
+        fireEvent.keyDown(document, { key: "Escape" });
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("keeps two files that happen to share a name", async () => {
+        // The picker deduplicated by NAME, so the second `contract.pdf` — a
+        // normal thing to attach from two different folders — was dropped
+        // without a word.
+        const user = userEvent.setup({ delay: null });
+        renderModal();
+
+        await user.type(screen.getByPlaceholderText("Add project name"), "P");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        await user.click(screen.getByRole("button", { name: "Next" }));
+
+        const input = document.querySelector(
+            'input[type="file"]',
+        ) as HTMLInputElement;
+        // Two separate picks, as a user attaching from two folders makes
+        // them: the name test compared each new file against the ones
+        // already staged, so the second one never arrived.
+        fireEvent.change(input, {
+            target: { files: [new File(["a"], "contract.pdf")] },
+        });
+        fireEvent.change(input, {
+            target: { files: [new File(["b"], "contract.pdf")] },
+        });
+
+        expect(
+            await screen.findByRole("button", { name: /Upload \(2\)/ }),
+        ).toBeInTheDocument();
+
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+
+        await waitFor(() => expect(createProject).toHaveBeenCalled());
+        const sentFiles = takePendingProjectUploads("p1");
+        expect(sentFiles).toHaveLength(2);
+        // Identity, not the shared name, is what the project page uploads.
+        expect(sentFiles[0]).not.toBe(sentFiles[1]);
+        expect(sentFiles.map((file) => file.name)).toEqual([
+            "contract.pdf",
+            "contract.pdf",
+        ]);
+    });
+
+    it("says the attached files are still pending when a grant is refused", async () => {
+        // Grants run before the attachments, so a refusal there means nothing
+        // the user picked has been sent — an error that mentions only the
+        // sharing reads as though the files went in.
+        const user = userEvent.setup({ delay: null });
+        renderModal();
+        vi.mocked(grantProjectAccess).mockRejectedValue(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+
+        await fillAndAdd(user, "counsel@firm.test", "editor");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        const input = document.querySelector(
+            'input[type="file"]',
+        ) as HTMLInputElement;
+        fireEvent.change(input, {
+            target: { files: [new File(["a"], "a.pdf"), new File(["b"], "b.pdf")] },
+        });
+        await user.click(
+            await screen.findByRole("button", { name: "Create project" }),
+        );
+
+        expect(
+            await screen.findByText(
+                /The 2 selected files are still pending and will be attached when you try again\./,
+            ),
+        ).toBeInTheDocument();
+        expect(uploadProjectDocuments).not.toHaveBeenCalled();
+    });
+
+    it("keeps Back open once the project exists", async () => {
+        // Back stays open: a retry persists a changed memory choice, so the
+        // details step still describes something that can change.
+        const user = userEvent.setup({ delay: null });
+        renderModal();
+        vi.mocked(grantProjectAccess).mockRejectedValue(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+
+        await fillAndAdd(user, "counsel@firm.test", "editor");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+
+        await user.click(
+            await screen.findByRole("button", { name: "Create project" }),
+        );
+        await screen.findByText(/Project created, but access was not granted/);
+
+        expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        expect(
+            screen.getByText(/can no longer be changed here/),
+        ).toBeInTheDocument();
+    });
+
+    it("locks the identifying fields once the project exists", async () => {
+        // The retry reuses the created project and never re-reads the name,
+        // CM number or practice, so these stayed editable while every edit
+        // made to them on the second attempt was silently dropped.
+        const user = userEvent.setup({ delay: null });
+        renderModal();
+        vi.mocked(grantProjectAccess).mockRejectedValue(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+
+        await fillAndAdd(user, "counsel@firm.test", "editor");
+        await submit(user);
+        await screen.findByText(/Project created, but access was not granted/);
+
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.click(screen.getByRole("button", { name: "Back" }));
+
+        expect(screen.getByLabelText("Project name")).toBeDisabled();
+        expect(screen.getByLabelText("CM number")).toBeDisabled();
+        expect(screen.getByLabelText("Practice")).toBeDisabled();
+        expect(
+            screen.getByText(
+                /name, CM\s+number and practice can no longer be changed\s+here/,
+            ),
+        ).toBeInTheDocument();
+
+        // The step is still a retry, not a dead end.
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+
+        await waitFor(() =>
+            expect(grantProjectAccess).toHaveBeenCalledTimes(2),
+        );
+        expect(createProject).toHaveBeenCalledTimes(1);
     });
 });

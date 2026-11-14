@@ -3,8 +3,6 @@ import type { AssistantEvent as WireAssistantEvent } from "@mike/contracts";
 
 import type {
   SourceDocument,
-  SourceDocumentAction,
-  SourceDocumentMetadata,
   SourceDocumentQuote,
   SourceDocumentType,
   SourceSubdocument,
@@ -21,6 +19,9 @@ export interface Folder {
   user_id: string;
   name: string;
   parent_folder_id: string | null;
+  /** The creator's name and photo; the project directory carries them. */
+  owner_display_name?: string | null;
+  owner_profile_photo?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +42,13 @@ export interface LibraryFolder {
 
 export type ResourceAccessScope = "private" | "shared" | "organization";
 
+/**
+ * Who may open an organization's project or workflow without being named:
+ * nobody ("private", the default) or every member of its organization.
+ * A personal item is always "private"; it is shared by naming people.
+ */
+export type ContentVisibility = "private" | "organization";
+
 export interface Project {
   id: string;
   /** The creator. Null once an org project outlives the account that made it. */
@@ -54,13 +62,17 @@ export interface Project {
    */
   access_role?: "owner" | "editor" | "viewer";
   /** The caller's role in the owning organization, if the project has one. */
-  org_role?: "admin" | "member" | null;
+  org_role?: "owner" | "admin" | "member" | null;
   org_id?: string | null;
+  /** Present on the detail payload; the lists carry `access_scope` instead. */
+  visibility?: ContentVisibility;
   access_scope?: ResourceAccessScope;
   organization_name?: string | null;
   direct_grant_count?: number;
   owner_display_name?: string | null;
   owner_email?: string | null;
+  /** The creator's photo; only the paginated overview list carries it. */
+  owner_profile_photo?: string | null;
   /**
    * Everyone who can administer this project, with an address. The
    * permission-denied popup needs it: telling somebody they were refused
@@ -93,6 +105,9 @@ export interface Project {
 }
 
 export interface Document {
+  /** Server-computed permissions on GET /single-documents/:id; absent fails closed. */
+  can_edit?: boolean;
+  can_delete?: boolean;
   id: string;
   user_id?: string;
   project_id: string | null;
@@ -106,11 +121,15 @@ export interface Document {
   filename: string;
   owner_email?: string | null;
   owner_display_name?: string | null;
+  /** The creator's photo; the project directory carries it. */
+  owner_profile_photo?: string | null;
   file_type: string | null; // pdf | docx | doc | xlsx | xlsm | xls | pptx | ppt
   storage_path: string | null;
   pdf_storage_path: string | null;
   size_bytes: number | null;
   page_count: number | null;
+  /** PDF pages without a text layer; null for non-PDFs and unmeasured versions. */
+  textless_page_count?: number | null;
   structure_tree: StructureNode[] | null;
   status: "pending" | "processing" | "ready" | "error";
   created_at: string | null;
@@ -139,8 +158,6 @@ export interface Document {
 }
 
 export type PanelDocumentType = SourceDocumentType;
-export type PanelDocumentMetadata = SourceDocumentMetadata;
-export type PanelDocumentAction = SourceDocumentAction;
 export type PanelDocumentQuote = SourceDocumentQuote;
 export type PanelSubdocument = SourceSubdocument;
 export type PanelDocument = SourceDocument;
@@ -174,15 +191,20 @@ export interface StructureNode {
 
 export interface Chat {
   id: string;
+  /** True only for non-owner recipients of a standalone direct grant. */
+  can_leave?: boolean;
   project_id: string | null;
   user_id: string;
   org_id?: string | null;
   creator_display_name?: string | null;
+  /** The creator's photo; a project's chat list carries it. */
+  creator_profile_photo?: string | null;
   project_name?: string | null;
   title: string | null;
   model?: string | null;
   reasoning_level?: Message["reasoning"] | null;
   created_at: string;
+  updated_at?: string;
   /** Provenance only: "I started this thread". Authorization reads
    *  access_role — an admin's standing on a colleague's chat is there. */
   is_owner?: boolean;
@@ -228,7 +250,25 @@ type WireActivity<T extends WireAssistantEvent["type"]> = Extract<
   WireAssistantEvent,
   { type: T }
 >;
+type WireDelegation = WireActivity<"delegation">;
+/** Client-only: the turn ended before this step reported a result. */
+type Interruptible = { interrupted?: boolean };
 export type AssistantEvent =
+  | WireActivity<"text_card">
+  | (WireActivity<"doc_search"> & { isStreaming?: boolean } & Interruptible)
+  | (WireActivity<"web_search"> & { isStreaming?: boolean } & Interruptible)
+  | (WireActivity<"web_read"> & { isStreaming?: boolean } & Interruptible)
+  | WireActivity<"web_sources">
+  | WireActivity<"response_details">
+  | (Omit<WireDelegation, "events" | "status" | "model" | "effort"> & {
+      events: AssistantEvent[];
+      /** The rest arrive when the subagent finishes; a stopped run never gets them. */
+      status?: WireDelegation["status"];
+      model?: string;
+      effort?: WireDelegation["effort"];
+      isStreaming?: boolean;
+      activity?: string;
+    } & Interruptible)
   | (Omit<WireActivity<"reasoning">, "isStreaming"> & { isStreaming?: boolean })
   | (Omit<WireActivity<"error">, "safe_to_display"> & {
       safe_to_display?: boolean;
@@ -241,7 +281,7 @@ export type AssistantEvent =
   | (Omit<WireActivity<"mcp_tool_call">, "error" | "isStreaming"> & {
       error?: string;
       isStreaming?: boolean;
-    })
+    } & Interruptible)
   | AskInputsEvent
   | AskInputsResponseEvent
   | WireActivity<"plan">
@@ -255,7 +295,7 @@ export type AssistantEvent =
       version_id?: string | null;
       version_number?: number | null;
       isStreaming?: boolean;
-    })
+    } & Interruptible)
   | (Omit<
       WireActivity<"doc_find">,
       "document_id" | "version_id" | "version_number" | "isStreaming"
@@ -264,7 +304,7 @@ export type AssistantEvent =
       version_id?: string | null;
       version_number?: number | null;
       isStreaming?: boolean;
-    })
+    } & Interruptible)
   | (Omit<
       WireActivity<"doc_created">,
       "document_id" | "version_id" | "version_number" | "isStreaming"
@@ -273,6 +313,8 @@ export type AssistantEvent =
       version_id?: string;
       version_number?: number | null;
       isStreaming?: boolean;
+      /** Client-only: the turn ended before this step reported a result. */
+      interrupted?: boolean;
     })
   | WireActivity<"doc_download">
   | (Omit<
@@ -286,6 +328,8 @@ export type AssistantEvent =
       }[];
       error?: string;
       isStreaming?: boolean;
+      /** Client-only: the turn ended before this step reported a result. */
+      interrupted?: boolean;
     })
   | WireActivity<"workflow_applied">
   | (Omit<
@@ -296,6 +340,8 @@ export type AssistantEvent =
       annotations: EditAnnotation[];
       error?: string;
       isStreaming?: boolean;
+      /** Client-only: the turn ended before this step reported a result. */
+      interrupted?: boolean;
     })
   | (Omit<
       WireActivity<"doc_finalized">,
@@ -322,7 +368,7 @@ export type AssistantEvent =
   | (Omit<
       WireActivity<"courtlistener_search_case_law">,
       "result_count" | "error" | "isStreaming"
-    > & { result_count?: number; error?: string; isStreaming?: boolean })
+    > & { result_count?: number; error?: string; isStreaming?: boolean } & Interruptible)
   | (Omit<
       WireActivity<"courtlistener_get_cases">,
       "case_count" | "opinion_count" | "cases" | "error" | "isStreaming"
@@ -338,7 +384,7 @@ export type AssistantEvent =
       }[];
       error?: string;
       isStreaming?: boolean;
-    })
+    } & Interruptible)
   | (Omit<
       WireActivity<"courtlistener_find_in_case">,
       | "total_matches"
@@ -361,7 +407,7 @@ export type AssistantEvent =
       }[];
       error?: string;
       isStreaming?: boolean;
-    })
+    } & Interruptible)
   | (Omit<
       WireActivity<"courtlistener_read_case">,
       "case_name" | "citation" | "opinion_count" | "error" | "isStreaming"
@@ -371,7 +417,7 @@ export type AssistantEvent =
       opinion_count?: number;
       error?: string;
       isStreaming?: boolean;
-    })
+    } & Interruptible)
   | (Omit<
       WireActivity<"courtlistener_verify_citations">,
       "citation_count" | "match_count" | "error" | "isStreaming"
@@ -380,7 +426,7 @@ export type AssistantEvent =
       match_count?: number;
       error?: string;
       isStreaming?: boolean;
-    })
+    } & Interruptible)
   | (Omit<
       WireActivity<"au_search_legislation">,
       "result_count" | "error" | "isStreaming"
@@ -573,6 +619,8 @@ export interface Message {
   content: string;
   files?: MessageFile[];
   workflow?: { id: string; title: string };
+  /** The playbook the user picked to run, shown as a pill. */
+  playbook?: { id: string; title: string };
   model?: string;
   reasoning?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
   citations?: Citation[];
@@ -850,11 +898,6 @@ export function isSpreadsheetFilename(filename: string): boolean {
   return ext === "xlsx" || ext === "xlsm" || ext === "xls";
 }
 
-export function isDocxFilename(filename: string): boolean {
-  const ext = filename.split(".").pop()?.toLowerCase();
-  return ext === "docx" || ext === "doc";
-}
-
 /**
  * Human-readable cell locator for a spreadsheet citation, e.g. "Sheet1!B7".
  * Falls back to whichever of `sheet`/`cell` is present.
@@ -986,6 +1029,8 @@ export interface ColumnConfig {
 export interface TabularReview {
   id: string;
   project_id: string | null;
+  /** Project label included with sidebar history results. */
+  project_name?: string | null;
   user_id: string;
   org_id?: string | null;
   title: string | null;
@@ -1000,11 +1045,15 @@ export interface TabularReview {
   is_owner?: boolean;
   /** Server-set: true while another generation request holds the review lease. */
   is_running?: boolean;
+  /** Every current row/column cell has a completed result. */
+  is_complete?: boolean;
   /** Server-computed role for the caller, from the detail endpoint and the
    *  overview RPC alike. */
   access_role?: "owner" | "editor" | "viewer";
   owner_email?: string | null;
   owner_display_name?: string | null;
+  /** The creator's photo; both review lists carry it. */
+  owner_profile_photo?: string | null;
   created_at: string;
   updated_at: string;
   document_count?: number;
@@ -1064,6 +1113,8 @@ export interface Workflow {
   id: string;
   user_id: string | null;
   org_id?: string | null;
+  /** Present on the detail payload; the lists carry `access_scope` instead. */
+  visibility?: ContentVisibility;
   access_scope?: ResourceAccessScope;
   organization_name?: string | null;
   direct_grant_count?: number;
@@ -1136,9 +1187,24 @@ export interface WorkflowAddon {
 
 // API helpers
 
+/** A turn still generating into a chat, as served by GET /chat/:id. */
+export interface ActiveAssistantTurn {
+  id: string;
+  /** Frames emitted so far; a client attaches from the next one it needs. */
+  seq: number;
+  /** The assistant row the answer is (or will be) stored in. */
+  assistant_message_id: string;
+}
+
 export interface ChatDetailOut {
   chat: Chat;
   messages: Message[];
+  /**
+   * Set while the server is still generating an answer for this chat. A
+   * client that has just loaded (a refresh, a second tab) attaches to it
+   * instead of treating the hidden reservation as "no answer".
+   */
+  active_turn?: ActiveAssistantTurn | null;
 }
 
 export interface TabularReviewDetailOut {
@@ -1146,4 +1212,12 @@ export interface TabularReviewDetailOut {
   cells: TabularCell[];
   rows: TabularReviewRow[];
   documents: Document[];
+  /**
+   * A generation the server is running *in this process*: present only while
+   * the backend still holds the run's frames, which is what makes it
+   * attachable (`?from=<seq + 1>`) and stoppable through
+   * `POST /tabular-review/:id/generate/stop`. `review.is_running` is the
+   * weaker database lease, which an async or another replica's run also holds.
+   */
+  active_generation?: { id: string; seq: number } | null;
 }

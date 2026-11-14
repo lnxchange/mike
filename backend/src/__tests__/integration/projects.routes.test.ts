@@ -52,7 +52,7 @@ vi.mock("../../lib/access", async (importOriginal) => ({
 }));
 
 // user router imports all four cleanup helpers at module load.
-vi.mock("../../modules/user/user.dataCleanup", () => ({
+vi.mock("../../modules/projects/projects.lifecycle", () => ({
     deleteProjectsByIds: (...args: unknown[]) => deleteProjectsByIds(...args),
     deleteAllUserChats: vi.fn(async () => {}),
     deleteAllUserTabularReviews: vi.fn(async () => {}),
@@ -210,6 +210,79 @@ describe("projects.routes", () => {
 
     // ── GET /projects (overview) ──────────────────────────────────────────
     describe("GET /projects", () => {
+        it.each(["", "&include=documents"])("preserves all filters and the SQL participation page%s", async (include) => {
+            // These are already-authorized, explicitly shared rows from a
+            // later SQL page. Rechecking grants or slicing again would lose
+            // the page; dropping the filters would hydrate unrelated rows.
+            supabaseState.rpc = {
+                data: ["p101", "p102"].map(id => ({
+                    id, user_id: "other", org_id: null,
+                    access_role: "viewer", access_scope: "shared", direct_grant_count: 1,
+                })),
+                error: null,
+            };
+            supabaseState.tables.project_access_grants = {
+                data: null, error: new Error("Participation must be filtered before SQL pagination"),
+            };
+            const res = await request(app)
+                .get(`/projects?participating=true&workspace=personal&scope=shared&search=Matter&practice=Corporate&owner_user_id=other&sort_key=name&sort_direction=asc&limit=2&offset=100${include}`)
+                .set(...AUTH);
+
+            expect(res.status).toBe(200);
+            expect(res.body.map((project: { id: string }) => project.id)).toEqual(["p101", "p102"]);
+            expect(supabaseState.rpcCalls).toEqual([{
+                fn: "get_projects_overview",
+                args: {
+                    p_user_id: "u1", p_user_email: "u1@test.local",
+                    p_scope: "shared", p_limit: 2, p_offset: 100,
+                    p_search_term: "Matter", p_sort_key: "name", p_sort_direction: "asc",
+                    p_practice: "Corporate", p_owner_user_id: "other", p_workspace: "personal",
+                    p_participating_only: true,
+                },
+            }]);
+            expect(supabaseState.operations).not.toContain("from:project_access_grants");
+            expect(supabaseState.operations).not.toContain("from:project_org_access_overrides");
+            if (include) expect(res.body.every((project: { documents: unknown[]; folders: unknown[] }) =>
+                project.documents.length === 0 && project.folders.length === 0)).toBe(true);
+        });
+
+        it.each(["owner", "admin"])("keeps an org %s's public and private project participation scoped to its workspace", async (orgRole) => {
+            const orgId = "7b1d9d0e-3c5a-4f6e-9a51-0c2f7d3e8a11";
+            const inheritedRole = orgRole === "owner" ? "owner" : "editor";
+            const projects = [
+                { id: "created-public", user_id: "u1", access_scope: "organization", access_role: "owner" },
+                { id: "created-private", user_id: "u1", access_scope: "private", access_role: "owner" },
+                { id: "shared-private", user_id: "other", access_scope: "shared", access_role: "viewer" },
+                { id: "other-public", user_id: "other", access_scope: "organization", access_role: inheritedRole },
+                { id: "audited-private", user_id: "other", access_scope: "private", access_role: "viewer" },
+                { id: "ownerless-private", user_id: null, access_scope: "private", access_role: "owner" },
+            ].map(project => ({ ...project, org_id: orgId, organization_name: "Example Org" }));
+            // Public-item roles for org owners are implicit. Admins can also
+            // hold an explicit project role, which does count as participation.
+            if (orgRole === "admin") projects.push({
+                id: "shared-public", user_id: "other", access_scope: "organization",
+                access_role: "editor", org_id: orgId, organization_name: "Example Org",
+            });
+            const otherWorkspace = { ...projects[0], id: "other-workspace", org_id: "another-org" };
+            const personal = { ...projects[1], id: "personal", org_id: null, organization_name: null };
+            supabaseState.tables.org_members = { data: { org_id: orgId, role: orgRole }, error: null };
+            supabaseState.rpc = { data: [...projects, otherWorkspace, personal], error: null };
+            supabaseState.tables.project_org_access_overrides = {
+                data: ["shared-private", ...(orgRole === "admin" ? ["shared-public"] : [])].map(project_id => ({ project_id })),
+                error: null,
+            };
+            const picker = await request(app).get(`/projects?participating=true&workspace=${orgId}`).set(...AUTH);
+            expect(picker.status).toBe(200);
+            expect(picker.body.map((p: { id: string }) => p.id)).toEqual([
+                "created-public", "created-private", "shared-private",
+                ...(orgRole === "admin" ? ["shared-public"] : []),
+            ]);
+            expect(supabaseState.rpcCalls[0]).toEqual({ fn: "get_projects_overview", args: { p_user_id: "u1", p_user_email: "u1@test.local" } });
+            const overview = await request(app).get("/projects").set(...AUTH);
+            expect(overview.status).toBe(200);
+            expect(overview.body.map((p: { id: string }) => p.id)).toEqual([...projects, otherWorkspace, personal].map(p => p.id));
+        });
+
         it("returns the overview rows from the RPC", async () => {
             supabaseState.rpc = {
                 data: [
@@ -247,6 +320,24 @@ describe("projects.routes", () => {
             ]);
         });
 
+        it("adds creator photos to the paginated overview only", async () => {
+            supabaseState.rpc = {
+                data: [{ id: "p1", user_id: "u2", access_scope: "private", organization_name: null }],
+                error: null,
+            };
+            supabaseState.tables.user_profiles = {
+                data: [{ user_id: "u2", display_name: "Ada", profile_photo: "data:image/png;base64,AAAA" }],
+                error: null,
+            };
+            const overview = await request(app).get("/projects?limit=20").set(...AUTH);
+            expect(overview.status).toBe(200);
+            expect(overview.body[0].owner_profile_photo).toBe("data:image/png;base64,AAAA");
+
+            const picker = await request(app).get("/projects").set(...AUTH);
+            expect(picker.status).toBe(200);
+            expect(picker.body[0]).not.toHaveProperty("owner_profile_photo");
+        });
+
         it("backfills organization access when the overview RPC is stale", async () => {
             supabaseState.rpc = {
                 data: [{ id: "p1", name: "Firm matter", is_owner: true }],
@@ -282,6 +373,23 @@ describe("projects.routes", () => {
         });
 
         it("includes documents and subfolders in the batched directory response", async () => {
+            // Model keyset continuation instead of returning the same fixture
+            // forever after the service asks for rows beyond the last ID.
+            vi.mocked(createServerSupabase).mockImplementation(() => {
+                const db = mockSupabase();
+                const from = db.from;
+                db.from = (table: string) => {
+                    const q = from(table);
+                    if (["documents", "project_subfolders"].includes(table)) {
+                        let after: unknown;
+                        q.gt = vi.fn((_column: string, value: unknown) => { after = value; return q; });
+                        const then = q.then as (resolve: (value: unknown) => unknown) => unknown;
+                        q.then = (resolve: (value: unknown) => unknown) => after ? Promise.resolve({ data: [], error: null }).then(resolve) : then(resolve);
+                    }
+                    return q;
+                };
+                return db as unknown as Db;
+            });
             supabaseState.rpc = {
                 data: [{ id: "p1", name: "Alpha" }],
                 error: null,
@@ -334,18 +442,37 @@ describe("projects.routes", () => {
 
     // Regression guard: legacy project pickers call GET /projects with no
     // query params and need the full, unpaginated list back.
-        it("calls the legacy 2-arg RPC shape when no pagination params are present", async () => {
+        it.each(["", "?include=documents"])("calls the legacy 2-arg RPC shape without pagination%s", async (query) => {
             const captured = captureRpcArgs();
             supabaseState.rpc = { data: [], error: null };
 
       await request(app)
-        .get("/projects")
+        .get(`/projects${query}`)
         .set(...AUTH);
 
             expect(captured.args).toEqual({
                 p_user_id: "u1",
                 p_user_email: "u1@test.local",
             });
+        });
+
+        it.each(["", "&limit=10&offset=20"])("preserves directory inclusion and explicit pagination%s", async (page) => {
+            const projects = Array.from({ length: 25 }, (_, i) => ({ id: `p${i}`, name: `Project ${i}` }));
+            vi.mocked(createServerSupabase).mockImplementationOnce(() => {
+                const db = mockSupabase();
+                db.rpc = vi.fn((_name: string, raw?: unknown) => {
+                    const args = raw as { p_limit?: number; p_offset?: number };
+                    return Promise.resolve({ data: args.p_limit === undefined ? projects : projects.slice(args.p_offset ?? 0, (args.p_offset ?? 0) + args.p_limit), error: null });
+                });
+                return db as unknown as Db;
+            });
+            const res = await request(app).get(`/projects?include=documents${page}`).set(...AUTH);
+            expect(res.status).toBe(200);
+            expect(res.body.map((project: { id: string }) => project.id)).toEqual(
+                (page ? projects.slice(20) : projects).map(project => project.id),
+            );
+            expect(res.body.every((project: { documents: unknown[]; folders: unknown[] }) =>
+                Array.isArray(project.documents) && Array.isArray(project.folders))).toBe(true);
         });
 
         it("calls the paginated RPC shape with every filter parsed once any pagination param is present", async () => {
@@ -413,6 +540,36 @@ describe("projects.routes", () => {
 
       expect(res.status).toBe(404);
     });
+
+    // Authorization parity (deny/private/ownerless/departure) is exercised
+    // against real PostgreSQL by the search_project_directory SQL regression.
+    // This boundary must pass the authenticated actor, never query-string roles,
+    // and must not rehydrate projects outside the authoritative returned page.
+    it("uses the authenticated actor and preserves the authorized SQL page", async () => {
+      const page = [{ id: "p-visible", name: "Visible matter", documents: [], folders: [] }];
+      const db = mockSupabase();
+      const rpc = vi.fn().mockResolvedValue({ data: page, error: null });
+      vi.mocked(createServerSupabase).mockReturnValueOnce({ ...db, rpc } as unknown as ReturnType<typeof createServerSupabase>);
+      const res = await request(app)
+        .get("/projects?view=directory-search&search=Agreement&limit=10&offset=20&user_id=attacker&role=owner")
+        .set(...AUTH);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(page);
+      expect(rpc).toHaveBeenCalledWith("search_project_directory", expect.objectContaining({
+        p_user_id: "u1", p_user_email: "u1@test.local", p_search_term: "Agreement", p_limit: 10, p_offset: 20,
+      }));
+      expect(checkProjectAccess).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when the directory authorization RPC fails", async () => {
+      const db = mockSupabase();
+      vi.mocked(createServerSupabase).mockReturnValueOnce({ ...db, rpc: vi.fn().mockResolvedValue({
+        data: null, error: new Error("private database detail"),
+      }) } as unknown as ReturnType<typeof createServerSupabase>);
+      const res = await request(app).get("/projects?view=directory-search&search=Matter").set(...AUTH);
+      expect(res.status).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain("private database detail");
+    });
     });
 
     // ── GET /projects/ids (select-all-matching support) ──────────────────
@@ -453,6 +610,138 @@ describe("projects.routes", () => {
         });
     });
 
+  // ── Active workspace ────────────────────────────────────────────────
+  // The list is narrowed in SQL (workspace_matches), so what these pin is
+  // the route's half: the value is validated, membership is re-checked on
+  // every request, and the RPC receives exactly what was asked for.
+  describe("workspace filter", () => {
+    const ORG = "7b1d9d0e-3c5a-4f6e-9a51-0c2f7d3e8a11";
+
+    it.each(["personal", ORG])("keeps the full participation picker scoped to %s", async (workspace) => {
+      supabaseState.tables.org_members = { data: { org_id: ORG }, error: null };
+      const project = (id: string, org_id: string | null, user_id = "u1") => ({
+        id, org_id, user_id, access_role: "owner",
+        access_scope: org_id ? "organization" : "private",
+        organization_name: org_id ? "Example Org" : null,
+      });
+      const personal = Array.from({ length: 40 }, (_, index) => project(`personal-${index}`, null));
+      const organization = Array.from({ length: 40 }, (_, index) => project(`org-${index}`, ORG));
+      supabaseState.rpc = {
+        data: [...personal, ...organization, project("other-org", "another-org"), project("inherited", ORG, "other")],
+        error: null,
+      };
+      supabaseState.tables.project_org_access_overrides = { data: [], error: null };
+      const res = await request(app)
+        .get(`/projects?participating=true&workspace=${workspace}`)
+        .set(...AUTH);
+      expect(res.status).toBe(200);
+      expect(res.body.map((p: { id: string }) => p.id)).toEqual(
+        (workspace === "personal" ? personal : organization).map(p => p.id),
+      );
+      // Workspace scoping must not opt the picker into the default page limit.
+      expect(supabaseState.rpcCalls[0]).toEqual({
+        fn: "get_projects_overview",
+        args: { p_user_id: "u1", p_user_email: "u1@test.local" },
+      });
+    });
+
+    it.each([
+      ["/projects?limit=20", "get_projects_overview"],
+      ["/projects?view=summary", "get_project_summaries"],
+      ["/projects/ids", "get_project_ids_overview"],
+      ["/projects/filter-options", "get_project_filter_options"],
+    ])("calls %s without a workspace exactly as before", async (path, rpc) => {
+      const captured = captureRpcArgs();
+      const res = await request(app)
+        .get(path)
+        .set(...AUTH);
+      expect(res.status).toBe(200);
+      expect(captured.name).toBe(rpc);
+      expect(captured.args).not.toHaveProperty("p_workspace");
+    });
+
+    it.each([
+      ["/projects?limit=20&workspace=personal", "get_projects_overview"],
+      ["/projects?view=summary&workspace=personal", "get_project_summaries"],
+      ["/projects/ids?workspace=personal", "get_project_ids_overview"],
+      [
+        "/projects/filter-options?workspace=personal",
+        "get_project_filter_options",
+      ],
+    ])("narrows %s to personal content", async (path, rpc) => {
+      const captured = captureRpcArgs();
+      const res = await request(app)
+        .get(path)
+        .set(...AUTH);
+      expect(res.status).toBe(200);
+      expect(captured.name).toBe(rpc);
+      expect(captured.args).toMatchObject({ p_workspace: "personal" });
+    });
+
+    it("narrows to an organization the caller belongs to", async () => {
+      supabaseState.tables.org_members = {
+        data: { org_id: ORG },
+        error: null,
+      };
+      const captured = captureRpcArgs();
+      const res = await request(app)
+        .get(`/projects?limit=20&workspace=${ORG}`)
+        .set(...AUTH);
+      expect(res.status).toBe(200);
+      expect(captured.args).toMatchObject({ p_workspace: ORG });
+    });
+
+    it("treats a workspace on its own as a request for the paginated list", async () => {
+      // Without this the request falls through to the unpaginated legacy
+      // overload, which has no workspace parameter and would return
+      // every workspace's projects.
+      const captured = captureRpcArgs();
+      const res = await request(app)
+        .get("/projects?workspace=personal")
+        .set(...AUTH);
+      expect(res.status).toBe(200);
+      expect(captured.args).toMatchObject({
+        p_workspace: "personal",
+        p_limit: expect.any(Number),
+      });
+    });
+
+    it.each([
+      "/projects?limit=20",
+      "/projects?participating=true",
+      "/projects?view=summary",
+      "/projects/ids",
+      "/projects/filter-options",
+    ])(
+      "404s %s for an organization the caller is not in, without listing anything",
+      async (path) => {
+        supabaseState.tables.org_members = { data: null, error: null };
+        const captured = captureRpcArgs();
+        const res = await request(app)
+          .get(`${path}${path.includes("?") ? "&" : "?"}workspace=${ORG}`)
+          .set(...AUTH);
+        expect(res.status).toBe(404);
+        expect(res.body).toEqual({
+          detail: "Workspace not found",
+          code: "workspace_not_found",
+        });
+        expect(captured.name).toBeUndefined();
+      },
+    );
+
+    it("400s a workspace that is neither 'personal' nor an id", async () => {
+      const captured = captureRpcArgs();
+      const res = await request(app)
+        .get("/projects?limit=20&workspace=everything")
+        .set(...AUTH);
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toBe(
+        "workspace must be 'personal' or an organization id",
+      );
+      expect(captured.name).toBeUndefined();
+    });
+  });
+
   describe("GET /projects/filter-options", () => {
     it("returns lightweight practice and owner facets", async () => {
       const captured = captureRpcArgs();
@@ -465,15 +754,26 @@ describe("projects.routes", () => {
         ],
         error: null,
       };
+      supabaseState.tables.user_profiles = {
+        data: [{ user_id: "u1", display_name: "Ada", email: "Ada@Test.local", profile_photo: "data:image/png;base64,AAAA" }],
+        error: null,
+      };
 
       const res = await request(app)
         .get("/projects/filter-options")
         .set(...AUTH);
 
       expect(res.status).toBe(200);
+      // The Creator filter shows each owner with their avatar.
       expect(res.body).toEqual({
         practices: ["Litigation"],
-        owners: [{ value: "u1", label: "Me" }],
+        owners: [{
+          value: "u1",
+          label: "Me",
+          display_name: "Ada",
+          email: "ada@test.local",
+          profile_photo: "data:image/png;base64,AAAA",
+        }],
       });
       expect(captured.args).toEqual({
         p_user_id: "u1",
@@ -704,7 +1004,12 @@ describe("projects.routes", () => {
           conflict_resolution: "rename",
         });
 
-      expect(res.status).toBe(404);
+      // 403, not 404: the viewer can see this project, so claiming it does
+      // not exist is a lie the UI then repeats to them.
+      expect(res.status).toBe(403);
+      expect(res.body.detail).toBe(
+        "You do not have permission to organize documents in this project.",
+      );
       expect(captured.name).toBeUndefined();
     });
 
@@ -1101,6 +1406,34 @@ describe("projects.routes", () => {
                 folders: [{ id: "f1" }],
             });
         });
+
+        it("labels documents and folders with their creator's name and photo", async () => {
+            supabaseState.tables.projects = {
+                data: { id: "p1", user_id: "u1" },
+                error: null,
+            };
+            supabaseState.tables.documents = {
+                data: [{ id: "d1", user_id: "u2" }],
+                error: null,
+            };
+            supabaseState.tables.project_subfolders = {
+                data: [{ id: "f1", user_id: "u2" }],
+                error: null,
+            };
+            supabaseState.tables.user_profiles = {
+                data: [{ user_id: "u2", display_name: "Ada", profile_photo: "data:image/png;base64,AAAA" }],
+                error: null,
+            };
+
+            const res = await request(app)
+                .get("/projects/p1")
+                .set(...AUTH);
+
+            const creator = { owner_display_name: "Ada", owner_profile_photo: "data:image/png;base64,AAAA" };
+            expect(res.status).toBe(200);
+            expect(res.body.documents).toEqual([{ id: "d1", user_id: "u2", owner_email: null, ...creator }]);
+            expect(res.body.folders).toEqual([{ id: "f1", user_id: "u2", ...creator }]);
+        });
     });
 
     // ── GET /projects/:projectId/people ─────────────────────────────────
@@ -1129,6 +1462,7 @@ describe("projects.routes", () => {
                         user_id: "u2",
                         email: "colleague@test.local",
                         display_name: "Colleague",
+                        profile_photo: "data:image/png;base64,iVBORw0KGgo=",
                     },
                 ],
                 error: null,
@@ -1163,8 +1497,10 @@ describe("projects.routes", () => {
                 });
                 expect(res.body.members).toEqual([
                     {
+                        user_id: "u2",
                         email: "colleague@test.local",
                         display_name: "Colleague",
+                        profile_photo: "data:image/png;base64,iVBORw0KGgo=",
                         role: "editor",
                     },
                 ]);
@@ -1233,12 +1569,62 @@ describe("projects.routes", () => {
             expect(res.status).toBe(204);
         });
 
-        it("blocks a viewer (404)", async () => {
+        it("blocks a viewer with a refusal, not a fake 404", async () => {
             checkProjectAccess.mockResolvedValue(roleAccess("viewer"));
             const res = await request(app)
                 .delete("/projects/p1/folders/f1")
                 .set(...AUTH);
+            expect(res.status).toBe(403);
+            expect(res.body.detail).toBe(
+                "You do not have permission to organize documents in this project.",
+            );
+        });
+
+        it("still answers 404 when the project is invisible", async () => {
+            checkProjectAccess.mockResolvedValue({ ok: false });
+            const res = await request(app)
+                .delete("/projects/p1/folders/f1")
+                .set(...AUTH);
             expect(res.status).toBe(404);
+            expect(res.body.detail).toBe("Project not found");
+        });
+    });
+
+    // ── POST /projects/:projectId/folders (404 vs 403) ───────────────────
+    // "Project not found" for a viewer who is looking straight at the
+    // project is the bug: a refusal has to say it is a refusal.
+    describe("POST /projects/:projectId/folders", () => {
+        it("refuses a viewer with 403 and an intentional message", async () => {
+            checkProjectAccess.mockResolvedValue({
+                ok: true,
+                isCreator: false,
+                orgRole: "member",
+                projectRole: "viewer",
+                project: { id: "p1", user_id: "u2", org_id: "o1" },
+            });
+
+            const res = await request(app)
+                .post("/projects/p1/folders")
+                .set(...AUTH)
+                .send({ name: "Closing" });
+
+            expect(res.status).toBe(403);
+            expect(res.body.detail).toBe(
+                "You do not have permission to organize documents in this project.",
+            );
+            expect(supabaseState.inserts).toEqual([]);
+        });
+
+        it("keeps 404 for a project the caller cannot see at all", async () => {
+            checkProjectAccess.mockResolvedValue({ ok: false });
+
+            const res = await request(app)
+                .post("/projects/p1/folders")
+                .set(...AUTH)
+                .send({ name: "Closing" });
+
+            expect(res.status).toBe(404);
+            expect(res.body.detail).toBe("Project not found");
         });
     });
 
@@ -1250,9 +1636,10 @@ describe("projects.routes", () => {
         const seedChats = () => {
             supabaseState.tables.chats = {
                 data: [
-                    { id: "c-mine", user_id: "u1" },
-                    { id: "c-theirs", user_id: "u2" },
-                    { id: "c-shared", user_id: "u2" },
+                    // Newest activity first is the listing's order.
+                    { id: "c-mine", user_id: "u1", updated_at: "2026-09-03T00:00:00Z" },
+                    { id: "c-theirs", user_id: "u2", updated_at: "2026-09-02T00:00:00Z" },
+                    { id: "c-shared", user_id: "u2", updated_at: "2026-09-01T00:00:00Z" },
                 ],
                 error: null,
             };
@@ -1295,6 +1682,35 @@ describe("projects.routes", () => {
                 { id: "c-theirs", access_role: "editor", is_owner: false },
                 // Child grants do not alter inherited access.
                 { id: "c-shared", access_role: "editor", is_owner: false },
+            ]);
+        });
+
+        it("labels each chat with its creator's name and photo", async () => {
+            seedChats();
+            supabaseState.tables.user_profiles = {
+                data: [{ user_id: "u2", display_name: "Ada", profile_photo: "data:image/png;base64,AAAA" }],
+                error: null,
+            };
+            checkProjectAccess.mockResolvedValue({
+                ok: true,
+                isCreator: true,
+                orgRole: null,
+                projectRole: "owner",
+                project: { id: "p1", user_id: "u1", org_id: null },
+            });
+
+            const res = await request(app)
+                .get("/projects/p1/chats")
+                .set(...AUTH);
+
+            expect(
+                (res.body as { id: string; creator_display_name: string | null; creator_profile_photo: string | null }[]).map(
+                    ({ id, creator_display_name, creator_profile_photo }) => ({ id, creator_display_name, creator_profile_photo }),
+                ),
+            ).toEqual([
+                { id: "c-mine", creator_display_name: null, creator_profile_photo: null },
+                { id: "c-theirs", creator_display_name: "Ada", creator_profile_photo: "data:image/png;base64,AAAA" },
+                { id: "c-shared", creator_display_name: "Ada", creator_profile_photo: "data:image/png;base64,AAAA" },
             ]);
         });
 

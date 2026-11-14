@@ -1,11 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, Download, ExternalLink, Loader2, Mail } from "lucide-react";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { pillButtonUIClassName } from "@/shared/ui/PillButtonUI.styles";
+import { Download, ExternalLink, Loader2, Mail } from "lucide-react";
+import {
+    DocEditBlockUI,
+    DocFindBlockUI,
+    DocReadBlockUI,
+    PillButtonUI,
+    pillButtonUIClassName,
+    useReasoningDisclosure,
+} from "@mike/ui";
 import { errorCode, userFacingApiError } from "@/app/lib/userFacingError";
+import { useMarkdownCheckpoint } from "./markdownCheckpoint";
 import {
     EventDisclosureButton,
     EventLabel,
@@ -16,11 +23,6 @@ import { API_BASE } from "@/app/lib/mikeApi";
 import { authenticatedFetch } from "@/app/lib/authEvents";
 import type { AssistantEvent } from "../../shared/types";
 import { FileTypeIcon } from "../../shared/FileTypeIcon";
-import {
-    DocEditBlockUI,
-    DocFindBlockUI,
-    DocReadBlockUI,
-} from "@/shared/ui/DocumentEventBlocksUI";
 import { RESPONSE_GLASS_SURFACE, withoutMarkdownNode } from "./messageStyles";
 import { GLASS_CARD_SURFACE_CLASS } from "@/shared/ui/GlassCardUI";
 
@@ -31,8 +33,6 @@ const THINKING_PHRASES = [
     "Reviewing...",
     "Reasoning...",
 ];
-const REASONING_COLLAPSED_MAX_LINES = 6;
-const REASONING_COLLAPSED_MAX_HEIGHT_REM = 9;
 
 // ---------------------------------------------------------------------------
 // Event block primitives
@@ -40,7 +40,11 @@ const REASONING_COLLAPSED_MAX_HEIGHT_REM = 9;
 
 function EventConnector() {
     return (
-        <div className="absolute w-[1px] bg-gray-300 top-[14px] left-[3px] translate-x-[-50%] h-[calc(100%+10px)]" />
+        <div
+            aria-hidden="true"
+            data-slot="event-connector"
+            className="absolute w-[1px] bg-gray-300 top-[14px] left-[3px] translate-x-[-50%] h-[calc(100%+10px)]"
+        />
     );
 }
 
@@ -80,6 +84,102 @@ export function EventBlock({
 
 // ---------------------------------------------------------------------------
 
+export function ReasoningContent({
+    text,
+    label = "Thought process",
+    streaming = false,
+}: {
+    text: string;
+    label?: string;
+    streaming?: boolean;
+}) {
+    const {richText, plainTail} = useMarkdownCheckpoint(text, streaming);
+    const viewportRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
+    const [hasMoreBelow, setHasMoreBelow] = useState(false);
+    const hasMoreBelowRef = useRef(false);
+
+    useEffect(() => {
+        const viewport = viewportRef.current;
+        const content = contentRef.current;
+        if (!viewport || !content) return;
+
+        let frame: number | null = null;
+        let disposed = false;
+        const measure = () => {
+            frame = null;
+            if (disposed) return;
+            const visible =
+                viewport.scrollHeight > viewport.clientHeight &&
+                viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 2;
+            // Streaming can trigger many layout notifications. Dispatch only
+            // when visibility changes, rather than on every incoming chunk.
+            if (visible === hasMoreBelowRef.current) return;
+            hasMoreBelowRef.current = visible;
+            setHasMoreBelow(visible);
+        };
+        const scheduleMeasure = () => {
+            if (!disposed && frame === null) {
+                frame = requestAnimationFrame(measure);
+            }
+        };
+        const observer = new ResizeObserver(scheduleMeasure);
+        observer.observe(viewport);
+        observer.observe(content);
+        viewport.addEventListener("scroll", scheduleMeasure, { passive: true });
+        scheduleMeasure();
+        return () => {
+            disposed = true;
+            observer.disconnect();
+            viewport.removeEventListener("scroll", scheduleMeasure);
+            if (frame !== null) cancelAnimationFrame(frame);
+        };
+    }, []);
+
+    return (
+        <div className="relative mt-2">
+            <div
+                ref={viewportRef}
+                role="region"
+                aria-label={label}
+                tabIndex={0}
+                className="max-h-36 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            >
+                <div
+                    ref={contentRef}
+                    className="text-sm font-serif text-gray-400 prose prose-sm max-w-none [&>*]:text-gray-400 [&>*]:text-sm"
+                >
+                    <ReasoningMarkdown text={richText} />
+                    {plainTail && <span className="whitespace-pre-wrap">{plainTail}</span>}
+                </div>
+            </div>
+            {hasMoreBelow && (
+                <div
+                    aria-hidden="true"
+                    data-slot="reasoning-scroll-fade"
+                    className="pointer-events-none absolute inset-x-0 bottom-0 h-10 backdrop-blur-xs [mask-image:linear-gradient(to_bottom,transparent,black)]"
+                />
+            )}
+        </div>
+    );
+}
+
+const ReasoningMarkdown = memo(function ReasoningMarkdown({text}: {text: string}) {
+    return (<ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                            code: (props) => (
+                                <code
+                                    className="font-serif text-gray-600"
+                                    {...withoutMarkdownNode(props)}
+                                />
+                            ),
+                        }}
+                    >
+                        {text}
+                    </ReactMarkdown>);
+});
+
 export function ReasoningBlock({
     text,
     isStreaming,
@@ -89,13 +189,8 @@ export function ReasoningBlock({
     isStreaming: boolean;
     showConnector?: boolean;
 }) {
-    const [isContentOpen, setIsContentOpen] = useState(isStreaming);
-    const [isExpanded, setIsExpanded] = useState(false);
-    const [userToggledContent, setUserToggledContent] = useState(false);
-    const [isOverflowing, setIsOverflowing] = useState(false);
-    const [hasMeasured, setHasMeasured] = useState(false);
+    const { isContentOpen, toggleContent } = useReasoningDisclosure(isStreaming);
     const [thinkingIndex, setThinkingIndex] = useState(0);
-    const contentRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
         if (!isStreaming) return;
@@ -105,21 +200,6 @@ export function ReasoningBlock({
         return () => clearInterval(interval);
     }, [isStreaming]);
 
-    useEffect(() => {
-        const el = contentRef.current;
-        if (!el) return;
-        const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 24;
-        const maxHeight = lineHeight * REASONING_COLLAPSED_MAX_LINES;
-        const nextOverflowing = el.scrollHeight > maxHeight + 2;
-        setIsOverflowing(nextOverflowing);
-        setHasMeasured(true);
-        if (!userToggledContent) setIsContentOpen(isStreaming);
-        if (!nextOverflowing) setIsExpanded(false);
-    }, [isContentOpen, isStreaming, text, userToggledContent]);
-
-    const showContent = isContentOpen || (!userToggledContent && !hasMeasured);
-    const isCollapsed = isContentOpen && isOverflowing && !isExpanded;
-
     return (
         <EventBlock
             showConnector={showConnector}
@@ -127,73 +207,15 @@ export function ReasoningBlock({
             dotColor="gray"
         >
             <EventDisclosureButton
-                open={showContent}
-                onToggle={() => {
-                    setUserToggledContent(true);
-                    setIsContentOpen((v) => !v);
-                }}
+                open={isContentOpen}
+                onToggle={toggleContent}
                 label={
                     isStreaming
                         ? THINKING_PHRASES[thinkingIndex]
                         : "Thought process"
                 }
             />
-            {showContent && (
-                <div className="mt-2">
-                    <div
-                        className={`relative ${isCollapsed ? "overflow-hidden" : ""}`}
-                        style={
-                            isCollapsed
-                                ? {
-                                      maxHeight: `${REASONING_COLLAPSED_MAX_HEIGHT_REM}rem`,
-                                  }
-                                : undefined
-                        }
-                    >
-                        <div
-                            ref={contentRef}
-                            className="text-sm font-serif text-gray-400 prose prose-sm max-w-none [&>*]:text-gray-400 [&>*]:text-sm"
-                        >
-                            <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                components={{
-                                    code: (props) => (
-                                        <code
-                                            className="font-serif text-gray-600"
-                                            {...withoutMarkdownNode(props)}
-                                        />
-                                    ),
-                                }}
-                            >
-                                {text}
-                            </ReactMarkdown>
-                        </div>
-                        {isCollapsed && (
-                            <>
-                                <div className="content-bottom-fade pointer-events-none absolute inset-x-0 bottom-0 h-10" />
-                                <button
-                                    type="button"
-                                    onClick={() => setIsExpanded(true)}
-                                    className="absolute left-1/2 bottom-2 z-10 -translate-x-1/2 text-gray-400 transition-colors hover:text-gray-600"
-                                    aria-label="Expand thought process"
-                                >
-                                    <ChevronDown className="h-3.5 w-3.5" />
-                                </button>
-                            </>
-                        )}
-                    </div>
-                    {isOverflowing && isContentOpen && isExpanded && (
-                        <button
-                            type="button"
-                            onClick={() => setIsExpanded(false)}
-                            className="mx-auto mt-2 flex text-gray-400 transition-colors hover:text-gray-600"
-                            aria-label="Minimise thought process"
-                        >
-                            <ChevronDown className="h-3.5 w-3.5 rotate-180" />
-                        </button>
-                    )}
-                </div>
-            )}
+            {isContentOpen && <ReasoningContent text={text} streaming={isStreaming} />}
         </EventBlock>
     );
 }
@@ -203,12 +225,15 @@ export function DocReadBlock({
     onClick,
     showConnector,
     isStreaming,
+    interrupted,
     showFileIcon = true,
 }: {
     filename: string;
     onClick?: () => void;
     showConnector?: boolean;
     isStreaming?: boolean;
+    /** The turn ended before the read reported its result. */
+    interrupted?: boolean;
     showFileIcon?: boolean;
 }) {
     return (
@@ -222,6 +247,7 @@ export function DocReadBlock({
             onClick={onClick}
             showConnector={showConnector}
             isStreaming={isStreaming}
+            interrupted={interrupted}
         />
     );
 }
@@ -231,6 +257,7 @@ export function DocFindBlock({
     query,
     totalMatches,
     isStreaming,
+    interrupted,
     showConnector,
     onClick,
 }: {
@@ -238,6 +265,8 @@ export function DocFindBlock({
     query: string;
     totalMatches: number;
     isStreaming?: boolean;
+    /** The turn ended before the find reported its matches. */
+    interrupted?: boolean;
     showConnector?: boolean;
     onClick?: () => void;
 }) {
@@ -247,6 +276,7 @@ export function DocFindBlock({
             query={query}
             totalMatches={totalMatches}
             isStreaming={isStreaming}
+            interrupted={interrupted}
             showConnector={showConnector}
             onClick={onClick}
         />
@@ -257,22 +287,29 @@ export function DocCreatedBlock({
     filename,
     showConnector,
     isStreaming,
+    interrupted,
     onClick,
 }: {
     filename: string;
     showConnector?: boolean;
     isStreaming?: boolean;
+    /** The turn ended before the document was reported as created. */
+    interrupted?: boolean;
     onClick?: () => void;
 }) {
     return (
         <EventBlock
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor="green"
+            dotColor={interrupted ? "gray" : "green"}
         >
             <div className="flex min-w-0 items-center gap-1.5">
                 <EventLabel className="shrink-0">
-                    {isStreaming ? "Creating" : "Created"}
+                    {isStreaming
+                        ? "Creating"
+                        : interrupted
+                          ? "Creation stopped"
+                          : "Created"}
                 </EventLabel>
                 {isStreaming || !onClick ? (
                     <span className="flex min-w-0 items-center gap-1.5">
@@ -578,6 +615,7 @@ export function DocReplicatedBlock({
     showConnector,
     isStreaming,
     hasError,
+    interrupted,
     onOpenCopy,
 }: {
     filename: string;
@@ -594,15 +632,23 @@ export function DocReplicatedBlock({
     showConnector?: boolean;
     isStreaming?: boolean;
     hasError?: boolean;
+    /** The turn ended before the replication reported its result. */
+    interrupted?: boolean;
     onOpenCopy?: (copy: {
         new_filename: string;
         document_id: string;
         version_id: string;
     }) => void;
 }) {
-    const label = isStreaming ? "Replicating" : "Replicated";
+    const label = isStreaming
+        ? "Replicating"
+        : hasError
+          ? "Replication failed"
+          : interrupted
+            ? "Replication stopped"
+            : "Replicated";
     const suffix =
-        !isStreaming && count > 1
+        !isStreaming && !hasError && !interrupted && count > 1
             ? ` ${count} times`
             : isStreaming
               ? "..."
@@ -611,7 +657,7 @@ export function DocReplicatedBlock({
         <EventBlock
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor={hasError ? "red" : "green"}
+            dotColor={hasError ? "red" : interrupted ? "gray" : "green"}
         >
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 <EventLabel className="shrink-0">{label}</EventLabel>
@@ -710,12 +756,18 @@ export function DocDownloadBlock({
 
     const spinning = busy || isReloading;
 
+    // Scale with the chat column rather than the viewport: a docked panel
+    // can be narrow on a wide screen. The name truncates beside the download
+    // button; the full name stays available as a tooltip.
     const body = (
-        <div className="flex items-center gap-3 px-4 py-3 min-w-0 flex-1">
-            <FileTypeIcon fileType={filename} className="h-4 w-4" />
+        <div className="flex items-center gap-2 px-3 py-2.5 min-w-0 flex-1 @md:gap-3 @md:px-4 @md:py-3">
+            <FileTypeIcon fileType={filename} className="h-3.5 w-3.5 @md:h-4 @md:w-4" />
             <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 min-w-0">
-                    <p className="text-lg font-serif text-gray-900 text-wrap">
+                    <p
+                        title={basename}
+                        className="min-w-0 truncate text-sm font-serif text-gray-900 @md:text-lg"
+                    >
                         {basename}
                     </p>
                     <VersionChip n={versionNumber} size="lg" />
@@ -727,24 +779,25 @@ export function DocDownloadBlock({
     const downloadIcon = spinning ? (
         <div
             aria-disabled
-            className="shrink-0 flex items-center bg-white/25 px-6 text-gray-400 cursor-not-allowed"
+            className="shrink-0 flex items-center bg-white/25 px-4 text-gray-400 cursor-not-allowed @md:px-6"
         >
-            <Loader2 size={13} className="animate-spin" />
+            <Loader2 className="size-3 animate-spin @md:size-[13px]" />
         </div>
     ) : (
         <button
             type="button"
             onClick={handleDownload}
-            className="shrink-0 flex items-center bg-white/25 px-6 text-gray-500 transition-colors hover:bg-white/55 hover:text-gray-700 cursor-pointer"
+            aria-label={`Download ${filename}`}
+            className="shrink-0 flex items-center bg-white/25 px-4 text-gray-500 transition-colors hover:bg-white/55 hover:text-gray-700 cursor-pointer @md:px-6"
         >
-            <Download size={13} />
+            <Download className="size-3 @md:size-[13px]" />
         </button>
     );
 
     if (onOpen) {
         return (
             <div
-                className={`flex items-stretch overflow-hidden w-full font-serif ${RESPONSE_GLASS_SURFACE}`}
+                className={`@container flex items-stretch overflow-hidden w-full font-serif ${RESPONSE_GLASS_SURFACE}`}
             >
                 <button
                     type="button"
@@ -761,7 +814,7 @@ export function DocDownloadBlock({
     if (spinning) {
         return (
             <div
-                className={`flex items-stretch overflow-hidden w-full font-serif ${RESPONSE_GLASS_SURFACE}`}
+                className={`@container flex items-stretch overflow-hidden w-full font-serif ${RESPONSE_GLASS_SURFACE}`}
             >
                 {body}
                 {downloadIcon}
@@ -771,7 +824,7 @@ export function DocDownloadBlock({
 
     return (
         <div
-            className={`flex items-stretch overflow-hidden w-full font-serif ${RESPONSE_GLASS_SURFACE}`}
+            className={`@container flex items-stretch overflow-hidden w-full font-serif ${RESPONSE_GLASS_SURFACE}`}
         >
             <button
                 type="button"
@@ -832,6 +885,14 @@ export function AskInputsBlock({
     const responseById = new Map(
         response?.responses.map((item) => [item.id, item]) ?? [],
     );
+    const onlyApprovals = event.items.every((item) => item.kind === "approval");
+    const label = onlyApprovals
+        ? response
+            ? "Asked for approval"
+            : "Asking for approval"
+        : response
+          ? "Asked for input"
+          : "Asking for input";
     return (
         <EventBlock
             showConnector={showConnector}
@@ -840,7 +901,7 @@ export function AskInputsBlock({
             <EventDisclosureButton
                 open={isOpen}
                 onToggle={() => setIsOpen((open) => !open)}
-                label={response ? "Asked for input" : "Asking for input"}
+                label={label}
             />
             {isOpen && (
                 <div className="mt-2 space-y-2 text-gray-800">
@@ -848,6 +909,10 @@ export function AskInputsBlock({
                         const itemResponse = responseById.get(item.id);
                         const responseText = (() => {
                             if (!itemResponse) return null;
+                            if (itemResponse.kind === "approval")
+                                return itemResponse.decision === "approve"
+                                    ? "Approved"
+                                    : "Rejected";
                             if (itemResponse.skipped) return "Skipped";
                             if (itemResponse.kind === "multi_choice") {
                                 return itemResponse.answers?.join(", ") ?? "";
@@ -866,13 +931,17 @@ export function AskInputsBlock({
                                     {index + 1}.{" "}
                                     {item.kind === "documents"
                                         ? "Documents"
-                                        : "Question"}
+                                        : item.kind === "approval"
+                                          ? "Approval"
+                                          : "Question"}
                                 </p>
-                                <p className="mt-0.5">
+                                <p className="mt-0.5 [overflow-wrap:anywhere]">
                                     {item.kind === "documents"
                                         ? item.document_types.join(", ") ||
                                           "Documents requested"
-                                        : item.question}
+                                        : item.kind === "approval"
+                                          ? `${item.connector_name}: ${item.title}`
+                                          : item.question}
                                 </p>
                                 {responseText !== null && (
                                     <p className="mt-0.5 text-gray-600">
@@ -937,6 +1006,7 @@ export function CourtListenerBlock({
     detail,
     isStreaming,
     hasError,
+    interrupted,
     showConnector,
     items,
 }: {
@@ -944,6 +1014,8 @@ export function CourtListenerBlock({
     detail?: string;
     isStreaming?: boolean;
     hasError?: boolean;
+    /** The turn ended before the call reported its result. */
+    interrupted?: boolean;
     showConnector?: boolean;
     items?: CourtListenerBlockItem[];
 }) {
@@ -953,7 +1025,7 @@ export function CourtListenerBlock({
         <EventBlock
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor={hasError ? "red" : "green"}
+            dotColor={hasError ? "red" : interrupted ? "gray" : "green"}
         >
             {hasItems ? (
                 <EventDisclosureButton
@@ -977,8 +1049,10 @@ export function CourtListenerBlock({
                             .filter(Boolean)
                             .join(", ");
                         const primary = label || item.url || "Unknown case";
+                        // A stopped call never reported these searches, so
+                        // they are named, not claimed as done.
                         const searchText = item.query
-                            ? `Searched for "${item.query}" in ${primary}${
+                            ? `${interrupted ? "Search for" : "Searched for"} "${item.query}" in ${primary}${
                                   typeof item.totalMatches === "number"
                                       ? ` (${item.totalMatches} ${
                                             item.totalMatches === 1
@@ -1064,24 +1138,36 @@ export function DocEditBlock({
     showConnector,
     isStreaming,
     hasError,
+    interrupted,
     onClick,
 }: {
     filename: string;
     showConnector?: boolean;
     isStreaming?: boolean;
     hasError?: boolean;
+    /** The turn ended before the edit reported its result. */
+    interrupted?: boolean;
     onClick?: () => void;
 }) {
-    const label = isStreaming ? "Editing" : hasError ? "Edit failed" : "Edited";
+    const label = isStreaming
+        ? "Editing"
+        : hasError
+          ? "Edit failed"
+          : interrupted
+            ? "Edit stopped"
+            : "Edited";
 
     return (
         <DocEditBlockUI
             label={label}
             filename={filename}
+            fileIcon={
+                <FileTypeIcon fileType={filename} className="h-3.5 w-3.5" />
+            }
             onClick={onClick}
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor={hasError ? "red" : "green"}
+            dotColor={hasError ? "red" : interrupted ? "gray" : "green"}
         />
     );
 }

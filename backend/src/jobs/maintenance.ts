@@ -1,24 +1,51 @@
 import { createServerSupabase, type Db } from "../lib/supabase";
-import { logError } from "../lib/log";
-import { sweepStaleProcessingDocuments } from "../modules/documents/documents.service";
+import { safeError } from "../lib/safeError";
+import { withKind } from "../lib/appError";
+import { reportSchemaOutOfDateOnce } from "../lib/schemaOutOfDate";
+import { runIsolated } from "../lib/dbq/jobScope";
+import { reportError, setOperation } from "../lib/observability/sentry";
+import type { Operation } from "../lib/observability/sentryPrivacy";
+import { backfillDocumentText, sweepStaleProcessingDocuments } from "../modules/documents/documents.service";
 import { enqueueMatterBriefsForExistingProjects } from "../modules/memory/memory.service";
 import { sweepStaleGeneratingCells } from "../modules/tabular/tabular.service";
+import { expireDepartureArchives, purgeExpiredOrganizations } from "../modules/orgs/orgs.service";
+import { purgeExpiredSubagentRuns } from "../modules/chat/chat.service";
 
-/** Run both sweeps; errors are contained per sweep. */
+/** Isolate timer-driven work just as the queue runner isolates each job. */
+function runSweep<T>(operation: Operation, work: () => Promise<T>): Promise<T | undefined> {
+    return runIsolated(async () => {
+        setOperation(operation);
+        try {
+            return await work();
+        } catch (cause) {
+            // A database behind this build fails the same way on every sweep
+            // until someone migrates it: one error-level event per operation
+            // per process, then an hourly log reminder, not one event per
+            // run. The other sweeps still run.
+            if (reportSchemaOutOfDateOnce(cause, { key: operation, tags: { component: "stale-sweep" } })) {
+                return undefined;
+            }
+            reportError(withKind(cause, "maintenance.sweep_failed", "Maintenance sweep failed"), {
+                tags: { component: "stale-sweep" },
+            });
+            // Keep a content-free local notice without the error-console bridge
+            // filing a second event for an already reported failure.
+            console.warn("[stale-sweep] failed", { operation, ...safeError(cause) });
+            return undefined;
+        }
+    });
+}
+
+/** Run recovery/expiry sweeps; errors are contained per sweep. */
 export async function runStaleWorkSweep(
     db: Db = createServerSupabase(),
 ): Promise<{ documents: number; cells: number; matterBriefs: number }> {
-    const documents = await sweepStaleProcessingDocuments(db).catch((err) => {
-        logError("stale-sweep", err, { sweep: "documents" });
-        return 0;
-    });
-    const cells = await sweepStaleGeneratingCells(db).catch((err) => {
-        logError("stale-sweep", err, { sweep: "cells" });
-        return 0;
-    });
-    const matterBriefs = await enqueueMatterBriefsForExistingProjects(db).catch((err) => {
-        logError("stale-sweep", err, { sweep: "matter-briefs" });
-        return 0;
-    });
-    return { documents, cells, matterBriefs };
+    await runSweep("maintenance.document_text", () => backfillDocumentText(db));
+    const documents = await runSweep("maintenance.documents", () => sweepStaleProcessingDocuments(db));
+    const cells = await runSweep("maintenance.cells", () => sweepStaleGeneratingCells(db));
+    await runSweep("maintenance.organization_archives", () => expireDepartureArchives(db));
+    await runSweep("maintenance.organizations", () => purgeExpiredOrganizations(db));
+    await runSweep("maintenance.subagent_runs", () => purgeExpiredSubagentRuns(db));
+    const matterBriefs = await runSweep("maintenance.matter_briefs", () => enqueueMatterBriefsForExistingProjects(db));
+    return { documents: documents ?? 0, cells: cells ?? 0, matterBriefs: matterBriefs ?? 0 };
 }

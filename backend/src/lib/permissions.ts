@@ -32,9 +32,6 @@
 
 export type ProjectRole = "owner" | "editor" | "viewer";
 
-/** `deny` is an organization-only override, not a capability-bearing role. */
-export type OrganizationAccessOverride = ProjectRole | "deny";
-
 /** The role values a direct access grant may carry (the whole ladder). */
 export const PROJECT_ROLES: ProjectRole[] = ["owner", "editor", "viewer"];
 
@@ -66,19 +63,6 @@ const REQUIRED_RANK: Record<Capability, number> = {
     "container.delete": ROLE_RANK.owner,
 };
 
-/**
- * The stronger of two roles; retained for direct-scope compatibility helpers.
- * Organization access is resolved exclusively and never merged with grants.
- */
-export function strongerRole(
-    a: ProjectRole | null,
-    b: ProjectRole | null,
-): ProjectRole | null {
-    if (!a) return b;
-    if (!b) return a;
-    return ROLE_RANK[a] >= ROLE_RANK[b] ? a : b;
-}
-
 /** Fail closed: an absent/unknown role can do nothing. */
 export function can(
     role: ProjectRole | null | undefined,
@@ -87,3 +71,22 @@ export function can(
     if (!isProjectRole(role)) return false;
     return ROLE_RANK[role] >= REQUIRED_RANK[capability];
 }
+
+/**
+ * A project the caller can open but not write to is not a missing project.
+ * Collapsing "you cannot see this" and "your role is read-only" into one 404
+ * told a Viewer their matter had vanished, so every write gate answers 404
+ * only when checkProjectAccess itself refuses, and 403 with this intentional
+ * message when the role is simply too low. Lives in lib/ because both the
+ * projects and documents modules gate on it.
+ */
+export const DOCS_ORGANIZE_FORBIDDEN =
+  "You do not have permission to organize documents in this project.";
+
+/**
+ * "Not found" is for rows the caller cannot see at all. A Viewer who can open
+ * a document but not change it gets a refusal that names the reason, so the
+ * UI stops telling people their document disappeared.
+ */
+export const DOCUMENT_EDIT_FORBIDDEN =
+  "You do not have permission to edit content in this project.";

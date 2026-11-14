@@ -10,6 +10,7 @@ import type { Project } from "@/app/components/shared/types";
 import { listProjectIds, listProjectsPage } from "@/app/lib/mikeApi";
 import { appendUniqueRows, paginationError, splitOverfetchedPage } from "@/app/lib/paginatedRows";
 import { appConfig } from "@/config";
+import { useWorkspaceParam } from "@/app/contexts/WorkspaceContext";
 
 const t = appConfig.terminology;
 
@@ -21,12 +22,17 @@ export type ProjectSortKey =
   | "reviews"
   | "created";
 export type ProjectSortDirection = "asc" | "desc";
+// "public" and "nonpublic" back the Public and Private tabs: open to the
+// whole organization, or not (private to its creator, or shared with
+// individuals).
 export type ProjectScope =
     | "all"
     | "mine"
     | "shared"
     | "collaborative"
-    | "private";
+    | "private"
+    | "public"
+    | "nonpublic";
 
 const PAGE_SIZE = 30;
 
@@ -65,6 +71,9 @@ export function usePaginatedProjects(options: {
     const loadingMoreRef = useRef(false);
     const loadMoreControllerRef = useRef<AbortController | null>(null);
 
+    // The active workspace narrows the list like any other filter: a change
+    // resets the pages and the selection through the query key below.
+    const workspace = useWorkspaceParam();
     const {
         search,
         selectionKey,
@@ -80,6 +89,7 @@ export function usePaginatedProjects(options: {
     const queryKey = JSON.stringify([
         selectionKey ?? null,
         search ?? null,
+        workspace ?? null,
         scope,
         practiceFilter,
         ownerUserIdFilter,
@@ -137,6 +147,7 @@ export function usePaginatedProjects(options: {
         void listProjectsPage({
             limit: PAGE_SIZE + 1,
             search: search || undefined,
+            workspace,
             scope,
             practice: practiceFilter || undefined,
             ownerUserId: ownerUserIdFilter || undefined,
@@ -177,6 +188,7 @@ export function usePaginatedProjects(options: {
         practiceFilter,
         ownerUserIdFilter,
         search,
+        workspace,
         sortDirection,
         sortKey,
     ]);
@@ -198,6 +210,7 @@ export function usePaginatedProjects(options: {
                 limit: PAGE_SIZE + 1,
                 offset,
                 search: search || undefined,
+                workspace,
                 scope,
                 practice: practiceFilter || undefined,
                 ownerUserId: ownerUserIdFilter || undefined,
@@ -238,6 +251,7 @@ export function usePaginatedProjects(options: {
         practiceFilter,
         ownerUserIdFilter,
         search,
+        workspace,
         sortDirection,
         sortKey,
     ]);
@@ -264,6 +278,7 @@ export function usePaginatedProjects(options: {
         try {
             const rows = await listProjectIds({
                 search: search || undefined,
+                workspace,
                 scope,
                 practice: practiceFilter || undefined,
                 ownerUserId: ownerUserIdFilter || undefined,
@@ -304,6 +319,7 @@ export function usePaginatedProjects(options: {
         practiceFilter,
         ownerUserIdFilter,
         search,
+        workspace,
         selectionQueryPending,
         setSelectedProjectIds,
     ]);

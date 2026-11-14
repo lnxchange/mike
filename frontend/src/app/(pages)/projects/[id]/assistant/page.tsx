@@ -2,7 +2,6 @@
 
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown } from "lucide-react";
 import { deleteChat, renameChat } from "@/app/lib/mikeApi";
 import { deleteTabularReviewsWithConcurrency } from "@/app/lib/deleteTabularReviewsWithConcurrency";
 import { ProjectAssistantTable } from "@/app/components/projects/ProjectAssistantTable";
@@ -14,47 +13,12 @@ import type { Chat } from "@/app/components/shared/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { can, roleFrom } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
-import { TabPillButtonUI } from "@/shared/ui/TabPillButtonUI";
 import { appConfig } from "@/config";
 
 interface Props {
     params: Promise<{ id: string }>;
-}
-
-function SelectedChatActions({
-    selectedCount,
-    open,
-    onOpenChange,
-    onDelete,
-}: {
-    selectedCount: number;
-    open: boolean;
-    onOpenChange: (open: boolean) => void;
-    onDelete: () => void;
-}) {
-    if (selectedCount === 0) return null;
-
-    return (
-        <div className="relative">
-            <TabPillButtonUI
-                onClick={() => onOpenChange(!open)}
-            >
-                Actions
-                <ChevronDown className="h-3.5 w-3.5" />
-            </TabPillButtonUI>
-            {open && (
-                <div className="absolute right-0 top-full z-[120] mt-1 w-36 overflow-hidden rounded-lg border border-white/60 bg-white shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_12px_32px_rgba(15,23,42,0.14)] backdrop-blur-xl">
-                    <button
-                        onClick={onDelete}
-                        className="w-full px-3 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50"
-                    >
-                        Delete
-                    </button>
-                </div>
-            )}
-        </div>
-    );
 }
 
 export default function ProjectAssistantPage({ params }: Props) {
@@ -75,7 +39,8 @@ export default function ProjectAssistantPage({ params }: Props) {
     const [selectedChatIds, setSelectedChatIds] = useState<string[]>([]);
     const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
     const [renameChatValue, setRenameChatValue] = useState("");
-    const [actionsOpen, setActionsOpen] = useState(false);
+    const [confirmDeleteSelectedOpen, setConfirmDeleteSelectedOpen] =
+        useState(false);
     // One place for "the server refused, or the request failed" — the
     // silent `.catch(() => {})` this replaces is why a 403 used to look
     // exactly like a success until the page was reloaded.
@@ -148,9 +113,19 @@ export default function ProjectAssistantPage({ params }: Props) {
         setProjectChats((prev) => (prev ?? []).filter((c) => c.id !== chat.id));
     }
 
+    /**
+     * Both bulk entry points — the toolbar's Actions menu and the row menu's
+     * "Delete N chats" — ask first. A multi-row delete is the least reversible
+     * thing on this page, and one of the rows may belong to a colleague.
+     */
+    function requestDeleteSelectedChats() {
+        if (selectedChatIds.length === 0) return;
+        setConfirmDeleteSelectedOpen(true);
+    }
+
     const handleDeleteSelectedChats = useCallback(async () => {
         const ids = [...selectedChatIds];
-        setActionsOpen(false);
+        setConfirmDeleteSelectedOpen(false);
         setActionNotice(null);
         const roleById = new Map(
             chats.map((chat) => [chat.id, roleFrom(chat)] as const),
@@ -170,8 +145,9 @@ export default function ProjectAssistantPage({ params }: Props) {
         // the chat reappeared on the next load.
         const { deletedIds, failedIds } =
             await deleteTabularReviewsWithConcurrency(deletable, deleteChat);
+        const deletedIdSet = new Set(deletedIds);
         setProjectChats((prev) =>
-            (prev ?? []).filter((chat) => !deletedIds.includes(chat.id)),
+            (prev ?? []).filter((chat) => !deletedIdSet.has(chat.id)),
         );
         // Anything that failed stays selected, so "try again" is one click.
         setSelectedChatIds(failedIds);
@@ -192,17 +168,8 @@ export default function ProjectAssistantPage({ params }: Props) {
 
     return (
         <>
-            <ProjectSectionToolbar
-                actions={selectedChatIds.length > 0 ? (
-                    <SelectedChatActions
-                        selectedCount={selectedChatIds.length}
-                        open={actionsOpen}
-                        onOpenChange={setActionsOpen}
-                        onDelete={() => void handleDeleteSelectedChats()}
-                    />
-                ) : undefined}
-            />
             <ProjectAssistantTable
+                renderToolbar={(actions) => <ProjectSectionToolbar actions={actions} />}
                 chats={visibleChats}
                 filteredChats={filteredChats}
                 selectedChatIds={selectedChatIds}
@@ -211,18 +178,32 @@ export default function ProjectAssistantPage({ params }: Props) {
                 currentUserId={user?.id}
                 loading={loading}
                 onCreateChat={() => void workspace.createChat()}
+                canCreateChat={workspace.canDo("content.edit")}
                 onOpenChat={(chatId) =>
                     router.push(
                         `/projects/${projectId}/assistant/chat/${chatId}`,
                     )
                 }
                 onDeleteChat={handleDeleteChatRow}
-                onDeleteSelectedChats={handleDeleteSelectedChats}
+                onDeleteSelectedChats={requestDeleteSelectedChats}
                 onOwnerOnlyAction={setOwnerOnlyAction}
                 submitChatRename={submitChatRename}
                 setSelectedChatIds={setSelectedChatIds}
                 setRenamingChatId={setRenamingChatId}
                 setRenameChatValue={setRenameChatValue}
+            />
+            <ConfirmPopup
+                open={confirmDeleteSelectedOpen && selectedChatIds.length > 0}
+                title={
+                    selectedChatIds.length === 1
+                        ? "Delete chat?"
+                        : `Delete ${selectedChatIds.length} chats?`
+                }
+                message="This cannot be undone."
+                confirmLabel="Delete"
+                confirmVariant="danger"
+                onCancel={() => setConfirmDeleteSelectedOpen(false)}
+                onConfirm={() => void handleDeleteSelectedChats()}
             />
             <WarningPopup
                 open={!!actionNotice}

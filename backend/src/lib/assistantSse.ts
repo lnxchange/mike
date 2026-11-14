@@ -1,9 +1,11 @@
 import { type Response } from "express";
+import type { StreamRunWriteOptions } from "./streamRuns";
 
 export type AssistantSse = {
   /** Aborted by the client hanging up, or by `abort()` when the route owns cancellation. */
   signal: AbortSignal;
-  write: (line: string) => boolean;
+  /** Same signature as a run's writer; a single socket has nothing to replay. */
+  write: (line: string, opts?: StreamRunWriteOptions) => boolean;
   finish: () => void;
   /** True once the client has gone; writes are dropped from then on. */
   clientGone: () => boolean;

@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from "react";
-import { useSuspendBackdropWhileSelecting } from "../../../frontend/src/shared/ui/suspendBackdropWhileSelecting";
+import React, { useCallback, useEffect, useState } from "react";
+import { useSuspendBackdropWhileSelecting } from "../../../packages/ui/src/suspendBackdropWhileSelecting";
 import { useAuth } from "./auth/useAuth";
 import { LoginPage } from "./auth/LoginPage";
 import { ApiKeyBanner } from "./components/shell/ApiKeyBanner";
@@ -25,12 +25,18 @@ import { clearLocalWordChats } from "./lib/localWordChats";
 import {
   DEFAULT_WORD_REASONING_LEVEL,
   type ReasoningLevel,
+  type WordChatOpenHandler,
 } from "./lib/wordChatTypes";
+import { setReportingUser } from "./lib/errorReporting";
 
 export default function App(): React.ReactElement {
   useSuspendBackdropWhileSelecting();
   const { user, loading, error, logout } = useAuth();
   const pendingOwnerId = user?.id ?? null;
+  // Error reports carry the user id (never the email); cleared on sign-out.
+  useEffect(() => {
+    setReportingUser(pendingOwnerId ? { id: pendingOwnerId } : null);
+  }, [pendingOwnerId]);
   const wordChatStorage = useWordChatStoragePreference(pendingOwnerId);
   const editApply = useWordEditApplyMode();
   const wordDocument = useWordDocumentIdentity();
@@ -47,6 +53,10 @@ export default function App(): React.ReactElement {
     useState<ReasoningLevel>(DEFAULT_WORD_REASONING_LEVEL);
   const [chatInSession, setChatInSession] = useState(false);
   const [initialMessages, setInitialMessages] = useState<Message[]>([]);
+  // The turn the opened chat still has running on the server, if any. The
+  // panel attaches to it once its session has mounted; it is per-session, so
+  // it travels with `chatSessionKey`.
+  const [resumeTurnId, setResumeTurnId] = useState<string | null>(null);
   const [workflowPageSelection, setWorkflowPageSelection] =
     useState<Workflow | null>(null);
   const [workflowDetailsOpen, setWorkflowDetailsOpen] = useState(false);
@@ -136,6 +146,7 @@ export default function App(): React.ReactElement {
               setChatReasoningLevel(null);
               setChatInSession(false);
               setInitialMessages([]);
+              setResumeTurnId(null);
               setChatSessionKey((current) => current + 1);
             }}
             onClearLocalChats={() => clearLocalWordChats(wordChatOwnerId)}
@@ -144,12 +155,13 @@ export default function App(): React.ReactElement {
     }
   };
 
-  function openSelectedChat(
-    selectedChatId: string,
-    messages: Message[],
-    model: string | null,
-    reasoningLevel: ReasoningLevel | null,
-  ): void {
+  const openSelectedChat: WordChatOpenHandler = (
+    selectedChatId,
+    messages,
+    model,
+    reasoningLevel,
+    activeTurnId,
+  ): void => {
     setSelectedSection("chat");
     setWorkflowPageSelection(null);
     setWorkflowDetailsOpen(false);
@@ -160,8 +172,9 @@ export default function App(): React.ReactElement {
     setChatReasoningLevel(reasoningLevel);
     setChatInSession(true);
     setInitialMessages(messages);
+    setResumeTurnId(activeTurnId ?? null);
     setChatSessionKey((current) => current + 1);
-  }
+  };
 
   const changeSection = (section: AddinSection): void => {
     setSelectedSection(section);
@@ -184,6 +197,7 @@ export default function App(): React.ReactElement {
     setChatReasoningLevel(null);
     setChatInSession(false);
     setInitialMessages([]);
+    setResumeTurnId(null);
     setChatSessionKey((current) => current + 1);
   };
 
@@ -206,6 +220,7 @@ export default function App(): React.ReactElement {
         onSectionChange={changeSection}
         onNewChat={startNewChat}
         hasActiveChat={chatInSession}
+        currentChatId={chatId}
         onSelectHistoryChat={openSelectedChat}
         workflowDetailOpen={
           selectedSection === "workflows" && !!workflowPageSelection
@@ -260,6 +275,7 @@ export default function App(): React.ReactElement {
             chatReasoningLevel={chatReasoningLevel}
             lastSelectedReasoningLevel={lastSelectedReasoningLevel}
             initialMessages={initialMessages}
+            resumeTurnId={resumeTurnId}
             selectedWorkflow={chatWorkflow}
             onSelectedWorkflowChange={setChatWorkflow}
             onChatIdChange={handleChatIdChange}

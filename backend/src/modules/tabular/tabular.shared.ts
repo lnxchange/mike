@@ -17,7 +17,10 @@ import {
 } from "../../lib/llm/registry";
 import { getUserModelSettings } from "../user/user.service";
 import { resolveRequestedModel } from "../../lib/routerModels";
-import { TABULAR_MODEL_REQUIRED_DETAIL } from "../../lib/modelSelection";
+import {
+    TABULAR_MODEL_REQUIRED_DETAIL,
+    hasApiKeyForModel,
+} from "../../lib/modelSelection";
 import { UserFacingError } from "../../lib/userFacingError";
 import type { Db } from "../../lib/supabase";
 import type { ServiceFailure } from "../../lib/serviceResult";
@@ -53,6 +56,14 @@ export type TabularStatusFailure = {
 export type TabularFailure = ServiceFailure | TabularStatusFailure;
 
 export type TabularResult<T> = { ok: true; data: T } | TabularFailure;
+
+/**
+ * "Not found" is for reviews the caller cannot see at all. A Viewer who can
+ * open a review but not change it gets a refusal that names the reason, so
+ * the UI stops telling people their review disappeared.
+ */
+export const REVIEW_EDIT_FORBIDDEN =
+    "You do not have permission to edit content in this review.";
 
 export function statusFailure(
     status: number,
@@ -99,9 +110,16 @@ export function isReviewGenerationRunning(
 function providerLabel(provider: Provider): string {
     if (provider === "claude") return "Anthropic";
     if (provider === "openai") return "OpenAI";
+    if (provider === "mistral") return "Mistral AI";
     if (provider === "openrouter") return "OpenRouter";
     if (provider === "vercel") return "Vercel AI Gateway";
     if (provider === "opencode-go") return "OpenCode Go";
+    if (provider === "bedrock") return "Amazon Bedrock";
+    if (provider === "azure") return "Azure OpenAI";
+    if (provider === "azure-foundry") return "Azure AI Foundry";
+    if (provider === "vertex") return "Google Vertex AI";
+    if (provider === "xai") return "xAI";
+    if (provider === "custom") return "OpenAI-compatible endpoint";
     if (provider === "ollama") return "Local (Ollama)";
     if (provider === "openai-compatible") return "Configured endpoint";
     return "Gemini";
@@ -130,7 +148,16 @@ export function missingModelApiKey(
             detail: `An API key is required to use ${configured.label || model}. Add the configured key or select a different tabular review model.`,
         };
     }
-    if (apiKeys[provider]?.trim()) return null;
+    // The same check chat uses: a key that needs a region, endpoint,
+    // location or base URL only counts together with it.
+    if (hasApiKeyForModel(model, apiKeys)) return null;
+    if (apiKeys.disabledProviders?.includes(provider)) {
+        return {
+            provider,
+            model,
+            detail: `${providerLabel(provider)} is turned off. Turn it on in Settings → Bring Your Own Keys or select a different tabular review model.`,
+        };
+    }
     return {
         provider,
         model,
@@ -163,6 +190,8 @@ export async function validateSelectedModel(
     model: unknown,
     userId: string,
     db: Db,
+    /** The review's organization, whose keys it then runs on. */
+    orgId?: string | null,
 ): Promise<ValidatedModel | ModelValidationFailure> {
     const requested = resolveModel(
         typeof model === "string" ? model.trim() : "",
@@ -193,6 +222,7 @@ export async function validateSelectedModel(
             userId,
             db,
             "throw",
+            orgId,
         );
     } catch (error) {
         if (error instanceof UserFacingError) {
@@ -205,7 +235,9 @@ export async function validateSelectedModel(
         throw error;
     }
 
-    const { api_keys: apiKeys } = await getUserModelSettings(userId, db);
+    const { api_keys: apiKeys } = await getUserModelSettings(userId, db, {
+        orgId,
+    });
     const missingKey = missingModelApiKey(selected, apiKeys);
     if (missingKey) {
         return {

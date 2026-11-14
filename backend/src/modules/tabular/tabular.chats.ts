@@ -6,11 +6,15 @@
 
 import { appConfig } from "../../config";
 import {
+    loadUserMessageSentTimes,
     parseOptionalModel,
     parseOptionalReasoning,
+    userMessageStamper,
     type ChatMessage,
+    type MessageTimeContext,
     type TabularCellStore,
 } from "../chat/chat.service";
+import { MESSAGE_TIME_PROMPT, resolveRequestTimeZone } from "../../lib/userTime";
 import { type ReasoningLevel, type UserApiKeys } from "../../lib/llm";
 import { randomUUID } from "node:crypto";
 import {
@@ -38,16 +42,16 @@ import {
 } from "../user/user.service";
 import {
     resolveEffectiveChatModel,
-    resolveEffectiveReasoningLevel,
     titleModelForChat,
 } from "../../lib/modelSelection";
 import { generateChatTitle } from "./tabular.extract";
-import { loadReviewRows } from "./tabular.rows";
+import { filterReadableReviewRows, loadReviewCells, loadReviewRows } from "./tabular.rows";
 import {
     parseCellContent,
     statusFailure,
     type Db,
     type TabularResult,
+    REVIEW_EDIT_FORBIDDEN,
 } from "./tabular.shared";
 
 // ---------------------------------------------------------------------------
@@ -99,6 +103,7 @@ export function buildTabularMessages(
     messages: ChatMessage[],
     tabularStore: TabularCellStore,
     reviewTitle: string,
+    time?: MessageTimeContext,
 ): unknown[] {
     const docList = tabularStore.documents
         .map((d, i) => `- ROW:${i} "${d.filename}"`)
@@ -136,11 +141,17 @@ Rules:
 - quote should be verbatim text from the cell's summary
 - Omit <CITATIONS> if you make no citations
 - Do not fabricate cell content
-- Answer in clear, concise prose. You may use markdown formatting.`;
+- Answer in clear, concise prose. You may use markdown formatting.${
+        time ? `\n\n${MESSAGE_TIME_PROMPT}` : ""
+    }`;
 
     const formatted: unknown[] = [{ role: "system", content: systemContent }];
-    for (const msg of messages) {
-        formatted.push({ role: msg.role, content: msg.content ?? "" });
+    const stamp = userMessageStamper(messages, time);
+    for (const [index, msg] of messages.entries()) {
+        formatted.push({
+            role: msg.role,
+            content: stamp(msg, index, msg.content ?? ""),
+        });
     }
     return formatted;
 }
@@ -194,17 +205,52 @@ export async function listTabularReviewChats(
     return { ok: true, data: (chats ?? []) as ReviewChatSummary[] };
 }
 
-// Review-chat writes share one preamble: the caller must be able to access
-// the review named in the URL, and the chat must actually belong to it —
-// previously these two writes checked neither, so any chat id could be hit
-// through any (or a nonexistent) review path.
-async function ensureReviewChatWriteAccess(
+/**
+ * Review-chat READS share one preamble: the caller must be able to see the
+ * review named in the URL, and the chat must actually belong to it. Reading
+ * is collaborative — every member of the review sees every thread in it — so
+ * there is no creator check here, unlike the write gate below.
+ *
+ * Exported because the turn-stream endpoint attaches to a live answer, which
+ * is the same act as reading the transcript it will be stored in.
+ */
+export async function ensureReviewChatReadAccess(
     db: Db,
     reviewId: string,
     chatId: string,
     userId: string,
     userEmail: string | null | undefined,
 ): Promise<{ ok: true } | ServiceFailure> {
+    const { data: review } = await db
+        .from("tabular_reviews")
+        .select("id, user_id, project_id, org_id")
+        .eq("id", reviewId)
+        .single();
+    if (!review) return failure("not_found", "Review not found");
+    const access = await ensureReviewAccess(review, userId, userEmail, db);
+    if (!access.ok) return failure("not_found", "Review not found");
+
+    const { data: chat, error: chatError } = await db
+        .from("tabular_review_chats")
+        .select("id, review_id")
+        .eq("id", chatId)
+        .single();
+    if (chatError || !chat || chat.review_id !== reviewId)
+        return failure("not_found", "Chat not found");
+    return { ok: true };
+}
+
+// Review-chat writes share one preamble: the caller must be able to access
+// the review named in the URL, and the chat must actually belong to it —
+// previously these two writes checked neither, so any chat id could be hit
+// through any (or a nonexistent) review path.
+export async function ensureReviewChatWriteAccess(
+    db: Db,
+    reviewId: string,
+    chatId: string,
+    userId: string,
+    userEmail: string | null | undefined,
+): Promise<{ ok: true; orgId: string | null } | ServiceFailure> {
     const { data: review } = await db
         .from("tabular_reviews")
         .select("id, user_id, project_id, org_id")
@@ -248,7 +294,12 @@ async function ensureReviewChatWriteAccess(
         )
     )
         return failure("forbidden", "Only the chat's creator can modify it");
-    return { ok: true };
+    // The review's organization rides along: a model change is judged
+    // against the keys the review runs on.
+    return {
+        ok: true,
+        orgId: (review as { org_id?: string | null }).org_id ?? null,
+    };
 }
 
 export async function deleteTabularReviewChat(
@@ -341,7 +392,9 @@ export async function updateTabularReviewChat(
 
     let selectedModel: string | undefined;
     if (hasModel) {
-        const settings = await getUserModelSettings(userId, db);
+        const settings = await getUserModelSettings(userId, db, {
+            orgId: gate.orgId,
+        });
         const resolution = await resolveEffectiveChatModel({
             requested: parsedModel.ok ? parsedModel.value : undefined,
             chatModel: chat.model,
@@ -349,6 +402,7 @@ export async function updateTabularReviewChat(
             apiKeys: settings.api_keys,
             userId,
             db,
+            orgId: gate.orgId,
         });
         if (!resolution.ok)
             return statusFailure(resolution.status, {
@@ -406,22 +460,14 @@ export async function listTabularReviewChatMessages(
 ): Promise<TabularResult<Record<string, unknown>[]>> {
     const { reviewId, chatId, userId, userEmail } = args;
 
-    const { data: review } = await db
-        .from("tabular_reviews")
-        .select("id, user_id, project_id, org_id")
-        .eq("id", reviewId)
-        .single();
-    if (!review) return failure("not_found", "Review not found");
-    const access = await ensureReviewAccess(review, userId, userEmail, db);
-    if (!access.ok) return failure("not_found", "Review not found");
-
-    const { data: chat, error: chatError } = await db
-        .from("tabular_review_chats")
-        .select("id, review_id")
-        .eq("id", chatId)
-        .single();
-    if (chatError || !chat || chat.review_id !== reviewId)
-        return failure("not_found", "Chat not found");
+    const gate = await ensureReviewChatReadAccess(
+        db,
+        reviewId,
+        chatId,
+        userId,
+        userEmail,
+    );
+    if (!gate.ok) return gate;
 
     const { data: messages } = await db
         .from("tabular_review_chat_messages")
@@ -449,6 +495,8 @@ export type PreparedTabularChat = {
     /** The model that names a new chat, already resolved for this chat model. */
     titleModel: string;
     apiKeys: UserApiKeys;
+    /** The review's organization, whose keys and model lists apply. */
+    orgId: string | null;
     apiMessages: unknown[];
     /** The id of the user turn just persisted — the assistant row links back
      *  to it through `memory_input_message_id`. */
@@ -486,6 +534,8 @@ export async function prepareTabularChat(
         chatId: string | undefined;
         requestedModel: string | undefined;
         requestedReasoning: string | undefined;
+        /** The browser's IANA time zone; unvalidated request input. */
+        requestedTimeZone?: unknown;
     },
 ): Promise<TabularResult<PreparedTabularChat>> {
     const {
@@ -505,45 +555,72 @@ export async function prepareTabularChat(
         .single();
     if (error || !review) return failure("not_found", "Review not found");
     const reviewAccess = await ensureReviewAccess(review, userId, userEmail, db);
-    if (!reviewAccess.ok || !can(reviewAccess.projectRole, "content.edit"))
-        return failure("not_found", "Review not found");
+    // A viewer can open this review — saying it does not exist is a lie the
+    // UI then repeats. Only a caller with no verdict at all gets the 404.
+    if (!reviewAccess.ok) return failure("not_found", "Review not found");
+    if (!can(reviewAccess.projectRole, "content.edit"))
+        return failure("forbidden", REVIEW_EDIT_FORBIDDEN);
 
     // A direct review grant does not grant access to the containing project.
     // Keep project memory behind the project's own capability verdict: view
     // may read it, while only a project editor may curate it.
     let readableMemoryProjectId: string | null = null;
     let writableMemoryProjectId: string | null = null;
-    let memorySharedAudience =
-        !reviewAccess.isCreator ||
-        (await hasDirectContentGrants(db, "tabular_review", review.id));
-    if (review.project_id) {
-        const projectAccess = await checkProjectAccess(
-            review.project_id,
-            userId,
-            userEmail,
-            db,
-        );
-        if (projectAccess.ok) {
-            readableMemoryProjectId = review.project_id;
-            memorySharedAudience =
-                memorySharedAudience ||
-                (await projectHasSharedAudience(
-                    db,
-                    review.project_id,
-                    projectAccess.project.org_id,
-                ));
-            if (can(projectAccess.projectRole, "content.edit")) {
-                writableMemoryProjectId = review.project_id;
+    // Memory bookkeeping never decides whether the user gets an answer: a
+    // database error in either audience check is reported as a normal
+    // internal failure instead of escaping as a rejected promise.
+    let memorySharedAudience = false;
+    try {
+        memorySharedAudience =
+            !reviewAccess.isCreator ||
+            (await hasDirectContentGrants(db, "tabular_review", review.id));
+        if (review.project_id) {
+            const projectAccess = await checkProjectAccess(
+                review.project_id,
+                userId,
+                userEmail,
+                db,
+            );
+            if (projectAccess.ok) {
+                readableMemoryProjectId = review.project_id;
+                memorySharedAudience =
+                    memorySharedAudience ||
+                    (await projectHasSharedAudience(
+                        db,
+                        review.project_id,
+                        projectAccess.project.org_id,
+                    ));
+                if (can(projectAccess.projectRole, "content.edit")) {
+                    writableMemoryProjectId = review.project_id;
+                }
             }
         }
+    } catch (audienceError) {
+        return internalFailure(audienceError);
     }
 
-    // Fetch all cells and logical review rows for this review.
-    const { data: cells } = await db
-        .from("tabular_cells")
-        .select("*")
-        .eq("review_id", reviewId);
-    const rows = await loadReviewRows(db, reviewId);
+    // Fetch all cells and logical review rows for this review, narrowed to
+    // the rows whose source documents the caller can read: the model answers
+    // the caller, so it must not be handed filenames or extracted text the
+    // caller could not open themselves (see filterReadableReviewRows).
+    let allCells: Record<string, unknown>[];
+    let rows: Awaited<ReturnType<typeof loadReviewRows>>;
+    try {
+        allCells = await loadReviewCells(db, reviewId);
+        ({ rows } = await filterReadableReviewRows(
+            db,
+            await loadReviewRows(db, reviewId),
+            [],
+            userId,
+            userEmail,
+        ));
+    } catch (error) {
+        return internalFailure(error);
+    }
+    const visibleRowIds = new Set(rows.map((row) => row.id));
+    const cells = allCells.filter((c: { row_id?: unknown }) =>
+        visibleRowIds.has(c.row_id as string),
+    );
 
     const sortedColumns = (
         (review.columns_config ?? []) as { index: number; name: string }[]
@@ -598,6 +675,7 @@ export async function prepareTabularChat(
         chatReasoningLevel,
         requestedModel,
         requestedReasoning,
+        orgId: review.org_id ?? null,
     });
     if (!selection.ok)
         return statusFailure(selection.status, {
@@ -663,22 +741,29 @@ export async function prepareTabularChat(
     }
 
     if (chatId) {
-        try {
-            memoryTurn = await beginMemoryConversationTurn({
-                db,
-                surface: "tabular",
-                conversationId: chatId,
-                actorUserId: userId,
-            });
-        } catch (turnError) {
-            return internalFailure(turnError);
-        }
+        // Fail open: the lease is only a checkpoint marker, and
+        // beginMemoryConversationTurn now returns null instead of throwing
+        // when the RPC fails, so this turn simply is not a checkpoint.
+        memoryTurn = await beginMemoryConversationTurn({
+            db,
+            surface: "tabular",
+            conversationId: chatId,
+            actorUserId: userId,
+        });
     }
 
+    const timeZone = resolveRequestTimeZone(args.requestedTimeZone);
+    const userSentAt = await loadUserMessageSentTimes(
+        db,
+        "tabular_review_chat_messages",
+        chatId,
+        messages,
+    );
     const apiMessages = buildTabularMessages(
         messages,
         tabularStore,
         review.title || "Untitled Review",
+        { timeZone, now: new Date(), userSentAt },
     );
 
     return {
@@ -696,6 +781,7 @@ export async function prepareTabularChat(
                 modelSettings.title_model,
             ),
             apiKeys: modelSettings.api_keys,
+            orgId: review.org_id ?? null,
             apiMessages,
             inputMessageId,
             readableMemoryProjectId,
@@ -753,6 +839,32 @@ export async function saveTabularChatTurn(
             .eq("id", args.chatId);
     }
     return { saved, error };
+}
+
+/**
+ * Mark an answer `saveTabularChatTurn` already stored as stopped: a Stop or
+ * deadline landed while it was being saved (or titled). The row is this
+ * turn's own, so its content is replaced by the stopped message (the same
+ * events plus the stop label) instead of inserting the turn a second time.
+ */
+export async function markSavedTabularChatTurnStopped(
+    db: Db,
+    args: {
+        chatId: string;
+        messageId: string;
+        content: unknown[];
+        annotations: unknown[];
+    },
+): Promise<{ error: unknown }> {
+    const { error } = await db
+        .from("tabular_review_chat_messages")
+        .update({
+            content: args.content.length ? args.content : null,
+            annotations: args.annotations.length ? args.annotations : null,
+        })
+        .eq("id", args.messageId)
+        .eq("chat_id", args.chatId);
+    return { error };
 }
 
 /**

@@ -1,2 +1,2 @@
 [phases.setup]
-nixPkgs = ["...", "libreoffice", "liberation_ttf"]
+nixPkgs = ["...", "libreoffice", "liberation_ttf", "util-linux"]

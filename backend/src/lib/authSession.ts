@@ -8,8 +8,12 @@ import {
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { requestOriginIsWordAddin } from "./origins";
 import { supabaseSessionConfiguration } from "./runtimeConfig";
+import { singleFlightRefreshFetch } from "./authRefresh";
+import { AppError } from "./appError";
+import { requestRoutePattern } from "./observability/sentry";
 
 const AUTH_COOKIE_BASE_NAME = "mike-session";
+const refreshFetch = singleFlightRefreshFetch();
 
 function authConfiguration() {
   const { url, key } = supabaseSessionConfiguration();
@@ -104,9 +108,25 @@ export function createRequestSupabase(
         return parseCookieHeader(req.headers.cookie ?? "");
       },
       setAll(cookiesToSet, responseHeaders) {
-        // A late auth event can fire after the handler has already replied.
-        // Writing then throws and can fail the Microsoft code exchange.
-        if (res.headersSent) return;
+        // GoTrue can announce a session change after this request's
+        // response has started. Writing then throws ERR_HTTP_HEADERS_SENT
+        // inside GoTrue's subscriber loop, which rethrows it out of
+        // getUser() as a 500 — including during the Microsoft code exchange.
+        // Nothing can still reach this response, so skip the write. The
+        // browser keeps the refresh token that was just rotated: its next
+        // request works only if GoTrue still accepts that token (inside its
+        // reuse interval) or joins a refresh in flight; after that GoTrue
+        // refuses it and the user signs in again. Still better than the 500
+        // it replaces. The route is logged so operators can see how often a
+        // session is lost this way.
+        if (res.headersSent) {
+          console.warn(
+            "[auth] session cookies changed after the response was sent",
+            { route: requestRoutePattern(req) },
+            new AppError("auth.cookie_write_after_response", "session cookie write skipped: response already sent"),
+          );
+          return;
+        }
         for (const { name, value, options } of cookiesToSet) {
           appendCookie(res, name, value, {
             ...options,
@@ -118,6 +138,8 @@ export function createRequestSupabase(
         }
       },
     },
+    // Parallel requests holding one expired session share a single refresh.
+    global: { fetch: refreshFetch },
     auth: {
       persistSession: true,
       autoRefreshToken: false,

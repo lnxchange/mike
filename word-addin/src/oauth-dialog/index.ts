@@ -3,6 +3,10 @@ import {
   GOOGLE_OAUTH_MESSAGE_TYPE,
   type GoogleOAuthDialogMessage,
 } from "../taskpane/auth/oauthProtocol";
+import { describeError } from "@mike/client";
+import { initAddinErrorReporting } from "../taskpane/lib/errorReporting";
+
+initAddinErrorReporting("oauth-dialog");
 
 const API_BASE = (process.env.REACT_APP_API_BASE_URL || "/api").replace(
   /\/+$/,
@@ -60,13 +64,21 @@ function clearTemporaryAuthStorage(): void {
   window.sessionStorage.removeItem(PROVIDER_STORAGE_KEY);
 }
 
+/**
+ * The message shown in the dialog (and relayed to the pane) for a non-ok
+ * response. A 4xx `detail` is written for the user; a 5xx body is a stack
+ * trace or a proxy page, so it is never repeated.
+ */
 async function responseError(response: Response): Promise<string> {
+  if (response.status >= 500) {
+    return `${providerLabel()} sign-in is temporarily unavailable. Try again.`;
+  }
   const body = (await response.json().catch(() => ({}))) as {
     detail?: unknown;
   };
   return typeof body.detail === "string" && body.detail
     ? body.detail
-    : `${providerLabel()} sign-in failed (HTTP ${response.status}).`;
+    : `${providerLabel()} sign-in failed. Try again.`;
 }
 
 async function runGoogleOAuth(): Promise<void> {
@@ -173,10 +185,11 @@ Office.onReady(() => {
     const requestId =
       new URL(window.location.href).searchParams.get("requestId") ??
       window.sessionStorage.getItem(REQUEST_STORAGE_KEY);
-    const message =
-      error instanceof Error
-        ? error.message
-        : `Unable to complete ${providerLabel()} sign-in.`;
+    // Whatever threw here — fetch, Office.js, a bad redirect — its text is
+    // for the console. The pane shows this sentence.
+    const message = describeError(error, {
+      fallback: `Couldn't complete ${providerLabel()} sign-in. Try again.`,
+    }).message;
     if (requestId) {
       sendError(requestId, message);
     } else {

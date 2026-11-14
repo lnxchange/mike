@@ -14,30 +14,64 @@
 // share it.
 
 export {
-  INVITATION_TTL_DAYS,
   listMyOrgs,
   createOrg,
   getOrg,
   updateOrg,
-  deleteOrg,
   listOrgResources,
   listMembers,
   updateMember,
   removeMember,
+  getMemberHandover,
+  type MemberHandover,
   createInvitation,
   listInvitations,
   cancelInvitation,
   resendInvitation,
-  listMyInvitations,
-  acceptInvitation,
-  declineInvitation,
 } from "../../lib/orgs";
 
+// The organization's provider keys live in this module: they need the user
+// module's key store, which lib/ may not import.
 export type { InvitationStatus, OrgResult } from "../../lib/orgs";
 
 export {
-  getOrgApiKeysStatus,
-  saveOrgApiKeyForAdmin,
-  normalizeOrgApiKeyProvider,
+  getOrgApiKeySettings,
+  saveOrgApiKey,
+  setOrgApiKeyEnabled,
+    saveOrgRouterModels,
+    normalizeOrgRouterSlug,
+  type OrgApiKeySettings,
 } from "./orgs.apiKeys";
-export type { OrgApiKeyProvider, OrgApiKeyStatus } from "./orgs.apiKeys";
+
+export {
+    getOrgLogo,
+    saveOrgLogo,
+    removeOrgLogo,
+} from "./orgs.logo";
+
+// Recovery-period suspension is separate from the trusted content-cleanup
+// primitives composed by application/organizations/purgeContent.
+export { deleteOrg } from "./orgs.deletion";
+
+export {
+    deleteOrgProjects,
+    deleteOrgWorkflows,
+    deleteOrgDocuments,
+    deleteOrgTabularReviews,
+    deleteOrgChats,
+    deleteOrgMemories,
+    deleteOrgPlaybooks,
+} from "./orgs.dataCleanup";
+export {
+    memberDataActionAllowed,
+    setOrgMemberDataPolicy,
+    type MemberDataAction,
+    type OrgMemberDataPolicy,
+} from "./orgs.memberDataPolicy";
+export {
+    listDepartureArchives, listDepartures, resolveDepartureArchive, resolveDepartureArchives,
+    expireDepartureArchives,
+} from "./orgs.retention";
+
+export { listDeletedOrganizations, restoreOrganization, purgeExpiredOrganizations } from "./orgs.lifecycle";
+export { listPrivateContent, setPrivateContentPermission, changePrivateContentAccess } from "./orgs.privateContent";
