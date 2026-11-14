@@ -28,6 +28,7 @@ import {
     getFileStreamSource,
     listVersions,
     createVersionFromDocument,
+    saveSharePointDraft,
     renameVersion,
     deleteVersion,
     resolveEdit,
@@ -139,6 +140,7 @@ documentsRouter.get("/:documentId/file", requireAuth, asyncRoute(async (req, res
 
     res.setHeader("Content-Type", contentTypeForDocumentType(result.fileType));
     res.setHeader("Content-Length", result.size);
+    res.setHeader("Cache-Control", "private, no-store");
     res.setHeader(
         "Content-Disposition",
         buildContentDisposition("inline", result.filename),
@@ -270,6 +272,49 @@ documentsRouter.get("/:documentId/versions", requireAuth, asyncRoute(async (req,
         versions: result.versions,
     });
 }));
+
+documentsRouter.post(
+    "/:documentId/sharepoint-draft",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { documentId } = req.params;
+        const filename =
+            typeof req.body?.filename === "string" ? req.body.filename : "";
+        const result = await saveSharePointDraft(
+            {
+                documentId,
+                requestedFilename: filename,
+                userId,
+                userEmail,
+            },
+            createServerSupabase(),
+        );
+        if (!result.ok) {
+            const status =
+                result.kind === "forbidden"
+                    ? 403
+                    : result.kind === "not_found" || result.kind === "no_active"
+                      ? 404
+                      : result.kind === "conflict"
+                        ? 409
+                        : result.kind === "validation" || result.kind === "not_matter"
+                          ? 400
+                          : result.kind === "unavailable"
+                            ? 503
+                            : 500;
+            return void res.status(status).json({ detail: result.detail });
+        }
+        res.status(201).json({
+            ...result.version,
+            filename: result.sharepoint.filename,
+            webUrl: result.sharepoint.webUrl,
+            created: result.sharepoint.created,
+            version: result.version,
+        });
+    }),
+);
 
 // POST /single-documents/:documentId/versions/from-document
 // Create a new version of documentId from another existing document's active

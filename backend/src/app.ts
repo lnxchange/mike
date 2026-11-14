@@ -14,6 +14,7 @@ import { documentsRouter } from "./modules/documents/documents.routes";
 import { libraryRouter } from "./modules/library/library.routes";
 import { tabularRouter } from "./modules/tabular/tabular.routes";
 import { workflowsRouter } from "./modules/workflows/workflows.routes";
+import { playbooksRouter } from "./modules/playbooks/playbooks.routes";
 import { quickActionsRouter } from "./modules/quick-actions/quickActions.routes";
 import { workflowAddonsRouter } from "./modules/workflows/workflowAddons.routes";
 import { userRouter } from "./modules/user/user.routes";
@@ -24,13 +25,14 @@ import {
 } from "./modules/downloads/downloads.routes";
 import { sourceDocumentsRouter } from "./modules/source-documents/sourceDocuments.routes";
 import { auditRouter } from "./modules/audit/audit.routes";
+import { integrationsRouter } from "./modules/integrations/integrations.routes";
 import { authRouter } from "./modules/auth/auth.routes";
 import { uploadSessionsRouter } from "./modules/uploads/uploads.routes";
 import {
+  orgMemoryRouter,
   projectMemoryRouter,
   userMemoryRouter,
 } from "./modules/memory/memory.routes";
-import { playbooksRouter } from "./modules/playbooks/playbooks.routes";
 import { manifestPublicKey } from "./lib/manifestSigning";
 import {
   handleUnhandledError,
@@ -330,12 +332,14 @@ app.use("/word-chat", wordChatRouter);
 app.use("/models", modelsRouter);
 app.use("/projects/:projectId/memory", projectMemoryRouter);
 app.use("/projects", projectsRouter);
+app.use("/orgs/:orgId/memory", orgMemoryRouter);
 app.use("/orgs", orgsRouter);
 app.use("/projects/:projectId/chat", projectChatRouter);
 app.use("/single-documents", documentsRouter);
 app.use("/library", libraryRouter);
 app.use("/tabular-review", tabularRouter);
 app.use("/workflows", workflowsRouter);
+app.use("/playbooks", playbooksRouter);
 app.use("/quick-actions", quickActionsRouter);
 app.use("/workflow-addons", workflowAddonsRouter);
 app.use("/user/memory", userMemoryRouter);
@@ -343,7 +347,7 @@ app.use("/user", userRouter);
 app.use("/download", downloadsRouter);
 app.use("/documents", sourceDocumentsRouter);
 app.use("/audit", auditRouter);
-app.use("/playbooks", playbooksRouter);
+app.use("/integrations", integrationsRouter);
 app.use("/upload-sessions", uploadSessionsRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));

@@ -10,6 +10,7 @@ import { ensureDocAccess } from "../../lib/access";
 import { can, DOCUMENT_EDIT_FORBIDDEN } from "../../lib/permissions";
 import { downloadFilenameForVersion, type Db } from "./documents.shared";
 import { updateDocumentVersion } from "./documents.lifecycle";
+import { saveSyncedMatterVersionToSharePoint } from "../integrations/integrations.service";
 // devLog comes from lib/chat/types (a leaf file — importing the whole chat
 // barrel here just for a logger would be a heavy dependency edge).
 import { devLog } from "../../lib/log";
@@ -190,6 +191,17 @@ export async function resolveEdit(
         return versionErr
             ? { ok: false, detail: "Failed to resolve edit", error: versionErr }
             : { ok: false, status: 409, detail: "This document changed. Reopen the latest version and try again." };
+    }
+
+    if (mode === "accept" && doc.current_version_id) {
+        await saveSyncedMatterVersionToSharePoint(db, {
+            documentId,
+            versionId: doc.current_version_id as string,
+            storagePath: latestPath,
+            filename:
+                (active?.filename as string | undefined)?.trim() ||
+                "Untitled document",
+        });
     }
 
     const { error: statusErr } = await db

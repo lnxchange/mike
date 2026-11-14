@@ -380,7 +380,6 @@ export async function updateLastSelectedReasoningLevel(
   });
 }
 
-
 export async function getApiKeyStatus(): Promise<ApiKeyStatus> {
   return apiRequest<ApiKeyStatus>("settings.keys", "/user/api-keys");
 }

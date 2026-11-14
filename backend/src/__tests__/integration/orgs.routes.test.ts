@@ -22,12 +22,14 @@ type Row = Record<string, unknown>;
 let tables: Record<string, Row[]>;
 let idCounter: number;
 let currentUser: { id: string; email: string };
+let invitedEmails: string[];
 // Force one table's writes to fail, so the router's db_error arm can be
 // exercised over real HTTP rather than reasoned about.
 let writeErrors: Record<string, { message: string; code?: string }>;
 
 function resetState() {
     idCounter = 1;
+    invitedEmails = [];
     writeErrors = {};
     currentUser = { id: "owner-1", email: "owner@firm.example" };
     tables = {
@@ -121,6 +123,8 @@ function resetState() {
         audit_events: [],
         documents: [],
         project_subfolders: [],
+        org_api_keys: [],
+        user_api_keys: [],
     };
 }
 resetState();
@@ -320,6 +324,15 @@ vi.mock("../../lib/supabase", () => ({
                     data: { user: { id: currentUser.id } },
                     error: null,
                 }),
+            admin: {
+                inviteUserByEmail: (email: string) => {
+                    invitedEmails.push(email);
+                    return Promise.resolve({
+                        data: { user: { email } },
+                        error: null,
+                    });
+                },
+            },
         },
     })),
 }));
@@ -345,6 +358,7 @@ vi.mock("../../lib/documentVersions", () => ({
     loadActiveVersion: vi.fn(async () => null),
 }));
 
+import { getUserApiKeys, saveUserApiKey } from "../../modules/user/user.service";
 import { app } from "../../app";
 
 const AUTH = ["Authorization", "Bearer test"] as const;
@@ -811,7 +825,9 @@ describe("organization invitations", () => {
             email: "new@hire.example",
             role: "admin",
             status: "pending",
+            email_delivery: "sent",
         });
+        expect(invitedEmails).toEqual(["new@hire.example"]);
         expect(tables.org_members).toHaveLength(2);
     });
 
@@ -969,6 +985,8 @@ describe("organization invitations", () => {
             .post(`/orgs/org-1/invitations/${created.body.id}/resend`)
             .set(...AUTH);
         expect(res.status).toBe(200);
+        expect(res.body.email_delivery).toBe("sent");
+        expect(invitedEmails).toEqual(["new@hire.example", "new@hire.example"]);
         expect(new Date(res.body.expires_at).getTime()).toBeGreaterThan(
             Date.now(),
         );
@@ -1918,5 +1936,76 @@ describe("sendOrgFailure db_error", () => {
         expect(res.body.detail).toBe(
             "An organization must keep at least one owner.",
         );
+    });
+});
+
+describe("organization API keys", () => {
+    beforeEach(() => {
+        process.env.USER_API_KEYS_ENCRYPTION_SECRET = "test-secret";
+    });
+
+    afterEach(() => {
+        delete process.env.USER_API_KEYS_ENCRYPTION_SECRET;
+    });
+
+    it("lets members read status and inherit the organisation key", async () => {
+        as("admin-1", "admin@firm.example");
+        const saved = await request(app)
+            .put("/orgs/org-1/api-keys/claude")
+            .set(...AUTH)
+            .send({ api_key: "sk-ant-org" });
+        expect(saved.status).toBe(200);
+        expect(saved.body).toMatchObject({ claude: true });
+        expect(JSON.stringify(saved.body)).not.toContain("sk-ant-org");
+
+        as("member-1", "member@firm.example");
+        const status = await request(app)
+            .get("/orgs/org-1/api-keys")
+            .set(...AUTH);
+        expect(status.status).toBe(200);
+        expect(status.body).toMatchObject({ claude: true });
+
+        const db = (
+            await import("../../lib/supabase")
+        ).createServerSupabase();
+        await expect(getUserApiKeys("member-1", db)).resolves.toMatchObject({
+            claude: "sk-ant-org",
+        });
+    });
+
+    it("copies the admin's personal key when asked", async () => {
+        as("admin-1", "admin@firm.example");
+        const db = (
+            await import("../../lib/supabase")
+        ).createServerSupabase();
+        await saveUserApiKey("admin-1", "openai", "sk-admin-personal", db);
+
+        const copied = await request(app)
+            .put("/orgs/org-1/api-keys/openai")
+            .set(...AUTH)
+            .send({ use_personal: true });
+        expect(copied.status).toBe(200);
+        expect(copied.body).toMatchObject({ openai: true });
+
+        await expect(getUserApiKeys("member-1", db)).resolves.toMatchObject({
+            openai: "sk-admin-personal",
+        });
+    });
+
+    it("rejects a member write and an unknown provider", async () => {
+        as("member-1", "member@firm.example");
+        const forbidden = await request(app)
+            .put("/orgs/org-1/api-keys/claude")
+            .set(...AUTH)
+            .send({ api_key: "sk-ant-member" });
+        expect(forbidden.status).toBe(403);
+
+        as("admin-1", "admin@firm.example");
+        const badProvider = await request(app)
+            .put("/orgs/org-1/api-keys/not-a-provider")
+            .set(...AUTH)
+            .send({ api_key: "x" });
+        expect(badProvider.status).toBe(400);
+        expect(badProvider.body.detail).toBe("Unsupported provider");
     });
 });

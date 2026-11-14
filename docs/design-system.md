@@ -126,6 +126,12 @@ the meaning ("this is the destructive action") rather than a specific color.
 `-500`, `-800` and `-900` are *not* overridden, so the scale is discontinuous —
 stay on the overridden steps for brand blue.
 
+The overridden steps resolve through `--brand-accent`, `--brand-accent-strong`
+and `--brand-accent-tint-{5,10,30}` on `:root`, so a deployment profile can
+re-accent the app from its theme stylesheet (see `config/README.md`, "Theme")
+without touching component classes. Keep using the `blue-*` utilities in
+components; do not reference the `--brand-accent*` variables directly.
+
 ### Dark mode
 
 `@custom-variant dark (&:is(.dark *))` — class-based, not
@@ -183,6 +189,12 @@ and exposed as CSS variables on `<body>`:
 | --- | --- | --- | --- |
 | Inter | `--font-inter` → `--font-sans` | `font-sans` (body default) | All UI text. |
 | EB Garamond | `--font-eb-garamond` → `--font-serif` | `font-serif` | Display headings, legal document body copy, tracked-change cards. |
+| (display) | `--font-display-face`, falling back to `--font-eb-garamond` → `--font-display` | `font-display` | The wordmark (`SiteLogo`), page titles (`PageHeader`), and empty-state headings. Identical to `font-serif` unless a deployment profile supplies a dedicated display face. |
+
+The `libris-colleague` profile remaps `--font-inter` and `--font-serif` to
+Source Sans Pro, sets `--font-display-face` to Grenze, and restyles
+display-size `font-serif` headings (`text-lg` and up) as Grenze Semibold so
+the product matches Libris Back Office without forking every heading class.
 
 The Word add-in supplies the same two variables from
 `word-addin/src/taskpane/styles.css` (fonts loaded via `<link>` in
@@ -199,6 +211,8 @@ display style stays in one place. A plain page title is an `<h1>` passed as
 `shared/pageHeaderStyles.ts`), which is also what its breadcrumbs use. `PAGE_HEADER_ROW_CLASS` is what
 keeps that title on the line of the sidebar's logo text. The settings areas
 (`SettingsShell`) have a larger display title of their own, `text-3xl`.
+On the Libris profile those display-size `font-serif` headings resolve to the
+display face (Grenze); see the face table above.
 
 ## Spacing and radius
 

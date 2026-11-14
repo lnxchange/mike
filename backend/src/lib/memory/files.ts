@@ -6,7 +6,7 @@ import type { Db } from "../dbq/types";
 
 export const MEMORY_MAX_BYTES = 16 * 1024;
 
-export type MemoryScope = "user" | "project";
+export type MemoryScope = "user" | "project" | "org";
 export type MemoryStatus = "idle" | "scheduled" | "processing" | "failed";
 export type MemorySource = "manual" | "curator";
 export type MemorySurface = "chat" | "word" | "tabular";
@@ -31,8 +31,9 @@ export type MemoryFileRow = {
   /**
    * For a person's own file: the organization whose workspace it is their
    * memory for, or null for Personal. A person has one per workspace.
+   * For an organization-scoped file, this is the owning organization.
    */
-  org_id?: string | null;
+  org_id: string | null;
   enabled: boolean;
   epoch: number | string;
   revision: number | string;
@@ -128,6 +129,18 @@ function memoryHash(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+export function memoryOwnerColumn(
+  scope: MemoryScope,
+): "user_id" | "project_id" | "org_id" {
+  if (scope === "user") return "user_id";
+  if (scope === "org") return "org_id";
+  return "project_id";
+}
+
+export function memoryOwnerId(file: Pick<MemoryFileRow, "user_id" | "project_id" | "org_id">): string {
+  return (file.user_id ?? file.project_id ?? file.org_id) as string;
+}
+
 /** Postgres "undefined column" / PostgREST "no such function": a database
  * that has not yet run the per-workspace memory migration. */
 function isMissingWorkspaceMemorySchema(error: {
@@ -204,7 +217,7 @@ async function ensureOwnerMemoryFile(
   scope: MemoryScope,
   ownerId: string,
 ): Promise<MemoryFileRow> {
-  const ownerColumn = scope === "user" ? "user_id" : "project_id";
+  const ownerColumn = memoryOwnerColumn(scope);
   const { data: existing, error: readError } = await db
     .from("memory_files")
     .select("*")

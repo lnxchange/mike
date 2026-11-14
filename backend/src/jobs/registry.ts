@@ -5,9 +5,10 @@ import { handleExportBuild } from "../application/jobs/exportBuild";
 import { handleMcpRefreshToken } from "../modules/user/user.service";
 import { handleDocumentCleanup, handleDocumentExtractText, markDocumentTextFailed, handleDocumentPrecomputeText, handleConversionConvert, markConversionFailed } from "../modules/documents/documents.service";
 import { handleExtractionExtract, markExtractionJobFailed } from "../modules/tabular/tabular.service";
-import { handleMemoryConsolidation, markMemoryConsolidationFailed } from "../modules/memory/memory.service";
+import { handleMemoryConsolidation, handleMemoryMatterBrief, markMemoryConsolidationFailed } from "../modules/memory/memory.service";
 import { handlePlaybookImport, handlePlaybookReview, markPlaybookImportJobFailed, markPlaybookReviewJobFailed } from "../modules/playbooks/playbooks.service";
 import { handleStorageCleanup } from "../lib/dbq/storageCleanup";
+import { handleLegalShelfRefresh } from "../lib/legalSourceShelf";
 import { type DbJobHandlers } from "../lib/dbq/types";
 import { type DbJobFailureHook } from "../lib/dbq/runner";
 
@@ -15,6 +16,7 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
   "audit.chat_turn": handleChatTurnAudit,
   "account.delete": handleAccountDelete,
   "storage.cleanup": handleStorageCleanup,
+  "legal.shelf.refresh": handleLegalShelfRefresh,
   "document.cleanup": handleDocumentCleanup,
   "export.build": handleExportBuild,
   "conversion.convert": handleConversionConvert,
@@ -23,6 +25,7 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
   "document.precompute_text": handleDocumentPrecomputeText,
   "document.extract_text": handleDocumentExtractText,
   "memory.consolidate": handleMemoryConsolidation,
+  "memory.matter_brief": handleMemoryMatterBrief,
   "playbook.review": handlePlaybookReview,
   "playbook.import": handlePlaybookImport,
 };
@@ -41,6 +44,7 @@ export {
   handleMcpRefreshToken,
   handleDocumentPrecomputeText,
   handleStorageCleanup,
+  handleLegalShelfRefresh,
 };
 export { MAX_ZIP_EXPORT_DOCUMENTS } from "../application/exports/exportContracts";
 export { MCP_TOKEN_REFRESH_WINDOW_MS } from "../modules/user/user.service";

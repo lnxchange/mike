@@ -48,6 +48,8 @@ export interface CitationQuoteSource {
   marker?: string | null;
   quote?: string | null;
   text?: string | null;
+  kind?: string | null;
+  title_id?: string | null;
   quotes?:
     | readonly {
         quote?: string | null;
@@ -62,6 +64,13 @@ function quotesByMarker(
 ): Map<string, string> {
   const map = new Map<string, string>();
   for (const [index, citation] of (citations ?? []).entries()) {
+    if (
+      citation.kind === "legislation" ||
+      citation.kind === "case" ||
+      (typeof citation.title_id === "string" && citation.title_id.trim())
+    ) {
+      continue;
+    }
     const nestedQuote = citation.quotes?.find(
       (candidate) => candidate.quote || candidate.text,
     );

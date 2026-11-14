@@ -7,6 +7,15 @@ import { courtlistenerBulkDataEnabled } from "../../lib/courtlistener";
 
 import { ROUTER_PROFILE_FIELDS } from "./user.profile.routerPreferences";
 
+/** An unset Australian research flag follows the profile jurisdiction. */
+export function resolveLegalResearchAu(
+    legalResearchAu: boolean | null | undefined,
+    jurisdiction: string | null | undefined,
+): boolean {
+    if (typeof legalResearchAu === "boolean") return legalResearchAu;
+    return jurisdiction === "Australia";
+}
+
 /** Maps stored profile values and model selections to the client contract, including a nullable profile photo. */
 export function serializeProfile(
     routerModels: RouterModelSelections,
@@ -62,6 +71,22 @@ export function serializeProfile(
             normalizeReasoningLevel(row.last_selected_reasoning_level) ??
             "high",
         mfaOnLogin: row.mfa_on_login === true,
+        legalResearchAu: resolveLegalResearchAu(
+            row.legal_research_au,
+            row.jurisdiction,
+        ),
+        legalResearchAuEnergy: resolveLegalResearchAu(
+            row.legal_research_au_energy,
+            row.jurisdiction,
+        ),
+        legalResearchAuVic: resolveLegalResearchAu(
+            row.legal_research_au_vic,
+            row.jurisdiction,
+        ),
+        legalResearchAuCases: resolveLegalResearchAu(
+            row.legal_research_au_cases,
+            row.jurisdiction,
+        ),
         courtlistenerBulkData: courtlistenerBulkDataEnabled(),
         quickActionsVisible: row.quick_actions_visible !== false,
         responseDetailsVisible: row.response_details_visible === true,

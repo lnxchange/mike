@@ -17,11 +17,12 @@ import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { pathToFileURL } from "node:url";
 
 import { resolveContentOrgId } from "../../lib/access";
+import { saveSyncedMatterVersionToSharePoint } from "../integrations/integrations.service";
 import { AppError } from "../../lib/appError";
 import { recordAudit } from "../../lib/audit";
 import { enqueueStorageCleanup } from "../../lib/dbq/enqueue";
@@ -37,7 +38,12 @@ import {
   type PollFailureGate,
 } from "../../lib/observability/pollFailureGate";
 import { asReportableError } from "../../lib/httpError";
-import { shouldConvertToPdf } from "../../lib/documentTypes";
+import {
+  isArchiveDocumentType,
+  isEmailDocumentType,
+  shouldConvertToPdf,
+} from "../../lib/documentTypes";
+import { parseEmail, type ParsedEmail } from "../../lib/emailMessage";
 import { countPagesWithoutText } from "../../lib/pdfText";
 import { uploadJobWallClockMs } from "../../lib/runtimeConfig";
 import {
@@ -47,13 +53,24 @@ import {
   deleteFilesBestEffort,
   StorageOperationError,
   storageKey,
-  uploadFileFromPath,
   versionStorageKey,
 } from "../../lib/storage";
 import { createServerSupabase, type Db } from "../../lib/supabase";
+import { enqueueProjectMatterBrief } from "../memory/memory.service";
+import {
+  expandArchive,
+  expandEmailAttachments,
+  type ExpansionContext,
+} from "./uploads.expand";
 import { ExtractionBusyError, ExtractionLimitError, withBackgroundExtraction } from "../../lib/extraction/isolated";
 import { isAllocationFailure } from "../../lib/extraction/limits";
-import { MAX_UPLOAD_SIZE_BYTES, UPLOAD_VERIFICATION_LEASE_SECONDS } from "./uploads.manifest";
+import {
+  MAX_UPLOAD_SIZE_BYTES,
+  UPLOAD_VERIFICATION_LEASE_SECONDS,
+  type UploadEmailMeta,
+  type UploadExternalReference,
+} from "./uploads.manifest";
+import { buildEmailPdfRendition } from "./uploads.renditions";
 
 type UploadSessionRow = {
   id: string;
@@ -88,7 +105,184 @@ type UploadFileRow = {
    * deleted by the user" — the attempt counter cannot make that distinction.
    */
   document_created_at: string | null;
+  /** The manifest's optional `external` / `email` block, as persisted by the RPC. */
+  client_meta?: {
+    external?: UploadExternalReference | null;
+    email?: UploadEmailMeta | null;
+  } | null;
 };
+
+/**
+ * The external reference the manifest carried for this file, if any. The
+ * column was added after the first sessions were created, so an absent key
+ * and a null value both mean "an ordinary upload".
+ */
+function externalReferenceOf(
+  file: UploadFileRow,
+): UploadExternalReference | null {
+  const external = file.client_meta?.external;
+  if (!external || typeof external !== "object") return null;
+  if (
+    external.provider !== "sharepoint" ||
+    typeof external.item_id !== "string" ||
+    !external.item_id
+  ) {
+    return null;
+  }
+  return external;
+}
+
+function externalDocumentColumns(external: UploadExternalReference | null) {
+  if (!external) return {};
+  return {
+    external_provider: external.provider,
+    external_item_id: external.item_id,
+    external_ctag: external.ctag,
+    external_web_url: external.web_url ?? null,
+  };
+}
+
+function formatEmailParties(
+  parties: { name: string; address: string }[],
+): string | undefined {
+  const text = parties
+    .map((party) => party.address || party.name)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join("; ");
+  return text || undefined;
+}
+
+function emailMetaOf(file: UploadFileRow): UploadEmailMeta | null {
+  const email = file.client_meta?.email;
+  if (!email || typeof email !== "object") return null;
+  const subject = email.subject?.trim() || undefined;
+  const from = email.from?.trim() || undefined;
+  const to = email.to?.trim() || undefined;
+  const receivedAt = email.received_at?.trim() || undefined;
+  if (!subject && !from && !to && !receivedAt) return null;
+  return {
+    ...(subject ? { subject } : {}),
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...(receivedAt ? { received_at: receivedAt } : {}),
+  };
+}
+
+function emailMetaFromParsed(email: ParsedEmail): UploadEmailMeta {
+  return {
+    ...(email.subject.trim() ? { subject: email.subject.trim() } : {}),
+    ...(formatEmailParties(email.from)
+      ? { from: formatEmailParties(email.from) }
+      : {}),
+    ...(formatEmailParties(email.to) ? { to: formatEmailParties(email.to) } : {}),
+    ...(email.date ? { received_at: email.date.toISOString() } : {}),
+    ...(email.messageId ? { internet_message_id: email.messageId } : {}),
+  };
+}
+
+function mergeEmailMeta(
+  preferred: UploadEmailMeta | null,
+  fallback: UploadEmailMeta | null,
+): UploadEmailMeta | null {
+  if (!preferred && !fallback) return null;
+  const merged = {
+    subject: preferred?.subject || fallback?.subject,
+    from: preferred?.from || fallback?.from,
+    to: preferred?.to || fallback?.to,
+    received_at: preferred?.received_at || fallback?.received_at,
+    internet_message_id:
+      preferred?.internet_message_id || fallback?.internet_message_id,
+  };
+  if (
+    !merged.subject &&
+    !merged.from &&
+    !merged.to &&
+    !merged.received_at &&
+    !merged.internet_message_id
+  ) {
+    return null;
+  }
+  return merged;
+}
+
+function emailDocumentColumns(email: UploadEmailMeta | null) {
+  if (!email) return {};
+  return {
+    ...(email.subject ? { email_subject: email.subject } : {}),
+    ...(email.from ? { email_from: email.from } : {}),
+    ...(email.to ? { email_to: email.to } : {}),
+    ...(email.received_at ? { email_received_at: email.received_at } : {}),
+    ...(email.internet_message_id
+      ? { email_internet_message_id: email.internet_message_id }
+      : {}),
+  };
+}
+
+function normalizeCtag(value: unknown): string {
+  return String(value ?? "").trim().replace(/^"+|"+$/g, "");
+}
+
+function isUniqueExternalItemError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String(error.code ?? "") : "";
+  const message = "message" in error ? String(error.message ?? "") : "";
+  return (
+    code === "23505" &&
+    (message.includes("documents_project_external_item_unique") ||
+      message.includes("external_item_id"))
+  );
+}
+
+async function findLiveExternalDocument(
+  db: Db,
+  projectId: string,
+  external: UploadExternalReference,
+) {
+  const { data, error } = await db
+    .from("documents")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("external_provider", external.provider)
+    .eq("external_item_id", external.item_id)
+    .maybeSingle();
+  if (error) throw error;
+  const row = data as { id?: string; external_ctag?: string | null } | null;
+  if (!row?.id) return null;
+  return row;
+}
+
+async function adoptExistingExternalDocument(
+  db: Db,
+  session: UploadSessionRow,
+  file: UploadFileRow,
+  artifact: SealedFileArtifact,
+  projectId: string,
+  external: UploadExternalReference,
+) {
+  const existing = await findLiveExternalDocument(db, projectId, external);
+  if (!existing) return null;
+  if (normalizeCtag(existing.external_ctag) === normalizeCtag(external.ctag)) {
+    return {
+      ...existing,
+      filename: file.filename,
+      file_type: file.file_type,
+    };
+  }
+  return processNewDocumentVersion(
+    db,
+    {
+      ...session,
+      purpose: "document_version_create",
+      destination: {
+        ...session.destination,
+        document_id: existing.id,
+      },
+    },
+    file,
+    artifact,
+  );
+}
 
 type UploadJobRow = {
   id: string;
@@ -455,6 +649,7 @@ async function processCreatedDocument(
     scope === "workflow" ? (destination.workflow_id as string) : null;
   const documentId = file.resource_id;
   const versionId = file.id;
+  const external = externalReferenceOf(file);
 
   // A document created inside an org project belongs to the organization —
   // the org_id stamp is an authorization input, so a failed lookup must fail
@@ -478,6 +673,55 @@ async function processCreatedDocument(
     // Uploaded on its own: the workspace the session named, which was
     // checked against the uploader's memberships when it was opened.
     orgId = (destination.org_id as string | null | undefined) ?? null;
+  }
+
+  const expansion: ExpansionContext = {
+    db,
+    userId: session.user_id,
+    userEmail: session.user_email,
+    uploadFileId: file.id,
+    workingDirectory: artifact.directory,
+    target: {
+      scope,
+      projectId,
+      folderId: scope === "library" ? libraryFolderId : folderId,
+      libraryKind,
+      workflowId,
+      orgId,
+    },
+  };
+
+  // A zip is a container, not a document: every supported entry becomes its
+  // own document under the folder the zip was dropped on, and no row is kept
+  // for the archive itself. Child ids derive from this upload file, so a
+  // retried job files the same documents rather than a second set.
+  if (isArchiveDocumentType(file.file_type)) {
+    const created = await expandArchive(
+      expansion,
+      artifact.filePath,
+      expansion.target.folderId,
+    );
+    console.log("[upload-worker] archive expanded", {
+      fileId: file.id,
+      filename: file.filename,
+      documents: created.length,
+    });
+    return null;
+  }
+
+  // The filer can re-send a SharePoint item that is already mirrored
+  // (cTag/eTag drift). Adopt the live row instead of inserting a second
+  // document that dies on documents_project_external_item_unique.
+  if (external && projectId) {
+    const adopted = await adoptExistingExternalDocument(
+      db,
+      session,
+      file,
+      artifact,
+      projectId,
+      external,
+    );
+    if (adopted) return adopted;
   }
 
   // The upsert below is what makes a retry idempotent — and, on a retry, what
@@ -513,10 +757,25 @@ async function processCreatedDocument(
       library_kind: libraryKind,
       library_folder_id: libraryFolderId,
       workflow_id: workflowId,
+      ...externalDocumentColumns(external),
+      ...emailDocumentColumns(emailMetaOf(file)),
     },
     { onConflict: "id" },
   );
-  if (documentError) throw documentError;
+  if (documentError) {
+    if (external && projectId && isUniqueExternalItemError(documentError)) {
+      const adopted = await adoptExistingExternalDocument(
+        db,
+        session,
+        file,
+        artifact,
+        projectId,
+        external,
+      );
+      if (adopted) return adopted;
+    }
+    throw documentError;
+  }
 
   // Remember that the row now exists before writing anything else, so a
   // retry after any later failure checks for deletion instead of recreating.
@@ -533,27 +792,56 @@ async function processCreatedDocument(
 
   const sourcePath = storageKey(session.user_id, documentId, file.filename);
   await copyFile(file.sealed_storage_path, sourcePath);
-  const pdfPath = await buildPdfRendition({
-    sourceFilePath: artifact.filePath,
-    workingDirectory: artifact.directory,
-    fileType: file.file_type,
-    userId: session.user_id,
-    documentId,
-    sourceStoragePath: sourcePath,
-  });
-  const pageCount =
-    file.file_type === "pdf" ? await countPdfPages(artifact.filePath) : null;
-  const textlessPageCount =
-    file.file_type === "pdf"
-      ? await countTextlessPdfPages(artifact.filePath)
-      : null;
+  let pdfPath: string | null;
+  let pageCount: number | null = null;
+  let textlessPageCount: number | null = null;
+  let parsedEmailMeta: UploadEmailMeta | null = null;
+  if (isEmailDocumentType(file.file_type)) {
+    // The message keeps its original bytes as the document; the PDF the
+    // viewer shows is rendered from the parsed message, and each attachment
+    // is filed as a sibling document first so the rendering can list which
+    // ones travelled with it.
+    const email = await parseEmail(
+      await readFile(artifact.filePath),
+      file.file_type,
+    );
+    parsedEmailMeta = emailMetaFromParsed(email);
+    const attachments = await expandEmailAttachments(expansion, email, {
+      documentId,
+      folderId: expansion.target.folderId,
+    });
+    const rendition = await buildEmailPdfRendition({
+      email,
+      importedAttachments: attachments.map((doc) => doc.filename),
+      workingDirectory: artifact.directory,
+      userId: session.user_id,
+      documentId,
+    });
+    pdfPath = rendition?.key ?? null;
+    pageCount = rendition ? await countPdfPages(rendition.localPath) : null;
+  } else {
+    pdfPath = await buildPdfRendition({
+      sourceFilePath: artifact.filePath,
+      workingDirectory: artifact.directory,
+      fileType: file.file_type,
+      userId: session.user_id,
+      documentId,
+      sourceStoragePath: sourcePath,
+    });
+    pageCount =
+      file.file_type === "pdf" ? await countPdfPages(artifact.filePath) : null;
+    textlessPageCount =
+      file.file_type === "pdf"
+        ? await countTextlessPdfPages(artifact.filePath)
+        : null;
+  }
 
   const { error: versionError } = await createDocumentVersion(db, {
     id: versionId,
     document_id: documentId,
     storage_path: sourcePath,
     pdf_storage_path: pdfPath,
-    source: "upload",
+    source: external ? "sharepoint_sync" : "upload",
     version_number: 1,
     filename: file.filename,
     file_type: file.file_type,
@@ -573,6 +861,9 @@ async function processCreatedDocument(
     .update({
       status: "ready",
       updated_at: new Date().toISOString(),
+      ...emailDocumentColumns(
+        mergeEmailMeta(emailMetaOf(file), parsedEmailMeta),
+      ),
     })
     .eq("id", documentId)
     .eq("user_id", session.user_id)
@@ -592,6 +883,15 @@ async function processCreatedDocument(
     projectId,
     documentId,
   });
+  await enqueueProjectMatterBrief(db, projectId);
+  if (!external) {
+    await saveSyncedMatterVersionToSharePoint(db, {
+      documentId,
+      versionId,
+      storagePath: sourcePath,
+      filename: file.filename,
+    });
+  }
 
   return {
     ...document,
@@ -618,6 +918,7 @@ async function processNewDocumentVersion(
 ) {
   const documentId = session.destination.document_id as string;
   const versionId = file.resource_id;
+  const external = externalReferenceOf(file);
   const requestedFilename =
     (session.destination.filename as string | undefined)?.trim() ||
     file.filename;
@@ -650,8 +951,7 @@ async function processNewDocumentVersion(
     document_id: documentId,
     storage_path: sourcePath,
     pdf_storage_path: pdfPath,
-    source: "user_upload",
-
+    source: external ? "sharepoint_sync" : "user_upload",
     filename: requestedFilename,
     file_type: file.file_type,
     size_bytes: artifact.size,
@@ -665,6 +965,28 @@ async function processNewDocumentVersion(
     throw new DeletedDocumentError(documentId, [sourcePath, pdfPath]);
   if (error || !version)
     throw error ?? new Error("version_insert_returned_no_data");
+
+  // A changed SharePoint item arrives as a new version; the document's
+  // reference moves to the new change tag so the next sync pass sees this
+  // item as current rather than re-uploading it.
+  if (external) {
+    const { error: referenceError } = await db
+      .from("documents")
+      .update({
+        ...externalDocumentColumns(external),
+        ...emailDocumentColumns(emailMetaOf(file)),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", documentId);
+    if (referenceError) throw referenceError;
+  } else {
+    await saveSyncedMatterVersionToSharePoint(db, {
+      documentId,
+      versionId: version.id,
+      storagePath: sourcePath,
+      filename: requestedFilename,
+    });
+  }
 
   const {
     id,
@@ -785,6 +1107,13 @@ async function processReplacementDocumentVersion(
     throw new ChangedDocumentError([sourcePath, ...(pdfPath ? [pdfPath] : [])]);
   if (error || !updated)
     throw error ?? new Error("version_update_returned_no_data");
+
+  await saveSyncedMatterVersionToSharePoint(db, {
+    documentId,
+    versionId,
+    storagePath: sourcePath,
+    filename: file.filename,
+  });
 
   return updated;
 }

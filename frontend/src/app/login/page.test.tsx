@@ -13,8 +13,10 @@ const {
     authState,
     replace,
     push,
+    getAuthConfig,
     getUserProfile,
     completeUserOnboarding,
+    searchParams,
 } = vi.hoisted(() => ({
     login: vi.fn(),
     signup: vi.fn(),
@@ -24,12 +26,15 @@ const {
     authState: { error: null as string | null },
     replace: vi.fn(),
     push: vi.fn(),
+    getAuthConfig: vi.fn(),
     getUserProfile: vi.fn(),
     completeUserOnboarding: vi.fn(),
+    searchParams: new URLSearchParams(),
 }));
 
 vi.mock("next/navigation", () => ({
     useRouter: () => ({ replace, push }),
+    useSearchParams: () => searchParams,
 }));
 
 vi.mock("@/app/lib/authApi", async (importOriginal) => ({
@@ -37,6 +42,8 @@ vi.mock("@/app/lib/authApi", async (importOriginal) => ({
     login,
     signup,
     startGoogleOAuth,
+    getAuthConfig,
+    startMicrosoftOAuth: vi.fn(),
 }));
 
 vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
@@ -66,17 +73,28 @@ describe("LoginPage", () => {
         login.mockReset();
         signup.mockReset();
         startGoogleOAuth.mockReset();
+        getAuthConfig.mockReset();
+        getAuthConfig.mockResolvedValue({ microsoftEnabled: false });
         delete (window as { mikeDesktop?: unknown }).mikeDesktop;
         refreshSession.mockReset();
         refreshSession.mockResolvedValue(null);
         replace.mockReset();
         push.mockReset();
+        searchParams.forEach((_, key) => searchParams.delete(key));
         getUserProfile
             .mockReset()
             .mockResolvedValue({ onboardingComplete: true });
         completeUserOnboarding
             .mockReset()
             .mockResolvedValue({ onboardingComplete: true });
+    });
+
+    it("sends a Site URL OAuth code to the callback page", () => {
+        searchParams.set("code", "oauth-code");
+        render(<LoginPage />);
+        expect(replace).toHaveBeenCalledWith(
+            "/auth/callback?code=oauth-code",
+        );
     });
 
     it("allows an existing account to submit a password shorter than the new minimum", async () => {

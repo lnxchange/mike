@@ -50,6 +50,10 @@ vi.mock("@/app/contexts/UserProfileContext", () => ({
     }),
 }));
 
+vi.mock("@/app/components/settings/EmailSignatureSection", () => ({
+    EmailSignatureSection: () => null,
+}));
+
 // The real module is spread back in because userFacingApiError resolves
 // MikeApiError from it; a bare object mock leaves that `instanceof` check
 // comparing against undefined.

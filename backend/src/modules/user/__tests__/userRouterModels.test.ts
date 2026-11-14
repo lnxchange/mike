@@ -83,6 +83,10 @@ const PROFILE_ROW = {
     tabular_model: "gemini-3-flash-preview",
     mfa_on_login: false,
     legal_research_us: true,
+    legal_research_au: false,
+    legal_research_au_energy: false,
+    legal_research_au_vic: false,
+    legal_research_au_cases: false,
     quick_actions_visible: true,
 };
 

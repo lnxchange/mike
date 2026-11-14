@@ -10,8 +10,16 @@ const state = vi.hoisted(() => ({
 vi.mock("@/app/contexts/UserProfileContext", () => ({
     useUserProfile: () => ({
         profile: {
+            legalResearchAu: false,
+            legalResearchAuEnergy: false,
+            legalResearchAuVic: false,
+            legalResearchAuCases: false,
             quickActionsVisible: true,
         },
+        updateLegalResearchAu: vi.fn(),
+        updateLegalResearchAuEnergy: vi.fn(),
+        updateLegalResearchAuVic: vi.fn(),
+        updateLegalResearchAuCases: vi.fn(),
         updateQuickActionsVisible: vi.fn(),
         updateResponseDetailsVisible: state.updateResponseDetailsVisible,
     }),
@@ -40,5 +48,46 @@ describe("FeaturesPage response details", () => {
         await waitFor(() =>
             expect(state.updateResponseDetailsVisible).toHaveBeenCalledWith(true),
         );
+    });
+
+    it("offers the Commonwealth legislation toggle without an API key field", () => {
+        render(<FeaturesPage />);
+        expect(
+            screen.getByRole("switch", {
+                name: "Australian legislation (Commonwealth)",
+            }),
+        ).toBeInTheDocument();
+        expect(screen.queryByLabelText(/Federal Register API/i)).toBeNull();
+    });
+
+    it("offers the Australian energy law toggle without an API key field", () => {
+        render(<FeaturesPage />);
+        expect(
+            screen.getByRole("switch", {
+                name: "Australian energy law",
+            }),
+        ).toBeInTheDocument();
+        expect(screen.queryByLabelText(/Energy API/i)).toBeNull();
+        expect(screen.queryByLabelText(/AEMC API/i)).toBeNull();
+    });
+
+    it("offers the Victorian legislation toggle without an API key field", () => {
+        render(<FeaturesPage />);
+        expect(
+            screen.getByRole("switch", {
+                name: "Victorian legislation",
+            }),
+        ).toBeInTheDocument();
+        expect(screen.queryByLabelText(/Victorian legislation API/i)).toBeNull();
+    });
+
+    it("offers the Australian case law toggle without an API key field", () => {
+        render(<FeaturesPage />);
+        expect(
+            screen.getByRole("switch", {
+                name: "Australian case law",
+            }),
+        ).toBeInTheDocument();
+        expect(screen.queryByLabelText(/Caselaw API/i)).toBeNull();
     });
 });

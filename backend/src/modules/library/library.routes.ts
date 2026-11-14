@@ -97,7 +97,11 @@ type LibraryDocumentSortKey =
   | "size"
   | "version"
   | "created"
-  | "updated";
+  | "updated"
+  | "arrived"
+  | "from"
+  | "to"
+  | "subject";
 
 const LIBRARY_DOCUMENT_SORT_KEYS: LibraryDocumentSortKey[] = [
   "name",
@@ -106,6 +110,10 @@ const LIBRARY_DOCUMENT_SORT_KEYS: LibraryDocumentSortKey[] = [
   "version",
   "created",
   "updated",
+  "arrived",
+  "from",
+  "to",
+  "subject",
 ];
 
 function parseLibraryDocumentSort(query: Record<string, unknown>): {
@@ -310,6 +318,7 @@ libraryRouter.post(
 
     const body = req.body as {
       base_folder_id?: string | null;
+      org_id?: string | null;
       segments?: unknown;
       conflict_resolution?: unknown;
     };
@@ -332,7 +341,11 @@ libraryRouter.post("/:kind/folders", requireLibraryAuth, asyncRoute(async (req, 
   const kind = normalizeLibraryKind(req.params.kind);
   if (!kind) return void res.status(404).json({ detail: "Library not found" });
 
-  const body = req.body as { name?: string; parent_folder_id?: string | null };
+  const body = req.body as {
+    name?: string;
+    parent_folder_id?: string | null;
+    org_id?: string | null;
+  };
   const db = createServerSupabase();
   const result = await createLibraryFolder(
     db,

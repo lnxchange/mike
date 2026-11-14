@@ -100,6 +100,7 @@ export const ProjectDocumentPanels = memo(function ProjectDocumentPanels({
             const viewType = resolveDocumentViewType({
                 filename: tab.filename,
                 fileType: tab.fileType ?? document?.file_type,
+                preferPdfForWord: Boolean(document?.pdf_storage_path),
             });
             const annotation = tab.annotation;
             const citedDocument =

@@ -13,6 +13,8 @@ storage instead of the infrastructure bundled with Docker Compose.
 - At least one supported model-provider API key, or an accessible Ollama server
 - Optional: CourtListener bulk data for case-law tools without a token (each
   user can instead add their own CourtListener token in Settings > Connectors)
+- Optional: an Exa API key (`EXA_API_KEY`) so official-source reads can pull
+  page or PDF text when a host blocks Mike's own download
 - LibreOffice when DOC/DOCX-to-PDF conversion is required
 
 ## Database setup
@@ -489,7 +491,13 @@ session, whose status is derived from its file rows; there is no separate
 session-wide completion request.
 
 Upload sessions accept at most 50 supported files, 100 MB per file, and 2 GB
-in total. Users may run multiple independent upload sessions concurrently and,
+in total. Supported types are PDF, Word, Excel, PowerPoint, email messages
+(`.eml`, `.msg`) and `.zip` archives. An email is stored as-is with a PDF
+rendition for the viewer, and each attachment of a supported type is filed as
+its own document beside it. A zip is not kept as a document: every supported
+entry becomes a document, with the archive's directories recreated as folders
+under the upload target. Both need LibreOffice on the worker for the email
+rendition. Users may run multiple independent upload sessions concurrently and,
 by default, may create at most 50 sessions per hour. Upload-session mutation,
 polling, and hourly creation limits can be overridden with the
 `RATE_LIMIT_UPLOAD_SESSION_*` environment variables documented in
@@ -528,7 +536,9 @@ organization admin saves one for its members; see
 key takes precedence over the matching globally configured key; removing the
 personal key restores the global key as the fallback. Work in an organization
 never uses personal keys: it runs on the organization's key for a provider,
-and otherwise on the globally configured key.
+and otherwise on the globally configured key. `EXA_API_KEY` is server-only
+(there is no per-user Exa setting) and is used only as a fallback after an
+official host blocks a direct download.
 
 ### Error tracking
 
@@ -573,9 +583,11 @@ non-Docker frontend started from that env.
 
 ## Authentication email
 
-Supabase Auth sends signup, email-change, and password-recovery messages.
-Configure production SMTP in the Supabase dashboard; Mike does not require a
-Resend API key for these messages.
+Supabase Auth sends signup, invite, email-change, and password-recovery
+messages. An organization invitation asks Auth to send its invite email when
+the address does not already have a confirmed account. Configure production
+SMTP in the Supabase dashboard; Mike does not require a Resend API key for
+these messages.
 
 In **Authentication > URL Configuration**, set the Site URL to the deployed
 frontend origin and add that origin's `/auth/callback` URL to the redirect
@@ -624,6 +636,44 @@ pane redeems it through the same-origin add-in proxy, and the backend writes its
 HttpOnly cookie. No Supabase access or refresh token enters add-in JavaScript or
 OfficeRuntime storage. The add-in also does not retain Google's provider access
 token or request Google Drive or Gmail access.
+
+## Microsoft login and Outlook drafts
+
+Mike can use the Supabase Azure provider as a login type and, with
+`Mail.ReadWrite`, stage review-only Outlook drafts in the signed-in user's
+mailbox. This is separate from SAML SSO and from the Attune filer's app-only
+Graph identity used for Zoho/SharePoint matter sync.
+
+Register an Entra app (not the filer daemon). Request delegated
+`openid`, `profile`, `email`, `offline_access`, `User.Read`, and
+`Mail.ReadWrite`. Do not request `Mail.Send`. The redirect URI is the
+Supabase Auth callback (`https://<project>.supabase.co/auth/v1/callback`).
+Enable the Azure provider in the Supabase Auth dashboard with that client
+id and secret, grant admin consent in the tenant that will use mail, and
+turn on automatic identity linking on matching email so an existing
+password or Google user is not given a second Mike account. Add every
+production web origin's `/auth/callback` to the Auth redirect allow list
+(the Vercel alias and the `*.vercel.app` project host). If GoTrue falls
+back to the Site URL with `?code=`, the app now forwards that code to
+`/auth/callback` instead of dropping it on the home redirect.
+
+Backend environment:
+
+```
+MICROSOFT_OAUTH_ENABLED=true
+MICROSOFT_OAUTH_CLIENT_ID=
+MICROSOFT_OAUTH_CLIENT_SECRET=
+```
+
+`MICROSOFT_OAUTH_ENABLED` fails closed unless it is exactly `true`. The
+client id and secret must match the Supabase Azure provider so Mike can
+refresh Graph tokens after the Supabase session no longer carries
+`provider_refresh_token`. Encrypted tokens live in `user_microsoft_tokens`
+and are service-role only. Migration `20260921_06` is applied on Libris
+Colleague (`gttnqqwqoirwbvalqfce`). The login button still needs the Azure
+provider enabled in that project's Supabase Auth dashboard.
+
+See [Microsoft login and Outlook draft staging](integrations/microsoft-outlook-drafts.md).
 
 ## Enterprise SSO (SAML)
 

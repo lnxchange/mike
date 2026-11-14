@@ -209,6 +209,7 @@ describe("backend-managed auth cookies", () => {
       email: "lawyer@example.com",
       pendingEmail: "new@example.com",
       createdWithGoogle: true,
+      microsoftConnected: false,
     });
   });
 });

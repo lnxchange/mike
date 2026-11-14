@@ -28,7 +28,20 @@ export const WORD_EDIT_FORMATS: ReadonlySet<string> = new Set([
   "heading1",
   "heading2",
   "heading3",
+  "clearNumbering",
 ]);
+
+/** A `style:<name>` format applies that paragraph style from the document. */
+export function paragraphStyleFormatName(format: string): string | null {
+  if (!format.startsWith("style:")) return null;
+  const name = format.slice("style:".length).trim();
+  if (!name || name.length > 80 || /[\r\n]/.test(name)) return null;
+  return name;
+}
+
+export function isAllowedWordEditFormat(format: string): boolean {
+  return WORD_EDIT_FORMATS.has(format) || paragraphStyleFormatName(format) !== null;
+}
 
 function cleanProse(value: string): string {
   return value.replace(/\n{3,}/g, "\n\n").trim();
@@ -72,7 +85,7 @@ function parseJsonEdit(
     if (
       row.formats.some(
         (format) =>
-          typeof format !== "string" || !WORD_EDIT_FORMATS.has(format),
+          typeof format !== "string" || !isAllowedWordEditFormat(format),
       )
     ) {
       return null;
@@ -123,7 +136,7 @@ function parseToolEditBlock(
   const formats = Array.isArray(event.formats)
     ? event.formats.filter(
         (format): format is string =>
-          typeof format === "string" && WORD_EDIT_FORMATS.has(format),
+          typeof format === "string" && isAllowedWordEditFormat(format),
       )
     : [];
   return {

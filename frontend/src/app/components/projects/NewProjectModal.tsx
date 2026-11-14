@@ -3,15 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import {
-    UploadBatchError,
     addDocumentToProject,
     createProject,
-    failedUploadMessage,
     grantProjectAccess,
     setProjectMemoryEnabled,
     updateProject,
-    uploadProjectDocuments,
 } from "@/app/lib/mikeApi";
+import {
+    hasPendingProjectUploads,
+    stashPendingProjectUploads,
+} from "@/app/lib/pendingProjectUploads";
 import { FileDirectory } from "../shared/FileDirectory";
 import type { ContentVisibility, Document, Project } from "../shared/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -25,16 +26,23 @@ import {
     PERSONAL_WORKSPACE as ACTIVE_PERSONAL_WORKSPACE,
     useWorkspace,
 } from "@/app/contexts/WorkspaceContext";
-import { createSecureUuid } from "@mike/client";
 import {
     CreateAccessStep,
     type PendingDirectGrant,
     type PendingOrgOverride,
 } from "../modals/CreateAccessStep";
+import { WarningPopup } from "../popups/WarningPopup";
+import { appConfig } from "@/config";
+import {
+    SUPPORTED_DOCUMENT_ACCEPT,
+    formatUnsupportedDocumentWarning,
+    partitionSupportedDocumentFiles,
+} from "@/app/lib/documentUploadValidation";
 import { AccessVisibilityField } from "../modals/AccessVisibilityField";
 import { settleBulkRequests } from "@/app/lib/bulkRequests";
 
 const PERSONAL_WORKSPACE = "__personal__";
+const t = appConfig.terminology;
 
 interface Props {
     open: boolean;
@@ -77,6 +85,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     const [pendingFiles, setPendingFiles] = useState<File[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [unsupportedWarning, setUnsupportedWarning] = useState<string | null>(
+        null,
+    );
     // A project created with only some of its files attached. The modal holds
     // it until the user has read which files are missing.
     const [pendingProject, setPendingProject] = useState<Project | null>(null);
@@ -94,20 +105,8 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     // reuses the project the user already has instead of creating a second
     // one.
     const createdProjectRef = useRef<Project | null>(null);
-    // Attachment work already done against that project. A retry after a
-    // failed step must not re-upload a file or re-link a document that landed
-    // on the first attempt, or the project ends up with duplicates.
-    //
-    // Keyed by the File itself, not by its name. A name is neither unique nor
-    // stable: two files called `contract.pdf` from different folders are two
-    // uploads, and the server trims the name it stores, so ` notes.docx `
-    // came back as `notes.docx`, never matched the pending file, and was
-    // uploaded again on every retry. The identity of the object the user
-    // picked is the only thing that answers "have I already sent this one?".
-    const uploadedFilesRef = useRef<Set<File>>(new Set());
-    // The id each file is uploaded under, so an outcome can be traced back to
-    // the File that produced it even when two of them share a name.
-    const uploadClientIdsRef = useRef<Map<File, string>>(new Map());
+    // Documents already linked against that project. A retry after a failed
+    // step must not re-link a document that landed on the first attempt.
     const linkedDocumentIdsRef = useRef<Set<string>>(new Set());
     const { user } = useAuth();
     const { profile } = useUserProfile();
@@ -143,23 +142,15 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         const files = Array.from(e.target.files ?? []);
         e.target.value = "";
         if (!files.length) return;
+        const { supported, unsupported } = partitionSupportedDocumentFiles(files);
+        setUnsupportedWarning(formatUnsupportedDocumentWarning(unsupported));
+        if (!supported.length) return;
         // Deduplicated by identity, not by name. The old name test silently
-        // dropped the second of two files called `contract.pdf` — a normal
-        // thing to attach from two different folders — and the user was never
-        // told one of their picks had not been taken.
+        // dropped the second of two files called `contract.pdf`.
         setPendingFiles((prev) => [
             ...prev,
-            ...files.filter((file) => !prev.includes(file)),
+            ...supported.filter((file) => !prev.includes(file)),
         ]);
-    }
-
-    /** A stable per-file upload id, so outcomes map back to their File. */
-    function uploadClientId(file: File): string {
-        const existing = uploadClientIdsRef.current.get(file);
-        if (existing) return existing;
-        const clientId = createSecureUuid();
-        uploadClientIdsRef.current.set(file, clientId);
-        return clientId;
     }
 
     function finishCreation(project: Project) {
@@ -285,12 +276,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                     selectedDocuments.filter(
                         (document) =>
                             !linkedDocumentIdsRef.current.has(document.id),
-                    ).length +
-                    pendingFiles.filter(
-                        (file) => !uploadedFilesRef.current.has(file),
-                    ).length;
+                    ).length + pendingFiles.length;
                 setError(
-                    `Project created, but access was not granted to ${grantFailures
+                    `${t.project} created, but access was not granted to ${grantFailures
                         .map((failure) => failure.email)
                         .join(", ")}: ${grantFailures[0].detail}${
                         stillPending > 0
@@ -320,74 +308,26 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 (document) => document.filename,
             );
 
-            // Same for uploads, tracked by File identity through the client id
-            // each one is sent under — the outcome's `filename` is the
-            // server's trimmed version and cannot be trusted to match.
-            const filesToUpload = pendingFiles.filter(
-                (file) => !uploadedFilesRef.current.has(file),
-            );
-            const uploadInputs = filesToUpload.map((file) => ({
-                file,
-                clientId: uploadClientId(file),
-            }));
-            const fileByClientId = new Map(
-                uploadInputs.map((input) => [input.clientId, input.file]),
-            );
-            const recordCompletedUploads = (
-                outcomes: { clientId: string; status: string }[],
-            ) => {
-                for (const outcome of outcomes) {
-                    const file = fileByClientId.get(outcome.clientId);
-                    if (outcome.status === "completed" && file)
-                        uploadedFilesRef.current.add(file);
-                }
-            };
-            let uploadFailure: string | null = null;
-            if (uploadInputs.length > 0) {
-                try {
-                    const outcomes = await uploadProjectDocuments(
-                        project.id,
-                        uploadInputs,
-                    );
-                    recordCompletedUploads(outcomes);
-                    if (
-                        outcomes.some(
-                            (outcome) => outcome.status !== "completed",
-                        )
-                    ) {
-                        uploadFailure = failedUploadMessage(outcomes);
-                    }
-                } catch (uploadError) {
-                    // Aborts, session-creation failures, and batch validation
-                    // still throw; everything else comes back as outcomes.
-                    if (uploadError instanceof UploadBatchError) {
-                        recordCompletedUploads(uploadError.outcomes);
-                    }
-                    uploadFailure =
-                        uploadError instanceof UploadBatchError
-                            ? failedUploadMessage(uploadError.outcomes)
-                            : userFacingApiError(
-                                  uploadError,
-                                  "The attached files could not be uploaded. Please try again.",
-                              );
-                }
+            // Chosen files are not uploaded from here. Converting a large
+            // batch can take minutes, so the project page takes them over
+            // and uploads them with its own progress rows. A retry must not
+            // stash the same File objects twice.
+            if (
+                pendingFiles.length > 0 &&
+                !hasPendingProjectUploads(project.id)
+            ) {
+                stashPendingProjectUploads(project.id, pendingFiles);
             }
 
             // Counted across attempts, not just this one, so a retry reports
-            // the project's real document count.
-            const attachedCount =
-                linkedDocumentIdsRef.current.size +
-                uploadedFilesRef.current.size;
-            const requestedCount =
-                selectedDocuments.length + pendingFiles.length;
-            const failureMessage = [
-                uploadFailure,
+            // the project's real document count. Stashed files are the
+            // project page's job and are not part of this count.
+            const attachedCount = linkedDocumentIdsRef.current.size;
+            const requestedCount = selectedDocuments.length;
+            const failureMessage =
                 failedLinkNames.length > 0
-                    ? `${failedLinkNames.join(", ")} could not be added to the project.`
-                    : null,
-            ]
-                .filter(Boolean)
-                .join(" ");
+                    ? `${failedLinkNames.join(", ")} could not be added to the ${t.projectLower}.`
+                    : "";
 
             // POST /projects returns a bare row with no role fields, and
             // the list's fail-closed roleFrom() reads "no role fields" as
@@ -432,7 +372,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
 
             finishCreation({ ...stamped, document_count: attachedCount });
         } catch (err: unknown) {
-            setError(userFacingApiError(err, "Failed to create project"));
+            setError(
+                userFacingApiError(err, `Failed to create ${t.projectLower}`),
+            );
         } finally {
             setLoading(false);
         }
@@ -441,8 +383,6 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     function resetForm() {
         createdProjectRef.current = null;
         setProjectExists(false);
-        uploadedFilesRef.current = new Set();
-        uploadClientIdsRef.current = new Map();
         linkedDocumentIdsRef.current = new Set();
         setPendingProject(null);
         setStep("details");
@@ -457,6 +397,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         setVisibility("private");
         setMemoryEnabled(projectMemoryDefault);
         setError("");
+        setUnsupportedWarning(null);
     }
 
     function handleClose() {
@@ -476,8 +417,8 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
             open={open}
             onClose={handleClose}
             breadcrumbs={[
-                "Projects",
-                "New project",
+                t.projects,
+                `New ${t.projectLower}`,
                 step === "details"
                     ? "Details"
                     : step === "access"
@@ -549,7 +490,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                                 ? "Creating…"
                                 : pendingProject
                                   ? "Continue"
-                                  : "Create project",
+                                  : `Create ${t.projectLower}`,
                             type: "button",
                             onClick: () => void createProjectFromDocuments(),
                             disabled: !name.trim() || loading,
@@ -560,6 +501,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 ref={fileInputRef}
                 type="file"
                 multiple
+                accept={SUPPORTED_DOCUMENT_ACCEPT}
                 className="hidden"
                 onChange={handleFileChange}
             />
@@ -572,14 +514,14 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                     <div className="space-y-6">
                         <div>
                             <FieldLabel htmlFor="new-project-name">
-                                Project name
+                                {t.project} name
                             </FieldLabel>
                             <FormTextInput
                                 id="new-project-name"
                                 type="text"
                                 value={name}
                                 onChange={(e) => setName(e.target.value)}
-                                placeholder="Add project name"
+                                placeholder={`Add ${t.projectLower} name`}
                                 variant="minimal"
                                 // Once the project EXISTS the retry reuses
                                 // `createdProjectRef` and never reads these
@@ -594,14 +536,14 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
 
                         <div>
                             <FieldLabel htmlFor="new-project-cm-number">
-                                CM number
+                                {t.referenceNumber}
                             </FieldLabel>
                             <FormTextInput
                                 id="new-project-cm-number"
                                 type="text"
                                 value={cmNumber}
                                 onChange={(e) => setCmNumber(e.target.value)}
-                                placeholder="Add a CM number..."
+                                placeholder={`Add a ${t.referenceNumber}...`}
                                 variant="minimal"
                                 className="text-xl text-gray-600"
                                 disabled={projectExists}
@@ -649,14 +591,14 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                         )}
 
                         <div>
-                            <FieldLabel as="p">Project memory</FieldLabel>
+                            <FieldLabel as="p">{t.project} memory</FieldLabel>
                             <ToggleSwitchUI
                                 checked={memoryEnabled}
                                 onCheckedChange={(enabled) => {
                                     memoryEditedRef.current = true;
                                     setMemoryEnabled(enabled);
                                 }}
-                                aria-label="Enable project memory"
+                                aria-label={`Enable ${t.projectLower} memory`}
                             >
                                 {memoryEnabled ? "On" : "Off"}
                             </ToggleSwitchUI>
@@ -673,7 +615,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                         onDirectGrantsChange={setSharedUsers}
                         orgOverrides={orgOverrides}
                         onOrgOverridesChange={setOrgOverrides}
-                        ownerLabel="Project owners"
+                        ownerLabel={`${t.project} owners`}
                         visibility={visibility}
                     />
                 ) : (
@@ -694,6 +636,12 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                     </p>
                 )}
             </form>
+            <WarningPopup
+                open={unsupportedWarning !== null}
+                title="Some files were skipped"
+                message={unsupportedWarning ?? ""}
+                onClose={() => setUnsupportedWarning(null)}
+            />
         </Modal>
     );
 }

@@ -3,6 +3,9 @@ import {
     ALLOWED_DOCUMENT_TYPES,
     ALLOWED_DOCUMENT_TYPES_LABEL,
     contentTypeForDocumentType,
+    isArchiveDocumentType,
+    isEmailDocumentType,
+    isExpandableDocumentType,
     isPresentationDocumentType,
     isSpreadsheetDocumentType,
     isWordDocumentType,
@@ -59,6 +62,26 @@ describe("isPresentationDocumentType", () => {
     });
 });
 
+describe("email and archive types", () => {
+    it("recognizes eml and msg as email, zip as an archive", () => {
+        expect(isEmailDocumentType("eml")).toBe(true);
+        expect(isEmailDocumentType("MSG")).toBe(true);
+        expect(isEmailDocumentType("pdf")).toBe(false);
+        expect(isArchiveDocumentType("zip")).toBe(true);
+        expect(isArchiveDocumentType("eml")).toBe(false);
+        expect(isExpandableDocumentType("eml")).toBe(true);
+        expect(isExpandableDocumentType("zip")).toBe(true);
+        expect(isExpandableDocumentType("docx")).toBe(false);
+        expect(isExpandableDocumentType(null)).toBe(false);
+    });
+
+    it("does not route them through the Office PDF converter", () => {
+        expect(shouldConvertToPdf("eml")).toBe(false);
+        expect(shouldConvertToPdf("msg")).toBe(false);
+        expect(shouldConvertToPdf("zip")).toBe(false);
+    });
+});
+
 describe("shouldConvertToPdf", () => {
     it("converts Word and presentation documents", () => {
         expect(shouldConvertToPdf("docx")).toBe(true);
@@ -91,6 +114,9 @@ describe("contentTypeForDocumentType", () => {
             xls: "application/vnd.ms-excel",
             pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             ppt: "application/vnd.ms-powerpoint",
+            eml: "message/rfc822",
+            msg: "application/vnd.ms-outlook",
+            zip: "application/zip",
         };
         for (const type of ALLOWED_DOCUMENT_TYPES) {
             expect(contentTypeForDocumentType(type)).toBe(expected[type]);

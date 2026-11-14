@@ -199,6 +199,16 @@ module.exports = async (_env, options) => {
         // Sentry hygiene): one implementation for the web app and the add-in.
         "@mike/ui": sharedPackage("ui"),
         "@mike/client": sharedPackage("client"),
+        // documentUpload.ts still imports this name. The module moved into
+        // @mike/client and is what accepts email and zip uploads.
+        "@mike/upload-session-client": path.resolve(
+          __dirname,
+          "..",
+          "packages",
+          "client",
+          "src",
+          "uploadSessionClient.ts",
+        ),
       },
     },
     module: {
@@ -222,6 +232,10 @@ module.exports = async (_env, options) => {
           generator: {
             filename: "icons/[name].[contenthash][ext]",
           },
+        },
+        {
+          test: /\.png$/i,
+          type: "asset/resource",
         },
       ],
     },

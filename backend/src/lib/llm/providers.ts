@@ -1,6 +1,7 @@
 import {
   aiSdkFetch,
   completeAiSdkText,
+  HOSTED_MAX_OUTPUT_TOKENS,
   streamAiSdk,
   type AiSdkAdapterConfig,
 } from "./aiSdk";
@@ -187,6 +188,7 @@ async function createAnthropicAdapter(args: {
   keySource: ProviderKeySource;
   baseURL?: string;
   supportsReasoning: boolean;
+  maxOutputTokens?: number;
 }): Promise<AiSdkAdapterConfig> {
   const { createAnthropic } = await import("@ai-sdk/anthropic");
   const anthropic = createAnthropic({
@@ -202,6 +204,7 @@ async function createAnthropicAdapter(args: {
     modelId: args.model,
     keySource: args.keySource,
     supportsReasoning: args.supportsReasoning,
+    ...(args.maxOutputTokens ? { maxOutputTokens: args.maxOutputTokens } : {}),
     // Only Anthropic itself runs the search; compatible gateways do not.
     ...(args.provider === "claude"
       ? {
@@ -645,6 +648,7 @@ async function createProviderAdapter(
       apiKey: requiredKey("Anthropic", "ANTHROPIC_API_KEY", apiKeys?.claude),
       keySource: keySourceFor(apiKeys, "claude"),
       supportsReasoning: true,
+      maxOutputTokens: HOSTED_MAX_OUTPUT_TOKENS,
     });
   }
 
@@ -659,6 +663,7 @@ async function createProviderAdapter(
       label: "Gemini",
       model: google(model),
       modelId: model,
+      maxOutputTokens: HOSTED_MAX_OUTPUT_TOKENS,
       keySource: keySourceFor(apiKeys, "gemini"),
     };
   }
@@ -676,6 +681,7 @@ async function createProviderAdapter(
       modelId: model,
       keySource: keySourceFor(apiKeys, "openai"),
       courtlistenerCitationReminder: true,
+      maxOutputTokens: HOSTED_MAX_OUTPUT_TOKENS,
       webSearchTool: () => openai.tools.webSearch({}),
     };
   }

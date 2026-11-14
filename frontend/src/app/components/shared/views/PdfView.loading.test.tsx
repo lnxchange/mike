@@ -17,12 +17,15 @@ vi.mock("@/app/hooks/useFetchSingleDoc", () => ({
 }));
 vi.mock("./highlightQuote", () => ({
     getPdfJs: async () => ({
+        version: "6.3.289",
         getDocument: mocks.getDocument,
         TextLayer: { cleanup: mocks.textCleanup },
     }),
     clearHighlights: vi.fn(),
     highlightQuote: vi.fn(),
     STANDARD_FONT_DATA_URL: "/standard_fonts/",
+    pdfjsStandardFontDataUrl: () => "/standard_fonts/",
+    pdfjsWasmUrl: () => "/wasm/",
 }));
 
 const pdfDocument = {
@@ -87,7 +90,11 @@ describe("PdfView loading", () => {
         expect(transferred[1]).not.toBe(transferred[0]);
         expect(transferred[1].byteLength).toBe(0);
         expect(source.byteLength).toBe(4);
-        expect(screen.queryByText("Failed to load document.")).toBeNull();
+        expect(
+            screen.queryByText(
+                "This document could not be loaded. Please try again.",
+            ),
+        ).toBeNull();
         expect(destroy).toHaveBeenCalledTimes(1);
         unmount();
         expect(destroy).toHaveBeenCalledTimes(2);
@@ -100,12 +107,18 @@ describe("PdfView loading", () => {
         });
         const { rerender } = render(view());
         expect(
-            await screen.findByText("Failed to load document."),
+            await screen.findByText(
+                "This document could not be loaded. Please try again.",
+            ),
         ).toBeVisible();
         expect(screen.queryByText("private worker exception")).toBeNull();
         mocks.result = null;
         rerender(<PdfView doc={{ document_id: "document-2" }} />);
-        expect(screen.queryByText("Failed to load document.")).toBeNull();
+        expect(
+            screen.queryByText(
+                "This document could not be loaded. Please try again.",
+            ),
+        ).toBeNull();
         mocks.getDocument.mockReturnValueOnce({
             promise: Promise.resolve(pdfDocument),
             destroy: vi.fn().mockResolvedValue(undefined),
@@ -113,7 +126,11 @@ describe("PdfView loading", () => {
         mocks.result = { type: "pdf", buffer: new ArrayBuffer(4) };
         rerender(<PdfView doc={{ document_id: "document-2" }} />);
         await waitFor(() => expect(mocks.getDocument).toHaveBeenCalledTimes(2));
-        expect(screen.queryByText("Failed to load document.")).toBeNull();
+        expect(
+            screen.queryByText(
+                "This document could not be loaded. Please try again.",
+            ),
+        ).toBeNull();
     });
 
     it("destroys a cancelled load and ignores its rejection after a new document has loaded", async () => {
@@ -138,6 +155,24 @@ describe("PdfView loading", () => {
         await act(async () => {
             rejectOld(new Error("Cancelled load"));
         });
-        expect(screen.queryByText("Failed to load document.")).toBeNull();
+        expect(
+            screen.queryByText(
+                "This document could not be loaded. Please try again.",
+            ),
+        ).toBeNull();
+    });
+
+    it("keeps a spinner visible until PDF.js returns a document", () => {
+        mocks.getDocument.mockReturnValueOnce({
+            promise: new Promise(() => {}),
+            destroy: vi.fn().mockResolvedValue(undefined),
+        });
+        render(view());
+        expect(screen.getByLabelText("Loading document")).toBeVisible();
+        expect(
+            screen.queryByText(
+                "This document could not be loaded. Please try again.",
+            ),
+        ).toBeNull();
     });
 });

@@ -18,7 +18,7 @@ import type {
   WordAssistantEvent,
   WordDocumentEdit,
 } from "../types";
-import type { RedlineEdit, WordEditFormat } from "../lib/redline";
+import { isWordEditFormat, type RedlineEdit } from "../lib/redline";
 import { TOOL_EDIT_INDEX_BASE } from "../lib/wordTrackedEditKeys";
 import {
   saveLocalWordMessage,
@@ -42,12 +42,14 @@ import {
   assistantContentFromEvents,
   completeAssistantEvents,
   finishAssistantReasoning,
+  isWordDocumentReadEvent,
   messageFromStorage,
   normalizeLocalWordEditEvents,
   setAssistantError,
   upsertDocumentReadEvent,
 } from "../lib/wordChatEvents";
 import { readCurrentDocumentName } from "../lib/wordDocumentIdentity";
+import { researchActivityLabel } from "../lib/researchActivity";
 import {
   UserVisibleError,
   describeError,
@@ -101,19 +103,27 @@ function isRejoinableStreamFailure(error: unknown): boolean {
 
 let localMessageSequence = 0;
 
+function settleReadingActivities(
+  events: WordAssistantEvent[],
+): WordAssistantEvent[] {
+  if (
+    !events.some(
+      (event) => isWordDocumentReadEvent(event) && event.status === "reading",
+    )
+  ) {
+    return events;
+  }
+  return events.map((event) =>
+    isWordDocumentReadEvent(event) && event.status === "reading"
+      ? { ...event, status: "read" }
+      : event,
+  );
+}
+
 function createMessageId(role: WordChatMessage["role"]): string {
   localMessageSequence += 1;
   return `${role}-${Date.now()}-${localMessageSequence}`;
 }
-
-const WORD_EDIT_FORMATS: readonly string[] = [
-  "bold",
-  "italic",
-  "underline",
-  "heading1",
-  "heading2",
-  "heading3",
-];
 
 /**
  * Read one row of an apply_word_edits tool input. The backend validated the
@@ -126,8 +136,8 @@ function parseToolEdit(raw: unknown): RedlineEdit | null {
   if (typeof row.original !== "string" || !row.original) return null;
   const formats = Array.isArray(row.formats)
     ? row.formats.filter(
-        (format): format is WordEditFormat =>
-          typeof format === "string" && WORD_EDIT_FORMATS.includes(format),
+        (format): format is string =>
+          typeof format === "string" && isWordEditFormat(format),
       )
     : [];
   if (formats.length === 0 && typeof row.replacement !== "string") return null;
@@ -212,7 +222,7 @@ export function useWordAssistantChat({
   const sessionGenerationRef = useRef(0);
   const sendSequenceRef = useRef(0);
   const sendingRef = useRef(false);
-  const { readDocumentMarkdown } = useWordDoc();
+  const { readDocumentMarkdown, commentOnActiveDocument } = useWordDoc();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -570,6 +580,35 @@ export function useWordAssistantChat({
               await respond({ document: await readDocumentMarkdown() });
               return;
             }
+            if (call.name === "comment_active_document") {
+              const raw = Array.isArray(call.input.comments)
+                ? call.input.comments
+                : [];
+              const comments = raw.flatMap((row) => {
+                if (!row || typeof row !== "object") return [];
+                const item = row as {
+                  anchor?: unknown;
+                  text?: unknown;
+                  parent_id?: unknown;
+                };
+                if (typeof item.text !== "string" || !item.text.trim()) return [];
+                return [
+                  {
+                    text: item.text,
+                    ...(typeof item.anchor === "string" ? { anchor: item.anchor } : {}),
+                    ...(typeof item.parent_id === "string"
+                      ? { parent_id: item.parent_id }
+                      : {}),
+                  },
+                ];
+              });
+              if (comments.length === 0) {
+                await respond({ error: "No valid comments in tool input." });
+                return;
+              }
+              await respond(await commentOnActiveDocument(comments));
+              return;
+            }
             if (call.name === "apply_word_edits") {
               const rawEdits = Array.isArray(call.input.edits)
                 ? call.input.edits
@@ -779,6 +818,16 @@ export function useWordAssistantChat({
                 pendingClientToolCalls.add(job);
                 void job.finally(() => pendingClientToolCalls.delete(job));
               },
+              onToolCallStart: (name) => {
+                if (!requestIsCurrent()) return;
+                const label = researchActivityLabel(name);
+                if (!label) return;
+                assistantEvents = upsertDocumentReadEvent(
+                  settleReadingActivities(assistantEvents),
+                  { filename: label, status: "reading" },
+                );
+                publishAssistantEvents();
+              },
               onCitations: (citations) => {
                 if (!requestIsCurrent()) return;
                 // Later frames supersede earlier partial ones; the final
@@ -809,6 +858,7 @@ export function useWordAssistantChat({
           };
           const onStreamText = (chunk: string): void => {
               if (!requestIsCurrent()) return;
+              assistantEvents = settleReadingActivities(assistantEvents);
               streamedContent += chunk;
               redlineProjector.append(chunk);
               assistantEvents = appendAssistantContent(assistantEvents, chunk);
@@ -1178,6 +1228,7 @@ export function useWordAssistantChat({
       onChatIdChange,
       onChatStarted,
       readDocumentMarkdown,
+      commentOnActiveDocument,
       wordChatOwnerId,
       wordChatStorage,
       wordDocumentId,

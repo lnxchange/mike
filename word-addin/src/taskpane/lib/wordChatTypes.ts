@@ -13,6 +13,13 @@ export type WorkflowAttachment = { id: string; title: string };
 export type PlaybookAttachment = { id: string; title: string };
 
 /**
+ * Word edits are usually a read and a change. High reasoning turns that into
+ * a long visible thought before the first edit. Low is the unset default;
+ * the composer control still offers the higher levels for a full review.
+ */
+export const DEFAULT_WORD_REASONING_LEVEL: ReasoningLevel = "low";
+
+/**
  * Opening a stored chat in the pane. `activeTurnId` is set when the server is
  * still generating an answer into it — a pane that was closed mid-answer, or
  * a chat opened from history while its answer runs — and the pane reattaches

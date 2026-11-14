@@ -129,7 +129,11 @@ export function EditCard({
     .map((format) =>
       format.startsWith("heading")
         ? `heading ${format.slice("heading".length)}`
-        : format,
+        : format === "clearNumbering"
+          ? "remove numbering"
+          : format.startsWith("style:")
+            ? `style ${format.slice("style:".length).trim()}`
+            : format,
     )
     .join(", ");
   const hasEditText =
@@ -142,7 +146,7 @@ export function EditCard({
   // reported how many places the passage matched.
   const ambiguousCopy =
     status === "ambiguous" && matches !== undefined && matches > 1
-      ? `Skipped — this text appears ${matches} times in the document. Tell Mike which one to change.`
+      ? `Skipped. This text appears ${matches} times in the document. Say which one to change.`
       : undefined;
   // A replace-all edit names its breadth so "Applied" can't be misread as a
   // single change.

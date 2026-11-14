@@ -9,7 +9,10 @@ import {
 import type { Project } from "@/app/components/shared/types";
 import { listProjectIds, listProjectsPage } from "@/app/lib/mikeApi";
 import { appendUniqueRows, paginationError, splitOverfetchedPage } from "@/app/lib/paginatedRows";
+import { appConfig } from "@/config";
 import { useWorkspaceParam } from "@/app/contexts/WorkspaceContext";
+
+const t = appConfig.terminology;
 
 export type ProjectSortKey =
   | "name"
@@ -165,7 +168,7 @@ export function usePaginatedProjects(options: {
                 )
                     return;
                 console.error("[projects] failed to load", error);
-        setError(paginationError(error, "Unable to load projects"));
+        setError(paginationError(error, `Unable to load ${t.projectsLower}`));
                 setHasMore(false);
             })
             .finally(() => {
@@ -226,7 +229,9 @@ export function usePaginatedProjects(options: {
                 requestVersion === requestVersionRef.current
             ) {
                 console.error("[projects] failed to load more", error);
-        setLoadMoreError(paginationError(error, "Unable to load projects"));
+        setLoadMoreError(
+            paginationError(error, `Unable to load ${t.projectsLower}`),
+        );
             }
         } finally {
             if (
@@ -292,7 +297,10 @@ export function usePaginatedProjects(options: {
             if (requestVersion === requestVersionRef.current) {
                 console.error("[projects] failed to select all matching", error);
                 setLoadMoreError(
-                    paginationError(error, "Unable to select all projects"),
+                    paginationError(
+                        error,
+                        `Unable to select all ${t.projectsLower}`,
+                    ),
                 );
             }
         } finally {

@@ -24,6 +24,7 @@ import {
     normalizeOptionalModelPreference,
     normalizeReasoningLevel,
 } from "../../lib/modelSelection";
+import { resolveLegalResearchAu } from "./user.profile.serialization";
 
 export type UserModelSettings = {
     /** Explicit override; null means derive the title model from the chat. */
@@ -45,6 +46,10 @@ export type UserModelSettings = {
      * deployment's bulk index.
      */
     legal_research_us: boolean;
+    legal_research_au: boolean;
+    legal_research_au_energy: boolean;
+    legal_research_au_vic: boolean;
+    legal_research_au_cases: boolean;
     web_search: WebSearchSettings;
     api_keys: UserApiKeys;
     personalisation?: {
@@ -86,6 +91,8 @@ export async function getUserModelSettings(
     options: { orgId?: string | null } = {},
 ): Promise<UserModelSettings> {
     const client = db ?? createServerSupabase();
+    const profileSelect =
+        "title_model, tabular_model, memory_curator_model, subagent_model, subagent_reasoning, last_selected_chat_model, last_selected_reasoning_level, legal_research_au, legal_research_au_energy, legal_research_au_vic, legal_research_au_cases, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas";
     const [
         profileResult,
         api_keys,
@@ -97,9 +104,7 @@ export async function getUserModelSettings(
     ] = await Promise.all([
         client
             .from("user_profiles")
-            .select(
-                "title_model, tabular_model, memory_curator_model, subagent_model, subagent_reasoning, last_selected_chat_model, last_selected_reasoning_level, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
-            )
+            .select(profileSelect)
             .eq("user_id", userId)
             .single(),
         getEffectiveApiKeys(userId, options.orgId, client),
@@ -129,55 +134,79 @@ export async function getUserModelSettings(
     ]);
     let data = profileResult.data;
     let profileError = profileResult.error;
-
-    // Deploy-before-migrate tolerance for the subagent defaults.
-    if (
+    // Deploy-before-migrate: drop only the column group the database rejected
+    // (Australian legal-research flags, subagent defaults, or the memory
+    // curator model) and retry, so a later missing column is reported next.
+    const absent: Record<string, null> = {};
+    let selectColumns = profileSelect;
+    const columnFallbacks: {
+        matches: (message: string) => boolean;
+        columns: string[];
+    }[] = [
+        {
+            matches: (message) =>
+                message.includes("legal_research_au_vic") ||
+                message.includes("legal_research_au_cases"),
+            columns: ["legal_research_au_vic", "legal_research_au_cases"],
+        },
+        {
+            matches: (message) => message.includes("legal_research_au_energy"),
+            columns: [
+                "legal_research_au_energy",
+                "legal_research_au_vic",
+                "legal_research_au_cases",
+            ],
+        },
+        {
+            matches: (message) => message.includes("legal_research_au"),
+            columns: [
+                "legal_research_au",
+                "legal_research_au_energy",
+                "legal_research_au_vic",
+                "legal_research_au_cases",
+            ],
+        },
+        {
+            matches: (message) => message.includes("subagent_"),
+            columns: ["subagent_model", "subagent_reasoning"],
+        },
+        {
+            matches: (message) => message.includes("memory_curator_model"),
+            columns: ["memory_curator_model"],
+        },
+    ];
+    let retryingMissingColumns = true;
+    while (
+        retryingMissingColumns &&
         profileError?.code === "42703" &&
-        typeof profileError.message === "string" &&
-        profileError.message.includes("subagent_")
+        typeof profileError.message === "string"
     ) {
-        const withoutSubagentDefaults = await client
-            .from("user_profiles")
-            .select(
-                "title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
-            )
-            .eq("user_id", userId)
-            .single();
-        if (!withoutSubagentDefaults.error) {
-            data = {
-                ...withoutSubagentDefaults.data,
-                subagent_model: null,
-                subagent_reasoning: null,
-            } as typeof data;
-            profileError = null;
-        } else {
-            profileError = withoutSubagentDefaults.error;
+        const message = profileError.message;
+        const present = new Set(selectColumns.split(", "));
+        const fallback = columnFallbacks.find(
+            (candidate) =>
+                candidate.matches(message) &&
+                candidate.columns.some((column) => present.has(column)),
+        );
+        if (!fallback) {
+            retryingMissingColumns = false;
+            break;
         }
-    }
-
-    // Deploy-before-migrate tolerance for the memory curator preference. Keep
-    // every previously available setting while the new nullable column is
-    // still being rolled out.
-    if (
-        profileError?.code === "42703" &&
-        typeof profileError.message === "string" &&
-        profileError.message.includes("memory_curator_model")
-    ) {
-        const withoutMemoryCuratorModel = await client
+        for (const column of fallback.columns) absent[column] = null;
+        selectColumns = selectColumns
+            .split(", ")
+            .filter((column) => !fallback.columns.includes(column))
+            .join(", ");
+        const retried = await client
             .from("user_profiles")
-            .select(
-                "title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
-            )
+            .select(selectColumns)
             .eq("user_id", userId)
             .single();
-        if (!withoutMemoryCuratorModel.error) {
-            data = {
-                ...withoutMemoryCuratorModel.data,
-                memory_curator_model: null,
-            } as typeof data;
+        if (!retried.error) {
+            data = { ...retried.data, ...absent } as typeof data;
             profileError = null;
         } else {
-            profileError = withoutMemoryCuratorModel.error;
+            profileError = retried.error;
         }
     }
 
@@ -249,6 +278,26 @@ export async function getUserModelSettings(
         legal_research_us:
             courtListener.enabled &&
             (!!api_keys.courtlistener || courtlistenerBulkDataEnabled()),
+        legal_research_au: resolveLegalResearchAu(
+            (data as { legal_research_au?: boolean | null } | null)
+                ?.legal_research_au,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
+        legal_research_au_energy: resolveLegalResearchAu(
+            (data as { legal_research_au_energy?: boolean | null } | null)
+                ?.legal_research_au_energy,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
+        legal_research_au_vic: resolveLegalResearchAu(
+            (data as { legal_research_au_vic?: boolean | null } | null)
+                ?.legal_research_au_vic,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
+        legal_research_au_cases: resolveLegalResearchAu(
+            (data as { legal_research_au_cases?: boolean | null } | null)
+                ?.legal_research_au_cases,
+            typeof data?.jurisdiction === "string" ? data.jurisdiction : null,
+        ),
         web_search: webSearch,
         personalisation: {
             displayName:

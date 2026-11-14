@@ -19,6 +19,7 @@ import {
 } from "@/app/lib/authApi";
 import { PillButtonUI, ToggleSwitchUI, GlassCardUI } from "@mike/ui";
 import { PasswordSettingsSection } from "@/app/components/settings/PasswordSettingsSection";
+import { MicrosoftConnectionSection } from "@/app/components/settings/MicrosoftConnectionSection";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";
 import {
@@ -26,6 +27,7 @@ import {
   SettingsLabel,
 } from "@/app/components/settings/SettingsText";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
+import { appConfig } from "@/config";
 import { isMfaRequiredError } from "@/app/lib/mikeApi";
 import { Modal } from "@/app/components/modals/Modal";
 import {
@@ -278,13 +280,13 @@ export default function SecurityPage() {
 
       let data;
       try {
-        data = await enrollMfa("Mike");
+        data = await enrollMfa(appConfig.branding.appName);
       } catch (error) {
         if (!isDuplicateFriendlyNameError(error)) throw error;
         traceMfa("[security/mfa] retrying enrollment with unique name", {
           error: error instanceof Error ? error.message : String(error),
         });
-        data = await enrollMfa(`Mike ${Date.now()}`);
+        data = await enrollMfa(`${appConfig.branding.appName} ${Date.now()}`);
       }
       traceMfa("[security/mfa] enrollment created", {
         factorId: data.id,
@@ -564,6 +566,7 @@ export default function SecurityPage() {
           )}
         </GlassCardUI>
       </section>
+      <MicrosoftConnectionSection />
       <PasswordSettingsSection />
       <Modal
         open={setupModalOpen}

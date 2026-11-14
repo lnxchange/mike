@@ -16,6 +16,7 @@ import { wordChatHasWorkspaceAttachments } from "../../lib/wordWorkspace";
 import { randomUUID } from "node:crypto";
 import { queryFailureCause, selectAllByKey, selectInBatches } from "../../lib/batchedQuery";
 import type { Db } from "../../lib/supabase";
+import { withAuExecutionBlocksPrompt } from "../../lib/auExecutionBlocks";
 import { resolveRequestTimeZone } from "../../lib/userTime";
 import {
   beginMemoryConversationTurn,
@@ -28,6 +29,7 @@ import {
   buildMessages,
   buildUserPersonalisationPrompt,
   buildWordChatSystemPrompt,
+  type WordResearchFlags,
   buildWorkflowStore,
   attachPriorReasoning,
   createAssistantHistoryLoader,
@@ -43,6 +45,7 @@ import {
   persistLastSelectedChatModel,
   persistLastSelectedReasoningLevel,
 } from "../user/user.service";
+import { wordTurnReasoningLevel } from "./wordTurnReasoning";
 import {
   resolveEffectiveChatModel,
   resolveEffectiveReasoningLevel,
@@ -597,6 +600,7 @@ export type PreparedWordChatStream = {
   selectedModel: string;
   selectedReasoningLevel: ReturnType<typeof resolveEffectiveReasoningLevel>;
   nonce: ReturnType<typeof generateSpotlightNonce>;
+  legalResearch: WordResearchFlags;
 };
 
 export async function prepareWordChatStream(
@@ -895,14 +899,23 @@ export async function prepareWordChatStream(
     );
     const { api_keys: configuredApiKeys, personalisation } = modelSettings;
     const apiKeys = { ...configuredApiKeys };
-    delete apiKeys.courtlistener;
+    const legalResearch: WordResearchFlags = {
+      us: modelSettings.legal_research_us,
+      au: modelSettings.legal_research_au,
+      energy: modelSettings.legal_research_au_energy,
+      vic: modelSettings.legal_research_au_vic,
+      cases: modelSettings.legal_research_au_cases,
+    };
     const personalisationPrompt = buildUserPersonalisationPrompt(
       personalisation,
       nonce,
     );
     const wordSystemPrompt = [
-      buildWordChatSystemPrompt(args.clientToolsEnabled),
-      personalisationPrompt,
+      buildWordChatSystemPrompt(args.clientToolsEnabled, legalResearch),
+      withAuExecutionBlocksPrompt(
+        personalisationPrompt || undefined,
+        personalisation?.jurisdiction,
+      ),
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -940,8 +953,15 @@ export async function prepareWordChatStream(
         workflowStore,
         apiKeys,
         selectedModel,
-        selectedReasoningLevel,
+        // The stored level is the user's choice. A question or a direct edit
+        // does not spend a High setting on this turn.
+        selectedReasoningLevel: wordTurnReasoningLevel({
+          selected: selectedReasoningLevel,
+          content: lastUser?.content,
+          workflow: lastUser?.workflow,
+        }),
         nonce,
+        legalResearch,
       },
     };
   } catch (error) {

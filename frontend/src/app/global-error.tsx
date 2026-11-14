@@ -6,6 +6,7 @@ import "./fonts/fonts.css";
 import "./globals.css";
 import { CrashScreen } from "@/app/components/shared/CrashScreen";
 import { PillButtonUI } from "@mike/ui";
+import { appConfig } from "@/config";
 
 export default function GlobalError({
     error,
@@ -15,9 +16,9 @@ export default function GlobalError({
     reset?: () => void;
 }) {
     return (
-        <html lang="en">
+        <html lang="en" data-profile={appConfig.id}>
             <head>
-                <title>Something went wrong – Mike</title>
+                <title>{`Something went wrong – ${appConfig.branding.appName}`}</title>
             </head>
             <body className="font-sans antialiased">
                 <CrashScreen

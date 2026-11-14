@@ -1,5 +1,6 @@
 import { SvgAssetIcon } from "@/app/components/ui/svg-asset-icon";
 import caseLaw from "../../../../../public/icons/legal-sources/case-law.svg";
+import legislation from "../../../../../public/icons/legal-sources/legislation.svg";
 import { Loader2 } from "lucide-react";
 import { FileTypeIcon } from "../../shared/FileTypeIcon";
 import { displayCitationQuote, formatCitationPage } from "../../shared/types";
@@ -23,6 +24,9 @@ function citationSourceKey(annotation: Citation): string {
     if (annotation.kind === "case") {
         return `case:${annotation.cluster_id}`;
     }
+    if (annotation.kind === "legislation") {
+        return `legislation:${annotation.title_id}:${annotation.as_at ?? "latest"}`;
+    }
     return `document:${annotation.document_id}`;
 }
 
@@ -32,6 +36,9 @@ function citationSourceLabel(annotation: Citation): string {
         const citation = annotation.citation?.trim();
         if (caseName && citation) return `${caseName}, ${citation}`;
         return caseName || citation || `Case ${annotation.cluster_id}`;
+    }
+    if (annotation.kind === "legislation") {
+        return annotation.name?.trim() || annotation.title_id;
     }
     return annotation.filename;
 }
@@ -45,10 +52,10 @@ export function citationTooltip(annotation: Citation): string {
 }
 
 function CitationSourceIcon({ annotation }: { annotation: Citation }) {
-    if (annotation.kind === "case") {
+    if (annotation.kind === "case" || annotation.kind === "legislation") {
         return (
             <SvgAssetIcon
-                src={caseLaw}
+                src={annotation.kind === "case" ? caseLaw : legislation}
                 aria-hidden="true"
                 width={14}
                 height={14}

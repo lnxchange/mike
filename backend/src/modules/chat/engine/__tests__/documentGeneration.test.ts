@@ -160,3 +160,34 @@ describe("generateDocx numbering", () => {
     expect(numberingXml).toContain('<w:numFmt w:val="bullet"/>');
   });
 });
+
+describe("generateDocx Australian execution blocks", () => {
+  it("renders a selected company block as a borderless table", async () => {
+    const { documentXml } = await generatedXml({
+      sections: [
+        {
+          heading: "Execution",
+          pageBreak: true,
+          executionBlocks: [
+            {
+              party: "company",
+              values: {
+                companyName: "Acme Pty Ltd",
+                authorisedSignatoryName: "Jane Smith",
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(documentXml).toContain("Acme Pty Ltd");
+    expect(documentXml).toContain("Jane Smith");
+    expect(documentXml).toContain("clause 126");
+    expect(documentXml).toContain('w:val="none"');
+    expect(documentXml).not.toContain('w:tblBorders><w:top w:val="single"');
+    expect(paragraphContaining(documentXml, "Execution")).not.toContain(
+      "<w:numPr>",
+    );
+  });
+});

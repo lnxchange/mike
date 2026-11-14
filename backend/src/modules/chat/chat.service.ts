@@ -20,7 +20,41 @@ export {
 } from "./chat.sharing";
 export { updateChatSettings } from "./chat.settings";
 export { updateChatTitle } from "./chat.titles";
-export { prepareChatStream } from "./chat.prepare";
+export {
+  activeTurnFromChatRow,
+  bindChatTurnStream,
+  claimChatTurn,
+  discardChatInputMessage,
+  heartbeatChatTurn,
+  releaseChatTurn,
+  requestChatTurnCancel,
+  startChatTurnHeartbeat,
+  turnInProgressBody,
+  withRunningTurnMessage,
+  CHAT_TURN_HEARTBEAT_MS,
+  CHAT_TURN_STALE_AFTER_SECONDS,
+  type ActiveChatTurn,
+  type ChatTurnLease,
+  type ChatTurnRow,
+  type ClaimChatTurnResult,
+  type RunningAssistantMessage,
+} from "./chat.turns";
+export {
+  cancelRunningTurn,
+  finishRunningTurn,
+  getRunningTurn,
+  recordTurnFrame,
+  startRunningTurn,
+  subscribeToTurn,
+  type RunningTurn,
+} from "./chat.turnRegistry";
+export { type PreparedChatStream, prepareChatStream } from "./chat.prepare";
+export {
+    schedulePlanContinuation,
+    type PlanContinuationRequest,
+} from "./chat.planRun";
+export { decidePlanContinuation } from "./engine/tools/planTools";
+export { stageOutlookPreview } from "./chat.outlookDraft";
 export {
   devLog,
   appendAssistantEventsToMessage,
@@ -78,6 +112,9 @@ export {
   ACTIVE_WORD_DOCUMENT_ID,
   buildDocContext,
   buildWordChatSystemPrompt,
+  WORD_CHAT_TOOL_NAMES,
+  wordChatAllowedToolNames,
+  type WordResearchFlags,
   withoutEmptyAssistantReservations,
 } from "./engine/index";
 export { generateAssistantChatTitle, logChatTitleFailure } from "./chat.title";
@@ -85,5 +122,6 @@ export { generateAssistantChatTitle, logChatTitleFailure } from "./chat.title";
 export {
   persistWordDocumentEdits,
   WORD_EDIT_FORMATS,
+  isAllowedWordEditFormat,
   type WordEditApplyMode,
 } from "./engine/wordDocumentEdits";

@@ -32,6 +32,8 @@ export {
 
 // The organization's provider keys live in this module: they need the user
 // module's key store, which lib/ may not import.
+export type { InvitationStatus, OrgResult } from "../../lib/orgs";
+
 export {
   getOrgApiKeySettings,
   saveOrgApiKey,

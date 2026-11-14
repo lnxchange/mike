@@ -195,6 +195,10 @@ vi.mock("../../modules/chat/engine/index", async (importOriginal) => {
 vi.mock("../../modules/user/user.settings", () => ({
     getUserModelSettings: vi.fn(async () => ({
         legal_research_us: false,
+        legal_research_au: false,
+        legal_research_au_energy: false,
+        legal_research_au_vic: false,
+        legal_research_au_cases: false,
         web_search: DEFAULT_WEB_SEARCH_SETTINGS,
         title_model: "test-model",
         tabular_model: "test-model",
@@ -261,8 +265,8 @@ describe("POST /projects/:projectId/chat", () => {
             folderPaths: new Map(),
         });
         runLLMStream.mockResolvedValue({
-            fullText: "",
-            events: [],
+            fullText: "Done.",
+            events: [{ type: "content", text: "Done." }],
             citations: [],
         });
         checkProjectAccess.mockResolvedValue({
@@ -762,6 +766,38 @@ describe("POST /projects/:projectId/chat", () => {
     expect(releaseMemoryConversationTurn).not.toHaveBeenCalled();
     });
 
+    it("persists an empty completion instead of a blank assistant row", async () => {
+        runLLMStream.mockResolvedValue({
+            fullText: "",
+            events: [],
+            citations: [],
+        });
+
+        const res = await request(app)
+            .post("/projects/p1/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        expect(res.text).toContain('"type":"error"');
+        expect(res.text).toContain("empty response");
+        expect(res.text).toContain('"safe_to_display":true');
+        const assistantInsert = dbInserts.find(
+            ({ table, value }) =>
+                table === "chat_messages" &&
+                (value as { role?: unknown }).role === "assistant",
+        );
+        expect(assistantInsert?.value).toMatchObject({
+            content: [
+                expect.objectContaining({
+                    type: "error",
+                    safe_to_display: true,
+                }),
+            ],
+        });
+        expect(scheduleMemoryConsolidation).not.toHaveBeenCalled();
+    });
+
     it("runs a personal project's chat on the caller's own keys", async () => {
         const userSettings = await import("../../modules/user/user.settings.js");
 
@@ -804,6 +840,10 @@ describe("POST /projects/:projectId/chat", () => {
         const userSettings = await import("../../modules/user/user.settings.js");
         vi.mocked(userSettings.getUserModelSettings).mockResolvedValueOnce({
             legal_research_us: false,
+            legal_research_au: false,
+            legal_research_au_energy: false,
+            legal_research_au_vic: false,
+            legal_research_au_cases: false,
             web_search: DEFAULT_WEB_SEARCH_SETTINGS,
             title_model: null,
             memory_curator_model: null,

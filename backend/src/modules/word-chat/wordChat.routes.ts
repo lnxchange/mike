@@ -40,6 +40,7 @@ import {
   requestIdOf,
   reserveAssistantMessage,
   runLLMStream,
+  wordChatAllowedToolNames,
   stripTransientAssistantEvents,
   submitClientToolResult,
   throwIfTurnStopped,
@@ -48,7 +49,7 @@ import { enqueueChatTurnAudit, stoppedTurnAuditStatus } from "../../lib/audit";
 import { setOperation, isReported, reportError } from "../../lib/observability/sentry";
 import {
   persistWordDocumentEdits,
-  WORD_EDIT_FORMATS,
+  isAllowedWordEditFormat,
   type WordEditApplyMode,
 } from "../chat/chat.service";
 import {
@@ -174,7 +175,7 @@ function parseProposedWordEdit(
   const formats = Array.isArray(body.formats)
     ? body.formats.filter(
         (entry): entry is string =>
-          typeof entry === "string" && WORD_EDIT_FORMATS.has(entry),
+          typeof entry === "string" && isAllowedWordEditFormat(entry),
       )
     : [];
   if (Array.isArray(body.formats) && formats.length !== body.formats.length) {
@@ -720,6 +721,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     selectedModel,
     selectedReasoningLevel,
     nonce,
+    legalResearch,
   } = prep.prepared;
   let chatTitle = prep.prepared.chatTitle;
   let memoryTurnScheduled = false;
@@ -847,9 +849,12 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       db,
       write,
       workflowStore,
-      // CourtListener is intentionally unavailable in document-scoped Word
-      // chats. Legal research remains a web-assistant capability.
-      includeResearchTools: false,
+      includeUsResearchTools: legalResearch.us === true,
+      includeResearchTools: legalResearch.us === true,
+      includeAuResearchTools: legalResearch.au === true,
+      includeAuEnergyResearchTools: legalResearch.energy === true,
+      includeAuVicResearchTools: legalResearch.vic === true,
+      includeAuCasesResearchTools: legalResearch.cases === true,
       includeAskInputs: false,
       ...(clientToolsEnabled
         ? {
@@ -868,6 +873,10 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         : {}),
       model: selectedModel,
       reasoning: selectedReasoningLevel,
+      // The task pane cannot show a plan or continue a paused turn. The open
+      // document would otherwise force every question into plan-and-stop.
+      plans: false,
+      allowedToolNames: wordChatAllowedToolNames(legalResearch),
       apiKeys,
       signal: stream.signal,
       conversationId: persistChat ? chatId : null,
@@ -924,7 +933,9 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         persistChat &&
         !persistedEvents.some((event) =>
           typeof event === "object" && event !== null && "type" in event
-            ? event.type === "error" || event.type === "ask_inputs"
+            ? event.type === "error" ||
+              event.type === "ask_inputs" ||
+              event.type === "plan"
             : false,
         )
       ) {

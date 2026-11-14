@@ -48,8 +48,10 @@ import {
     type PendingOrgOverride,
 } from "../modals/CreateAccessStep";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { appConfig } from "@/config";
 import { appendMissingById } from "@/app/lib/idCollections";
 
+const t = appConfig.terminology;
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {
     if (isDev) console.log(...args);
@@ -486,7 +488,7 @@ function NewTRModalForWorkspace({
                   project.name +
                   (project.cm_number ? ` (#${project.cm_number})` : ""),
           }))
-        : [{ value: "", label: "No projects found" }];
+        : [{ value: "", label: `No ${t.projectsLower} found` }];
 
     // What to show in the directory depends on mode and toggle state
     const directoryDocuments = isProjectMode
@@ -508,7 +510,7 @@ function NewTRModalForWorkspace({
     const breadcrumbs =
         isProjectMode && projectName
             ? [
-                  "Projects",
+                  t.projects,
                   `${projectName}${projectCmNumber ? ` (#${projectCmNumber})` : ""}`,
                   "New Tabular Review",
               ]
@@ -676,7 +678,7 @@ function NewTRModalForWorkspace({
                         {/* Create under a project toggle */}
                         {!isProjectMode && (
                             <div className="space-y-3">
-                                <FieldLabel as="p">Project</FieldLabel>
+                                <FieldLabel as="p">{t.project}</FieldLabel>
                                 <ToggleSwitchUI
                                     checked={underProject}
                                     onCheckedChange={(next) => {
@@ -684,7 +686,7 @@ function NewTRModalForWorkspace({
                                         if (!next) clearProjectSelection();
                                     }}
                                 >
-                                    Create under a project
+                                    Create under a {t.projectLower}
                                 </ToggleSwitchUI>
 
                                 {underProject && (

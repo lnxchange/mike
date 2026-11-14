@@ -67,6 +67,17 @@ const MARKDOWN_COMPONENTS: Components = {
         target="_blank"
         rel="noopener noreferrer"
         className="text-blue-600 underline underline-offset-2 hover:text-blue-700"
+        onClick={(event) => {
+          if (!href || href.startsWith("#")) return;
+          event.preventDefault();
+          const ui =
+            typeof Office !== "undefined" ? Office.context?.ui : undefined;
+          if (ui && typeof ui.openBrowserWindow === "function") {
+            ui.openBrowserWindow(href);
+          } else {
+            window.open(href, "_blank", "noopener,noreferrer");
+          }
+        }}
       >
         {children}
       </a>

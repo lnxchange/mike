@@ -32,7 +32,8 @@
         "./node_modules/@radix-ui/react-dropdown-menu"
       ],
       "@mike/ui": ["../packages/ui/src/index.ts"],
-      "@mike/client": ["../packages/client/src/index.ts"]
+      "@mike/client": ["../packages/client/src/index.ts"],
+      "@mike/upload-session-client": ["../packages/client/src/uploadSessionClient.ts"]
     },
     "jsx": "react-jsx",
     "strict": true,

@@ -303,6 +303,9 @@ describe("ProjectsOverview tabs", () => {
         render(<ProjectsOverview />);
 
         expect(screen.getByText("Access")).toBeInTheDocument();
+        expect(screen.getByText("CM number")).toBeInTheDocument();
+        expect(screen.queryByText("Client")).not.toBeInTheDocument();
+        expect(screen.queryByText("Description")).not.toBeInTheDocument();
         const accessOf = (name: string) =>
             within(
                 screen.getByText(name).closest(".group") as HTMLElement,

@@ -16,7 +16,7 @@ import { useWorkspaceIdentity } from "@/app/hooks/useWorkspaceIdentity";
 import { useRouter } from "next/navigation";
 import { BookOpen, ChevronLeft, Plus } from "lucide-react";
 import { DocTable } from "@/app/components/documents/DocTable";
-import { NO_ROLE_MODEL } from "@/app/lib/permissions";
+import { can, type ProjectRole } from "@/app/lib/permissions";
 import type {
   DocTableFolderBreadcrumb,
   DocTableFolder,
@@ -37,8 +37,9 @@ import {
     getLibraryFilterOptions,
     getLibraryFolderChildren,
     getLibraryFolderPath,
-  getLibraryLevels,
-  listLibraryDocumentIds,
+    getLibraryLevels,
+    listLibraryDocumentIds,
+    type LibrarySource,
     moveLibraryDocument,
     moveLibraryFolder,
     renameLibraryDocument,
@@ -87,6 +88,7 @@ type LibraryWorkspaceContextValue = {
         kind: LibraryKind,
         update: SetStateAction<DocTableFolder[]>,
     ) => void;
+    sources: LibrarySource[];
 };
 
 const LIBRARY_TABS: { id: LibraryKind; label: string }[] = [
@@ -183,6 +185,7 @@ export function LibraryWorkspaceProvider({
             files: {},
             templates: {},
         });
+    const [sources, setSources] = useState<LibrarySource[]>([]);
     const folderChildrenRequestsRef = useRef<Map<string, Promise<void>>>(
         new Map(),
     );
@@ -218,6 +221,7 @@ export function LibraryWorkspaceProvider({
                                 limit: limits[folderId] ?? DOCUMENT_PAGE_SIZE,
           })),
                 ]);
+        if (response.sources) setSources(response.sources);
         const root = response.levels.find((level) => level.parentId === null);
         if (!root) throw new Error("Library root was not returned");
 
@@ -514,6 +518,7 @@ export function LibraryWorkspaceProvider({
             setSearchForKind,
             setDocumentsForKind,
             setFoldersForKind,
+            sources,
         }),
         [
             collections,
@@ -528,6 +533,7 @@ export function LibraryWorkspaceProvider({
             setDocumentsForKind,
             setFoldersForKind,
             setSearchForKind,
+            sources,
         ],
     );
 
@@ -572,6 +578,7 @@ export function LibraryCollectionPage({
         setSearchForKind,
         setDocumentsForKind,
         setFoldersForKind,
+        sources,
     } = useLibraryWorkspace();
     const collection = collections[kind];
     const collectionLoaded = collection !== null;
@@ -579,6 +586,33 @@ export function LibraryCollectionPage({
     const collectionRootPath = kind === "files" ? "/library" : "/library/templates";
   const debouncedSearch = useDebouncedValue(search, 250);
     const title = kind === "files" ? "Documents" : "Templates";
+    const currentAccessRole: ProjectRole | null = useMemo(() => {
+        if (!folderId) return sources.length > 1 ? "viewer" : "owner";
+        if (folderId.startsWith("source:")) {
+            return (
+                sources.find((source) => source.folder_id === folderId)
+                    ?.access_role ?? "viewer"
+            );
+        }
+        const folder = collection?.folders.find((row) => row.id === folderId) as
+            | { access_role?: ProjectRole }
+            | undefined;
+        return folder?.access_role ?? (sources.length > 1 ? "viewer" : "owner");
+    }, [collection?.folders, folderId, sources]);
+    const currentOrgId = useMemo(() => {
+        if (!folderId) return null;
+        if (folderId === "source:personal") return null;
+        if (folderId.startsWith("source:")) return folderId.slice("source:".length);
+        const folder = collection?.folders.find((row) => row.id === folderId) as
+            | { org_id?: string | null }
+            | undefined;
+        return folder?.org_id ?? null;
+    }, [collection?.folders, folderId]);
+    const canDo = useCallback(
+        (capability: Parameters<typeof can>[1]) =>
+            can(currentAccessRole, capability),
+        [currentAccessRole],
+    );
     const [selectionActions, setSelectionActions] = useState<DocTableSelectionActions | null>(null);
   const [documentTypeOptions, setDocumentTypeOptions] = useState<string[]>([]);
   const [tableQuery, setTableQuery] = useState<DocTableQuery>({
@@ -954,7 +988,9 @@ export function LibraryCollectionPage({
     const operations = useMemo(
         () => ({
             uploadDocument: (file: File, folderId?: string | null) =>
-                uploadLibraryDocument(scoped(kind), file, folderId),
+                uploadLibraryDocument(scoped(kind), file, folderId, {
+                    orgId: currentOrgId,
+                }),
             uploadDocuments: (
                 files: Array<{
                     file: File;
@@ -970,14 +1006,14 @@ export function LibraryCollectionPage({
                         folderId,
                         clientId,
                     })),
-                    options,
+                    { ...options, orgId: currentOrgId },
                 ),
       refreshCollection: async () => {
         await loadLibrary(kind);
         setServerQueryRefreshVersion((current) => current + 1);
       },
             createFolder: (name: string, parentFolderId?: string | null) =>
-                createLibraryFolder(scoped(kind), name, parentFolderId),
+                createLibraryFolder(scoped(kind), name, parentFolderId, currentOrgId),
             resolveFolderPath: (
                 segments: string[],
                 baseFolderId: string | null,
@@ -988,6 +1024,7 @@ export function LibraryCollectionPage({
                     segments,
                     baseFolderId,
                     conflictResolution,
+                    currentOrgId,
                 ),
             renameFolder: (folderId: string, name: string) =>
                 renameLibraryFolder(scoped(kind), folderId, name),
@@ -1001,7 +1038,7 @@ export function LibraryCollectionPage({
       bulkDeleteDocuments: (documentIds: string[]) =>
         bulkDeleteLibraryDocuments(scoped(kind), documentIds),
         }),
-        [kind, loadLibrary, scoped],
+        [currentOrgId, kind, loadLibrary, scoped],
     );
 
     return (
@@ -1052,7 +1089,10 @@ export function LibraryCollectionPage({
                                     <DocumentUploadMenu
                                         onUploadFiles={addDocumentsAction}
                                         onUploadFolder={uploadFolderAction}
-                                        disabled={loading}
+                                        disabled={
+                                            loading ||
+                                            !canDo("content.edit")
+                                        }
                                     />
                                 ),
                             },
@@ -1105,6 +1145,11 @@ export function LibraryCollectionPage({
                     search={search}
                     operations={operations}
                     emptyStateTitle={title}
+                    emptyFolderMessage={
+                        kind === "files"
+                            ? "No files in this library yet. Templates are on the Templates tab."
+                            : "No templates in this library yet."
+                    }
                     emptyStateSecondaryAction={
                         kind === "templates"
                             ? presetsEmptyStateAction
@@ -1137,11 +1182,7 @@ export function LibraryCollectionPage({
           autoLoadOnScroll
                     enableHeaderFilters
                     defaultSort={{ key: "updated", direction: "desc" }}
-                    // The library is the caller's own shelf: there is no
-                    // project, so no project role. Stated rather than left
-                    // implicit, so a surface that DOES have a role and forgot
-                    // to pass it stands out instead of silently opening.
-                    canDo={NO_ROLE_MODEL}
+                    canDo={canDo}
                 />
             </div>
         </div>

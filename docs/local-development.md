@@ -206,7 +206,9 @@ review where the model may run across many cells.
 
 1. Sign up in the app.
 2. If no provider key is configured in `backend/.env`, open
-   **Settings > API Keys** and add one.
+   **Settings > API Keys** and add one. An organisation admin can also save a
+   key under the organisation **API keys** menu; work in that organisation
+   runs on the organisation key.
 3. To use live US case-law tools, add CourtListener with your token under
    **Settings > Connectors**.
 4. Create or open a project and start chatting with documents.

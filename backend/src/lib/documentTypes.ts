@@ -7,10 +7,36 @@ export const ALLOWED_DOCUMENT_TYPES = new Set([
   "xls",
   "pptx",
   "ppt",
+  // Correspondence. The upload worker renders the message to PDF and files
+  // its attachments as sibling documents (lib/emailMessage.ts).
+  "eml",
+  "msg",
+  // A container, not a document: the worker expands it into one document per
+  // supported entry, preserving its folder structure, and keeps no zip row.
+  "zip",
 ]);
 
 export const ALLOWED_DOCUMENT_TYPES_LABEL =
-  "pdf, docx, doc, xlsx, xlsm, xls, pptx, ppt";
+  "pdf, docx, doc, xlsx, xlsm, xls, pptx, ppt, eml, msg, zip";
+
+const EMAIL_TYPES = new Set(["eml", "msg"]);
+const ARCHIVE_TYPES = new Set(["zip"]);
+
+export function isEmailDocumentType(fileType: string | null | undefined) {
+  return EMAIL_TYPES.has((fileType ?? "").toLowerCase());
+}
+
+export function isArchiveDocumentType(fileType: string | null | undefined) {
+  return ARCHIVE_TYPES.has((fileType ?? "").toLowerCase());
+}
+
+/**
+ * Types the worker unpacks into other documents rather than (or as well as)
+ * storing as one document: emails carry attachments, archives carry files.
+ */
+export function isExpandableDocumentType(fileType: string | null | undefined) {
+  return isEmailDocumentType(fileType) || isArchiveDocumentType(fileType);
+}
 
 // The lowercased extension of a filename, or "" when it has none. Three call
 // sites spelled this out with the same semantics; the other extension readers
@@ -79,6 +105,12 @@ export function contentTypeForDocumentType(fileType: string | null | undefined) 
       return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     case "ppt":
       return "application/vnd.ms-powerpoint";
+    case "eml":
+      return "message/rfc822";
+    case "msg":
+      return "application/vnd.ms-outlook";
+    case "zip":
+      return "application/zip";
     default:
       return "application/octet-stream";
   }

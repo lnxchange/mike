@@ -114,8 +114,11 @@ import {
 } from "@mike/client";
 import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { appConfig } from "@/config";
 import { useItemWorkspace } from "@/app/hooks/useItemWorkspace";
 import { notifyTabularReviewsChanged } from "@/app/lib/tabularReviewChanges";
+
+const t = appConfig.terminology;
 
 interface Props {
     reviewId: string;
@@ -1674,7 +1677,7 @@ export function TRView({ reviewId, projectId }: Props) {
                         ...(projectId
                             ? [
                                   {
-                                      label: "Projects",
+                                      label: t.projects,
                                       onClick: () => router.push("/projects"),
                                   },
                                   loading
@@ -1685,7 +1688,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                                 router.push(
                                                     `/projects/${projectId}`,
                                                 ),
-                                            title: "Back to project",
+                                            title: `Back to ${t.projectLower}`,
                                         }
                                       : {
                                             label: project?.name ?? "",
@@ -1693,7 +1696,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                                 router.push(
                                                     `/projects/${projectId}`,
                                                 ),
-                                            title: "Back to project",
+                                            title: `Back to ${t.projectLower}`,
                                         },
                               ]
                             : [
@@ -2146,7 +2149,7 @@ export function TRView({ reviewId, projectId }: Props) {
                         onClose={() => setAddDocsOpen(false)}
                         onSelect={(docs: Document[]) => handleAddDocuments(docs)}
                         breadcrumb={[
-                            "Projects",
+                            t.projects,
                             project.name +
                                 (project.cm_number
                                     ? ` (#${project.cm_number})`
@@ -2240,7 +2243,7 @@ export function TRView({ reviewId, projectId }: Props) {
                 breadcrumbs={[
                     ...(project
                         ? [
-                              "Projects",
+                              t.projects,
                               project.name +
                                   (project.cm_number
                                       ? ` (#${project.cm_number})`

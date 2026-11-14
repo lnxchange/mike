@@ -6,12 +6,23 @@ import { createSerialBatcher } from "../lib/serialBatcher";
 import { reportWordFailure } from "../lib/errorReporting";
 import { toWordText } from "../lib/wordText";
 import {
+  boldLeadFromOoxml,
   renderDocumentMarkdown,
   stripStructuralMarkers,
+  withDocumentSelection,
   type DocumentBlock,
 } from "../lib/documentMarkdown";
+import {
+  formatWordReviewSection,
+  type WordReviewChange,
+  type WordReviewComment,
+  type WordReviewKind,
+} from "../lib/wordReview";
 import type { RedlineEdit } from "../lib/redline";
-import { isParagraphStyleFormat } from "../lib/redline";
+import {
+  isParagraphStyleFormat,
+  paragraphStyleFormatName,
+} from "../lib/redline";
 import { createSecureUuid } from "../lib/secureUuid";
 import {
   bookmarkNameForEdit,
@@ -282,6 +293,19 @@ function logErrorMessage(error: unknown): string {
  * Word cannot place two top-level tables adjacently without a paragraph
  * between them, so each transition is exactly one table.
  */
+async function readSelection(
+  context: Word.RequestContext,
+): Promise<string> {
+  try {
+    const selected = context.document.getSelection();
+    selected.load("text");
+    await context.sync();
+    return selected.text ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function renderBodyAsMarkdown(
   context: Word.RequestContext,
   body: Word.Body,
@@ -289,7 +313,7 @@ async function renderBodyAsMarkdown(
   const paragraphs = body.paragraphs;
   const tables = body.tables;
   paragraphs.load(
-    "items/text,items/styleBuiltIn,items/tableNestingLevel,items/isListItem",
+    "items/text,items/style,items/styleBuiltIn,items/tableNestingLevel,items/isListItem",
   );
   tables.load("items/nestingLevel,items/values");
   await context.sync();
@@ -306,6 +330,7 @@ async function renderBodyAsMarkdown(
     (table) => table.nestingLevel === 1,
   );
   const blocks: DocumentBlock[] = [];
+  const paragraphIndexes: number[] = [];
   let tableIndex = 0;
   let inTable = false;
   paragraphs.items.forEach((paragraph, index) => {
@@ -314,7 +339,10 @@ async function renderBodyAsMarkdown(
         inTable = true;
         const table = topLevelTables[tableIndex];
         tableIndex += 1;
-        if (table) blocks.push({ kind: "table", values: table.values });
+        if (table) {
+          blocks.push({ kind: "table", values: table.values });
+          paragraphIndexes.push(-1);
+        }
       }
       return;
     }
@@ -324,12 +352,105 @@ async function renderBodyAsMarkdown(
     blocks.push({
       kind: "paragraph",
       text: paragraph.text,
+      style: paragraph.style,
       styleBuiltIn: paragraph.styleBuiltIn,
       listString: isRealListItem ? listItem.listString : undefined,
       listLevel: isRealListItem ? listItem.level : undefined,
     });
+    paragraphIndexes.push(index);
   });
+  await attachDefinitionBoldLeads(
+    context,
+    paragraphs.items,
+    blocks,
+    paragraphIndexes,
+  );
   return renderDocumentMarkdown(blocks);
+}
+
+const DEFINITION_HEADING =
+  /^(?:definitions?|interpretation|defined terms)$/i;
+
+/**
+ * Bold defined terms that are not introduced with "means" are only visible
+ * in the paragraph OOXML. Limit that read to the definitions section.
+ */
+async function attachDefinitionBoldLeads(
+  context: Word.RequestContext,
+  paragraphs: Word.Paragraph[],
+  blocks: DocumentBlock[],
+  paragraphIndexes: number[],
+): Promise<void> {
+  let start = -1;
+  let startLevel = 1;
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (!block || block.kind !== "paragraph") continue;
+    const text = block.text
+      .replace(/[\r\n\v]+$/g, "")
+      .trim()
+      .replace(/^\d+(?:\.\d+)*\s+/, "");
+    if (!DEFINITION_HEADING.test(text)) continue;
+    start = index;
+    const builtIn = block.styleBuiltIn;
+    startLevel =
+      builtIn === "Title" || builtIn === "Heading1"
+        ? 1
+        : builtIn === "Heading2"
+          ? 2
+          : builtIn === "Heading3"
+            ? 3
+            : builtIn === "Heading4"
+              ? 4
+              : builtIn === "Heading5"
+                ? 5
+                : builtIn === "Heading6"
+                  ? 6
+                  : 1;
+    break;
+  }
+  if (start < 0) return;
+  const targets: { index: number; ooxml: OfficeExtension.ClientResult<string> }[] =
+    [];
+  for (let index = start + 1; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (!block || block.kind !== "paragraph") continue;
+    const builtIn = block.styleBuiltIn;
+    const level =
+      builtIn === "Heading1" || builtIn === "Title"
+        ? 1
+        : builtIn === "Heading2"
+          ? 2
+          : builtIn === "Heading3"
+            ? 3
+            : builtIn === "Heading4"
+              ? 4
+              : builtIn === "Heading5"
+                ? 5
+                : builtIn === "Heading6"
+                  ? 6
+                  : undefined;
+    if (level !== undefined && level <= startLevel) break;
+    const paragraph = paragraphs[paragraphIndexes[index] ?? -1];
+    if (!paragraph) continue;
+    try {
+      targets.push({ index, ooxml: paragraph.getOoxml() });
+    } catch {
+      return;
+    }
+  }
+  if (targets.length === 0) return;
+  try {
+    await context.sync();
+  } catch {
+    return;
+  }
+  for (const target of targets) {
+    const block = blocks[target.index];
+    if (!block || block.kind !== "paragraph") continue;
+    const lead = boldLeadFromOoxml(target.ooxml.value ?? "");
+    if (lead) block.boldLead = lead;
+  }
 }
 
 /** Word reports paragraph breaks inconsistently (\r, \n, \v) across hosts. */
@@ -520,12 +641,12 @@ function matchesForSides(
 } {
   const wordReplacement = normalizeBreaks(toWordText(edit.replacement));
   const original = normalizeBreaks(edit.original);
-  // A heading style restyles the whole paragraph, so its Formatted revision
-  // reports the paragraph's text — or, on Word for the web, NO text at all
-  // (an empty-string paragraph-format revision). Ranges only report the
-  // revisions they intersect, so an empty-text match stays scoped to the
-  // passage the caller is looking at. Character formats keep the strict
-  // equality match.
+  // A heading style or list detachment restyles the whole paragraph, so its
+  // Formatted revision reports the paragraph's text — or, on Word for the
+  // web, NO text at all (an empty-string paragraph-format revision). Ranges
+  // only report the revisions they intersect, so an empty-text match stays
+  // scoped to the passage the caller is looking at. Character formats keep
+  // the strict equality match.
   const styleScoped = (edit.format ?? []).some(isParagraphStyleFormat);
   const formattedTextMatches = (text: string): boolean =>
     styleScoped
@@ -2681,6 +2802,257 @@ export function releaseTrackedEdits(
  * All functions return Promises and must be called in a component context
  * where Office.js has already initialised (i.e. inside Office.onReady).
  */
+function commentDate(value: unknown): string {
+  const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : undefined;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function reviewKind(type: string): WordReviewKind | "formatting" | null {
+  switch (type) {
+    case "Insert":
+    case "Added":
+    case "CellInsertion":
+      return "insertion";
+    case "Delete":
+    case "Deleted":
+    case "CellDeletion":
+      return "deletion";
+    case "MoveFrom":
+    case "MoveTo":
+    case "MovedFrom":
+    case "MovedTo":
+      return "move";
+    case "Replace":
+      return "replace";
+    case "ConflictInsert":
+      return "insertion";
+    case "ConflictDelete":
+      return "deletion";
+    case "Formatted":
+    case "Property":
+    case "ParagraphProperty":
+    case "Style":
+    case "StyleDefinition":
+    case "CellMerge":
+    case "TableProperty":
+    case "ParagraphNumber":
+      return "formatting";
+    default:
+      return type && type !== "None" ? "formatting" : null;
+  }
+}
+
+const REVIEW_TEXT_LOAD_LIMIT = 80;
+
+/**
+ * Desktop revisions first. getTrackedChanges() drops deleted text on Mac
+ * (office-js#5188), so it is only the fallback when the desktop inventory
+ * is missing or empty.
+ */
+async function readWordReviewChanges(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<{
+  changes: WordReviewChange[];
+  formattingCount: number;
+  unread: boolean;
+}> {
+  if (supportsDesktopRevisions()) {
+    try {
+      const desktop = await readDesktopReviewChanges(context);
+      if (desktop.changes.length > 0 || desktop.formattingCount > 0) {
+        return { ...desktop, unread: false };
+      }
+    } catch (error) {
+      console.warn(
+        "Desktop revision read failed; trying tracked changes",
+        logErrorMessage(error),
+      );
+    }
+  }
+  try {
+    return { ...(await readTrackedReviewChanges(context, body)), unread: false };
+  } catch (error) {
+    console.warn("Tracked-change read failed", logErrorMessage(error));
+    return { changes: [], formattingCount: 0, unread: true };
+  }
+}
+
+async function readDesktopReviewChanges(
+  context: Word.RequestContext,
+): Promise<{ changes: WordReviewChange[]; formattingCount: number }> {
+  const collection = context.document.revisions;
+  collection.load("items/type,items/author,items/date");
+  await context.sync();
+  return collectReviewChanges(
+    context,
+    collection.items.map((revision) => ({
+      type: String(revision.type),
+      author: revision.author ?? "",
+      date: commentDate(revision.date),
+      loadText: () => {
+        revision.range.load("text");
+        return () => revision.range.text ?? "";
+      },
+    })),
+  );
+}
+
+async function readTrackedReviewChanges(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<{ changes: WordReviewChange[]; formattingCount: number }> {
+  const collection = body.getTrackedChanges();
+  collection.load("items");
+  await context.sync();
+  for (const change of collection.items) {
+    change.load(["author", "date", "text", "type"]);
+  }
+  await context.sync();
+  let formattingCount = 0;
+  const changes: WordReviewChange[] = [];
+  for (const change of collection.items) {
+    const kind = reviewKind(String(change.type));
+    if (kind === "formatting") {
+      formattingCount += 1;
+      continue;
+    }
+    if (!kind) continue;
+    changes.push({
+      kind,
+      author: change.author ?? "",
+      date: commentDate(change.date),
+      text: change.text ?? "",
+    });
+  }
+  return { changes, formattingCount };
+}
+
+async function collectReviewChanges(
+  context: Word.RequestContext,
+  rows: {
+    type: string;
+    author: string;
+    date: string;
+    loadText: () => () => string;
+  }[],
+): Promise<{ changes: WordReviewChange[]; formattingCount: number }> {
+  let formattingCount = 0;
+  const pending: {
+    kind: WordReviewKind;
+    author: string;
+    date: string;
+    readText?: () => string;
+  }[] = [];
+  let textLoads = 0;
+  for (const row of rows) {
+    const kind = reviewKind(row.type);
+    if (kind === "formatting") {
+      formattingCount += 1;
+      continue;
+    }
+    if (!kind) continue;
+    const entry: (typeof pending)[number] = {
+      kind,
+      author: row.author,
+      date: row.date,
+    };
+    if (textLoads < REVIEW_TEXT_LOAD_LIMIT) {
+      entry.readText = row.loadText();
+      textLoads += 1;
+    }
+    pending.push(entry);
+  }
+  if (textLoads > 0) await context.sync();
+  return {
+    formattingCount,
+    changes: pending.map((entry) => ({
+      kind: entry.kind,
+      author: entry.author,
+      date: entry.date,
+      text: entry.readText ? entry.readText() : "",
+    })),
+  };
+}
+
+/**
+ * Review comments are not body text. A replies failure must not drop the
+ * parent bubbles: that is what made a marked-up file look uncommented.
+ */
+async function readWordReviewComments(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<{ comments: WordReviewComment[]; unread: boolean }> {
+  try {
+    const comments = body.getComments();
+    comments.load("items");
+    await context.sync();
+    if (comments.items.length === 0) return { comments: [], unread: false };
+    const anchors = comments.items.map((comment) => {
+      comment.load(["id", "authorName", "content", "creationDate", "resolved"]);
+      const anchor = comment.getRange();
+      anchor.load("text");
+      return anchor;
+    });
+    await context.sync();
+    let repliesUnread = false;
+    try {
+      for (const comment of comments.items) comment.replies.load("items");
+      await context.sync();
+      for (const comment of comments.items) {
+        comment.replies.items.forEach((reply) => {
+          reply.load(["authorName", "content", "creationDate"]);
+        });
+      }
+      await context.sync();
+    } catch (error) {
+      repliesUnread = true;
+      console.warn(
+        "Comment replies could not be read; sending the parent bubbles",
+        logErrorMessage(error),
+      );
+    }
+    return {
+      unread: false,
+      comments: comments.items.map((comment, index) => ({
+        id: comment.id,
+        author: comment.authorName ?? "",
+        date: commentDate(comment.creationDate),
+        anchor: anchors[index]?.text ?? "",
+        text: comment.content ?? "",
+        resolved: Boolean(comment.resolved),
+        replies: repliesUnread
+          ? []
+          : comment.replies.items.map((reply) => ({
+              author: reply.authorName ?? "",
+              date: commentDate(reply.creationDate),
+              text: reply.content ?? "",
+            })),
+      })),
+    };
+  } catch (error) {
+    console.warn("Comment read failed", logErrorMessage(error));
+    return { comments: [], unread: true };
+  }
+}
+
+/** Redline plus comment bubbles, appended after the accepted-view body. */
+async function readWordReviewSection(
+  context: Word.RequestContext,
+  body: Word.Body,
+): Promise<string> {
+  const revisions = await readWordReviewChanges(context, body);
+  const comments = await readWordReviewComments(context, body);
+  return formatWordReviewSection({
+    changes: revisions.changes,
+    formattingCount: revisions.formattingCount,
+    comments: comments.comments,
+    revisionsUnread: revisions.unread,
+    commentsUnread: comments.unread,
+  });
+}
+
 export function useWordDoc() {
   /** Read the plain text of the entire document body. */
   /**
@@ -2697,8 +3069,10 @@ export function useWordDoc() {
       serializeWordMutation(() =>
         Word.run(async (context) => {
           const body = context.document.body;
+          let text: string;
           try {
-            return await renderBodyAsMarkdown(context, body);
+            text = await renderBodyAsMarkdown(context, body);
+            text = withDocumentSelection(text, await readSelection(context));
           } catch (error) {
             reportWordFailure(error, {
               stage: "document-read",
@@ -2711,8 +3085,102 @@ export function useWordDoc() {
             );
             body.load("text");
             await context.sync();
-            return body.text;
+            text = body.text;
           }
+          try {
+            const review = await readWordReviewSection(context, body);
+            return `${text}\n\n${review}`;
+          } catch (error) {
+            console.warn(
+              "Review markup read failed; sending the body with that stated",
+              logErrorMessage(error),
+            );
+            return `${text}\n\n${formatWordReviewSection({
+              changes: [],
+              formattingCount: 0,
+              comments: [],
+              revisionsUnread: true,
+              commentsUnread: true,
+            })}`;
+          }
+        }),
+      ),
+    [],
+  );
+
+  const commentOnActiveDocument = useCallback(
+    (
+      comments: { anchor?: string; text: string; parent_id?: string }[],
+    ): Promise<{ comments: { id: string; status: string; error?: string }[] }> =>
+      serializeWordMutation(() =>
+        Word.run(async (context) => {
+          const body = context.document.body;
+          const results: { id: string; status: string; error?: string }[] = [];
+          for (const comment of comments) {
+            try {
+              if (comment.parent_id) {
+                const existing = body.getComments();
+                existing.load("items/id");
+                await context.sync();
+                const parent = existing.items.find(
+                  (item) => item.id === comment.parent_id,
+                );
+                if (!parent) {
+                  results.push({
+                    id: "",
+                    status: "not-found",
+                    error: `No comment with id "${comment.parent_id}".`,
+                  });
+                  continue;
+                }
+                const reply = parent.reply(comment.text);
+                reply.load("id");
+                await context.sync();
+                results.push({ id: reply.id, status: "replied" });
+                continue;
+              }
+              const anchor = comment.anchor ?? "";
+              const matches = body.search(anchor, { matchCase: true });
+              matches.load("items");
+              await context.sync();
+              if (matches.items.length === 0) {
+                results.push({
+                  id: "",
+                  status: "not-found",
+                  error: "The anchor does not appear in the document.",
+                });
+                continue;
+              }
+              if (matches.items.length > 1) {
+                results.push({
+                  id: "",
+                  status: "ambiguous",
+                  error: "The anchor appears more than once. Extend it until it is unique.",
+                });
+                continue;
+              }
+              const match = matches.items[0];
+              if (!match) {
+                results.push({
+                  id: "",
+                  status: "not-found",
+                  error: "The anchor does not appear in the document.",
+                });
+                continue;
+              }
+              const created = match.insertComment(comment.text);
+              created.load("id");
+              await context.sync();
+              results.push({ id: created.id, status: "added" });
+            } catch (error) {
+              results.push({
+                id: "",
+                status: "error",
+                error: logErrorMessage(error),
+              });
+            }
+          }
+          return { comments: results };
         }),
       ),
     [],
@@ -2980,7 +3448,7 @@ export function useWordDoc() {
                 const loadTargetParagraph = (range: Word.Range): void => {
                   try {
                     targetParagraph = range.paragraphs.getFirst() ?? null;
-                    targetParagraph?.load("text,tableNestingLevel");
+                    targetParagraph?.load("text,tableNestingLevel,isListItem");
                   } catch {
                     targetParagraph = null;
                   }
@@ -3092,6 +3560,18 @@ export function useWordDoc() {
                       else if (format === "italic") match.font.italic = true;
                       else if (format === "underline") {
                         match.font.underline = Word.UnderlineType.single;
+                      } else if (paragraphStyleFormatName(format)) {
+                        const styleName = paragraphStyleFormatName(format);
+                        if (styleName && targetParagraph) {
+                          targetParagraph.style = styleName;
+                        }
+                      } else if (format === "clearNumbering") {
+                        // Removes a list the paragraph style does not own.
+                        // A heading style's own numbering is left in place;
+                        // the typed number in the text is a separate edit.
+                        if (targetParagraph?.isListItem) {
+                          targetParagraph.detachFromList();
+                        }
                       } else if (isParagraphStyleFormat(format)) {
                         const styleByFormat = {
                           heading1: Word.BuiltInStyleName.heading1,
@@ -3507,6 +3987,7 @@ export function useWordDoc() {
 
   return {
     readDocumentMarkdown,
+    commentOnActiveDocument,
     applyTrackedEdits,
     acceptPendingRevisionsForEdit,
   };

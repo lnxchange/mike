@@ -15,6 +15,7 @@ import { can, roleFrom } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
+import { appConfig } from "@/config";
 
 interface Props {
     params: Promise<{ id: string }>;
@@ -152,7 +153,7 @@ export default function ProjectAssistantPage({ params }: Props) {
         setSelectedChatIds(failedIds);
         const notices = [
             blocked > 0
-                ? `${blocked} selected chat${blocked === 1 ? " was" : "s were"} skipped because only a project owner can delete them.`
+                ? `${blocked} selected chat${blocked === 1 ? " was" : "s were"} skipped because only a ${appConfig.terminology.projectLower} owner can delete them.`
                 : null,
             failedIds.length > 0
                 ? `${failedIds.length} chat${failedIds.length === 1 ? " was" : "s were"} not deleted because the request failed. ${failedIds.length === 1 ? "It remains" : "They remain"} selected so you can try again.`

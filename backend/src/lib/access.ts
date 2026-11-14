@@ -234,6 +234,78 @@ export async function loadOwnerlessOrgItemIds(
     return ownerless;
 }
 
+/**
+ * The firm shelf is stricter than an org project: members may read and
+ * replicate templates, and only admins (Owner) may mutate the shared shelf.
+ */
+export function libraryRoleFromOrgRole(role: OrgRole): ProjectRole {
+    return isOrgAdmin(role) ? "owner" : "viewer";
+}
+
+export type LibrarySource = {
+    id: string | null;
+    label: string;
+    access_role: ProjectRole;
+    org_role: OrgRole | null;
+};
+
+export type LibraryActor = {
+    userId: string;
+    sources: LibrarySource[];
+};
+
+/** Personal shelf plus every organisation the caller belongs to. */
+export async function resolveLibraryActor(
+    db: Db,
+    userId: string,
+): Promise<LibraryActor> {
+    const sources: LibrarySource[] = [
+        {
+            id: null,
+            label: "Personal",
+            access_role: "owner",
+            org_role: null,
+        },
+    ];
+    const orgIds = await listUserOrgIds(userId, db);
+    if (orgIds.length === 0) return { userId, sources };
+
+    const [{ data: orgs }, { data: memberships }] = await Promise.all([
+        db.from("organizations").select("id, name").in("id", orgIds),
+        db.from("org_members").select("org_id, role").eq("user_id", userId),
+    ]);
+    const nameById = new Map<string, string>();
+    for (const row of (orgs ?? []) as { id?: string; name?: string }[]) {
+        if (row.id) nameById.set(row.id, row.name?.trim() || "Organisation");
+    }
+    const roleById = new Map<string, OrgRole>();
+    for (const row of (memberships ?? []) as {
+        org_id?: string;
+        role?: string;
+    }[]) {
+        if (row.org_id && isOrgRole(row.role)) roleById.set(row.org_id, row.role);
+    }
+    for (const orgId of [...orgIds].sort()) {
+        const orgRole = roleById.get(orgId);
+        if (!orgRole) continue;
+        sources.push({
+            id: orgId,
+            label: nameById.get(orgId) ?? "Organisation",
+            access_role: libraryRoleFromOrgRole(orgRole),
+            org_role: orgRole,
+        });
+    }
+    return { userId, sources };
+}
+
+export function librarySourceFor(
+    actor: LibraryActor,
+    orgId: string | null | undefined,
+): LibrarySource | null {
+    const id = orgId ?? null;
+    return actor.sources.find((source) => source.id === id) ?? null;
+}
+
 /** Normalize an email the way every grant/invitation row stores it. */
 export function normalizeEmail(
     email: string | null | undefined,
@@ -681,6 +753,18 @@ export async function ensureDocAccess(
                   !!doc.user_id && doc.user_id === userId,
               )
             : { ok: false };
+    }
+    if (doc.org_id) {
+        const orgRole = await getOrgRole(userId, doc.org_id, db);
+        if (orgRole) {
+            const isCreator = !!doc.user_id && doc.user_id === userId;
+            // Organisation library shelf. Members may read and replicate;
+            // only admins may mutate. A non-member falls through to the
+            // private-document rules below (departure grants, no implicit
+            // owner access).
+            const projectRole = libraryRoleFromOrgRole(orgRole);
+            return resourceAccessFor(projectRole, orgRole, isCreator);
+        }
     }
     // A document that sits in no project or workflow has nothing to be
     // shared through: it is its uploader's alone, in Personal and in an

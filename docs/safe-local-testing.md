@@ -9,12 +9,46 @@ documents only.
 Create separate test resources for Mike:
 
 - a throwaway Supabase project
-- a throwaway S3-compatible storage bucket, such as Cloudflare R2
+- a throwaway S3-compatible storage bucket, such as Cloudflare R2 or Supabase Storage's
+  own S3-compatible endpoint (see "Where Uploaded Files Live" below)
 - disposable model-provider API keys with low spending limits
 - a test email account
 
 Do not use production Supabase projects, production storage buckets, firm API
 keys, or real client documents for initial testing.
+
+## Where Uploaded Files Live
+
+Mike does not use Supabase's native Storage client/API directly in code. Uploaded
+documents, generated documents, and document versions are written to an S3-compatible
+bucket via `backend/src/lib/storage.ts`, using whichever endpoint `R2_ENDPOINT_URL` points
+at — this is entirely environment-driven, see `backend/.env.example`. Cloudflare R2 is the
+example this repo documents by default, but **Supabase Storage also exposes a fully
+S3-compatible endpoint** (`https://<project-ref>.storage.supabase.co/storage/v1/s3`,
+enabled via Storage > Configuration > S3 in the Supabase dashboard) that works as a
+drop-in for these same four variables — a good option if you'd rather not add a separate
+Cloudflare account when you already have a Supabase project. A local MinIO instance or any
+other S3-compatible provider works the same way. Object keys are namespaced by user and
+document ID, for example:
+
+```
+documents/<userId>/<docId>/source.pdf
+documents/<userId>/<docId>/versions/<versionSlug>.docx
+generated/<userId>/<docId>/generated.docx
+```
+
+Postgres (Supabase) only stores metadata about these files (filename, size, status, the
+storage key) — never the file bytes themselves. If `R2_ENDPOINT_URL` /
+`R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are not set, uploads/downloads are disabled
+(`storageEnabled` is `false` in `backend/src/lib/storage.ts`) but the rest of the app still
+runs — useful for testing everything except document flows before setting up a bucket.
+
+For local/test deployments, point `R2_ENDPOINT_URL` at a disposable bucket (a throwaway R2
+bucket, or a local MinIO container) so test documents never land in a bucket you also use
+for anything real. Because the storage client is a plain S3-compatible client with no
+provider-specific code paths, swapping to a different provider later (including a future
+mode.law-managed bucket) only requires changing these four environment variables — no code
+changes.
 
 ## Keep Secrets Out of the Frontend
 

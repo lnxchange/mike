@@ -77,6 +77,24 @@ function withPdf(
     fakePdf(pages, annotations);
 }
 
+describe("extractPdfText text layer notices", () => {
+  it("says a fully empty PDF has no text layer", async () => {
+    withPdf([[], []]);
+    await expect(extractPdfText(new ArrayBuffer(8))).resolves.toBe(
+      "This PDF has no text layer. It looks scanned, and none of its pages could be read (1-2). Do not invent its contents.",
+    );
+  });
+
+  it("names the pages that have no text and keeps the pages that do", async () => {
+    withPdf([[], [item("Clause 5", 72, 700, true)], []]);
+    const text = await extractPdfText(new ArrayBuffer(8));
+    expect(text).toContain(
+      "Pages without a text layer: 1, 3. Those pages could not be read.",
+    );
+    expect(text).toContain("[Page 2]\nClause 5");
+  });
+});
+
 describe("extractPdfText layout reconstruction", () => {
   it.each([0, 0.5, 1])(
     "joins kerning fragments separated by %s points",

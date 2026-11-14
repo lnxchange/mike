@@ -258,6 +258,9 @@ describe("OrganizationsOverview", () => {
       id: "org-2",
       name: "New Chambers",
     });
+    mocks.createOrgInvitation.mockResolvedValue({
+      email_delivery: "sent",
+    });
     render(<OrganizationsOverview />);
     await screen.findByText("Elite Law LLP");
 

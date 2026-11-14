@@ -22,23 +22,23 @@ export type Provider =
     | "ollama";
 
 export const REASONING_LEVELS = [
-    "none",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
 ] as const;
 
 export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 
 export type OpenAIToolSchema = {
-    type: "function";
-    function: {
-        name: string;
-        description: string;
-        parameters: Record<string, unknown>;
-    };
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 };
 
 export type LlmMessage = {
@@ -60,8 +60,8 @@ export type NormalizedToolCall = {
 };
 
 export type NormalizedToolResult = {
-    tool_use_id: string;
-    content: string;
+  tool_use_id: string;
+  content: string;
 };
 
 export type StreamCallbacks = {
@@ -161,6 +161,9 @@ export type ProviderSettings = {
     custom?: { baseUrl: string } | null;
 };
 
+/** Tool-loop budget for interactive chat. The last step is reserved for writing. */
+export const DEFAULT_STREAM_MAX_ITERATIONS = 16;
+
 export type StreamChatParams = {
     model: string;
     systemPrompt: string;
@@ -182,6 +185,17 @@ export type StreamChatParams = {
      * latency.
      */
     reasoning?: ReasoningLevel;
+    /**
+     * This turn must name its steps with create_plan before it can answer.
+     * The adapter forces that call after one look and does not open a
+     * writing step.
+     */
+    requirePlan?: boolean;
+    /**
+     * Set during the turn when update_plan finishes every item. The next
+     * model step must write the summary instead of calling more tools.
+     */
+    planSummaryNow?: { current: boolean };
     abortSignal?: AbortSignal;
     /**
      * Durable id of the conversation this request belongs to. Adapters use it
@@ -203,7 +217,7 @@ export type StreamChatParams = {
 };
 
 export type StreamChatResult = {
-    fullText: string;
+  fullText: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -247,17 +261,17 @@ export type ConfiguredModel = {
  * synthesize their replies into the single response the caller sees.
  */
 export type CommitteeModel = {
-    id: string;
-    label?: string;
-    members: Array<
-        | string
-        | {
-              id?: string;
-              model: string;
-              label?: string;
-              systemPrompt?: string;
-          }
-    >;
-    chair: string;
-    strategy?: "synthesize";
+  id: string;
+  label?: string;
+  members: Array<
+    | string
+    | {
+        id?: string;
+        model: string;
+        label?: string;
+        systemPrompt?: string;
+      }
+  >;
+  chair: string;
+  strategy?: "synthesize";
 };

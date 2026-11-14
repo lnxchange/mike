@@ -6,11 +6,11 @@
   xsi:type="TaskPaneApp">
 
   <Id>a1b2c3d4-e5f6-7890-abcd-ef1234567890</Id>
-  <Version>1.0.0.1</Version>
-  <ProviderName>MikeOSS</ProviderName>
+  <Version>1.0.0.2</Version>
+  <ProviderName>Libris</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Mike" />
-  <Description DefaultValue="AI-powered legal assistant for Word" />
+  <DisplayName DefaultValue="Libris Colleague" />
+  <Description DefaultValue="AI colleague for legal work in Word" />
 
   <IconUrl DefaultValue="https://localhost:3200/assets/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="https://localhost:3200/assets/icon-80.png" />
@@ -18,6 +18,11 @@
 
   <AppDomains>
     <AppDomain>https://localhost:3200</AppDomain>
+    <AppDomain>https://login.microsoftonline.com</AppDomain>
+    <AppDomain>https://login.microsoft.com</AppDomain>
+    <AppDomain>https://login.live.com</AppDomain>
+    <AppDomain>https://accounts.google.com</AppDomain>
+    <AppDomain>https://gttnqqwqoirwbvalqfce.supabase.co</AppDomain>
   </AppDomains>
 
   <Hosts>
@@ -87,11 +92,11 @@
         <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3200/taskpane.html" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="GroupLabel" DefaultValue="Mike Legal AI" />
-        <bt:String id="TaskpaneButton.Label" DefaultValue="Mike" />
+        <bt:String id="GroupLabel" DefaultValue="Libris Colleague" />
+        <bt:String id="TaskpaneButton.Label" DefaultValue="Libris Colleague" />
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open the Mike AI legal assistant pane" />
+        <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open Libris Colleague" />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

@@ -2,6 +2,7 @@
 
 import type { Workflow } from "../shared/types";
 import { WorkflowPickerModal } from "../workflows/WorkflowPickerModal";
+import { appConfig } from "@/config";
 
 interface Props {
     open: boolean;
@@ -22,7 +23,7 @@ export function AssistantWorkflowModal({
 }: Props) {
     const breadcrumbs = projectName
         ? [
-              "Projects",
+              appConfig.terminology.projects,
               `${projectName}${projectCmNumber ? ` (#${projectCmNumber})` : ""}`,
               "Assistant",
               "Add workflow",

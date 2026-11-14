@@ -32,10 +32,13 @@ create table if not exists public.user_profiles (
     check (
       professional_title is null
       or professional_title in (
+        'Principal',
         'Partner',
+        'Special Counsel',
         'Senior Associate',
         'Associate',
         'Law Clerk',
+        'Paralegal',
         'Counsel',
         'General Counsel',
         'Legal Counsel',
@@ -61,6 +64,10 @@ create table if not exists public.user_profiles (
   -- Superseded by user_courtlistener_connections.enabled (20261022_01) and
   -- no longer read; kept for a backend that predates that migration.
   legal_research_us boolean not null default true,
+  legal_research_au boolean,
+  legal_research_au_energy boolean,
+  legal_research_au_vic boolean,
+  legal_research_au_cases boolean,
   quick_actions_visible boolean not null default true,
   -- Whether each response and subagent shows the model, reasoning effort and
   -- token count it used (Settings > Features).
@@ -693,6 +700,31 @@ create index if not exists idx_org_api_keys_org
 
 alter table public.org_api_keys enable row level security;
 
+create table if not exists public.user_microsoft_tokens (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  encrypted_access_token text not null,
+  access_token_iv text not null,
+  access_token_tag text not null,
+  encrypted_refresh_token text not null,
+  refresh_token_iv text not null,
+  refresh_token_tag text not null,
+  access_token_expires_at timestamptz not null,
+  granted_scopes text not null,
+  mailbox_upn text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_microsoft_tokens enable row level security;
+
+create table if not exists public.user_outlook_signatures (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  html text not null check (char_length(html) between 1 and 500000),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_outlook_signatures enable row level security;
+
 -- Ordered, user-selected models for API routing gateways. Router slugs are
 -- deliberately provider-neutral (for example `openrouter` or `vercel`).
 create table if not exists public.user_router_models (
@@ -1024,6 +1056,10 @@ create table if not exists public.projects (
   org_id uuid references public.organizations(id) on delete restrict,
   name text not null,
   cm_number text,
+  client_name text,
+  description text,
+  zoho_deal_id text,
+  sharepoint_folder_url text,
   practice text,
   -- 'private': the creator, the organization's owners and the members it has
   -- been shared with. 'organization': every member of its organization.
@@ -1255,22 +1291,20 @@ create index if not exists idx_project_subfolders_project
 
 create table if not exists public.library_folders (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  -- Creator; nullable so an org shelf survives the account that first
+  -- created a folder. Personal folders must keep a user_id (see check).
+  user_id uuid references auth.users(id) on delete set null,
+  org_id uuid references public.organizations(id) on delete cascade,
   library_kind text not null default 'file',
   name text not null,
   parent_folder_id uuid references public.library_folders(id) on delete cascade,
-  -- The workspace the folder is in: an organization, or null for Personal.
-  -- A person's library is per workspace, and private to them in each.
-  org_id uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint library_folders_kind_check
     check (library_kind in ('file', 'template')),
-  -- Tied to the membership, as a person's memory for a workspace is:
-  -- leaving, being removed and the organization being deleted all take it.
-  constraint library_folders_workspace_member_fkey
-    foreign key (org_id, user_id)
-    references public.org_members(org_id, user_id) on delete cascade
+  constraint library_folders_owner_check check (
+    org_id is not null or user_id is not null
+  )
 );
 
 create index if not exists idx_library_folders_org
@@ -1281,6 +1315,49 @@ create index if not exists idx_library_folders_user_kind
 
 create index if not exists idx_library_folders_parent
   on public.library_folders(parent_folder_id);
+
+create index if not exists idx_library_folders_org_kind
+  on public.library_folders(org_id, library_kind)
+  where org_id is not null;
+
+-- Background repository of official legislation, regulations, and court
+-- documents Colleague retrieved or the user uploaded. Service-role only.
+create table if not exists public.legal_source_documents (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid references public.organizations(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete set null,
+  family text not null
+    check (family in ('energy', 'legislation', 'vic_legislation', 'case_law')),
+  instrument_id text not null,
+  name text not null,
+  version_label text,
+  official_url text not null,
+  retrieved_via text not null
+    check (retrieved_via in ('official', 'exa', 'upload')),
+  currency_status text not null default 'current'
+    check (currency_status in ('current', 'unconfirmed', 'superseded')),
+  last_checked_at timestamptz not null default now(),
+  last_used_at timestamptz not null default now(),
+  full_text text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint legal_source_documents_owner_check check (
+    org_id is not null or user_id is not null
+  )
+);
+
+alter table public.legal_source_documents enable row level security;
+
+create index if not exists idx_legal_source_documents_lookup
+  on public.legal_source_documents (family, instrument_id, last_used_at desc);
+
+create unique index if not exists legal_source_documents_org_uniq
+  on public.legal_source_documents (org_id, family, instrument_id, coalesce(version_label, ''))
+  where org_id is not null;
+
+create unique index if not exists legal_source_documents_user_uniq
+  on public.legal_source_documents (user_id, family, instrument_id, coalesce(version_label, ''))
+  where org_id is null;
 
 create table if not exists public.documents (
   archived_at timestamptz,
@@ -1294,6 +1371,19 @@ create table if not exists public.documents (
   folder_id uuid references public.project_subfolders(id) on delete set null,
   library_kind text not null default 'file',
   library_folder_id uuid references public.library_folders(id) on delete set null,
+  -- Reference back to the external item a synced document mirrors (today:
+  -- SharePoint via the Attune filer). Null for ordinary uploads.
+  external_provider text,
+  external_item_id text,
+  external_ctag text,
+  external_web_url text,
+  -- Correspondence fields mirrored from SharePoint list columns or parsed
+  -- from an .eml/.msg. created_at remains ingest time.
+  email_subject text,
+  email_from text,
+  email_to text,
+  email_received_at timestamptz,
+  email_internet_message_id text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint documents_library_kind_check
@@ -1303,12 +1393,30 @@ create table if not exists public.documents (
 create index if not exists idx_documents_user_project
   on public.documents(user_id, project_id);
 
+-- One document per external item within a project, so a sync re-run never
+-- files the same item twice.
+create unique index if not exists documents_project_external_item_unique
+  on public.documents(project_id, external_provider, external_item_id)
+  where external_item_id is not null;
+
 create index if not exists idx_documents_project_folder
   on public.documents(project_id, folder_id);
+
+create index if not exists idx_documents_project_email_received
+  on public.documents(project_id, email_received_at desc)
+  where email_received_at is not null;
+
+create index if not exists idx_documents_email_internet_message_id
+  on public.documents(email_internet_message_id)
+  where email_internet_message_id is not null;
 
 create index if not exists idx_documents_library_kind_folder
   on public.documents(user_id, library_kind, library_folder_id)
   where project_id is null;
+
+create index if not exists idx_documents_org_library_kind_folder
+  on public.documents(org_id, library_kind, library_folder_id)
+  where project_id is null and org_id is not null;
 
 create index if not exists idx_documents_org
   on public.documents(org_id);
@@ -1327,8 +1435,16 @@ create table if not exists public.document_versions (
   -- PDF pages without a text layer (scanned without OCR); null = not measured.
   textless_page_count integer,
   content_sha256 text,
+  -- Changes when the bytes change, so a late text job cannot overwrite a newer edit.
+  text_revision uuid not null default gen_random_uuid(),
   deleted_at timestamptz,
   deleted_by uuid references auth.users(id) on delete set null,
+  -- SharePoint item created when a Colleague edit is saved into DR.
+  -- The document row keeps the source item. This id stops the next delta
+  -- from importing the DR copy a second time.
+  external_provider text,
+  external_item_id text,
+  external_ctag text,
   created_at timestamptz not null default now(),
   constraint document_versions_source_check
     check (source = any (array[
@@ -1337,7 +1453,8 @@ create table if not exists public.document_versions (
       'assistant_edit'::text,
       'user_accept'::text,
       'user_reject'::text,
-      'generated'::text
+      'generated'::text,
+      'sharepoint_sync'::text
     ]))
 );
 
@@ -1350,6 +1467,110 @@ create index if not exists document_versions_active_document_id_idx
 
 create index if not exists document_versions_doc_vnum_idx
   on public.document_versions(document_id, version_number);
+
+create index if not exists document_versions_external_item_idx
+  on public.document_versions(document_id)
+  where external_item_id is not null;
+
+-- Derived text for find_documents. The read path keeps its storage cache.
+create table if not exists public.document_version_texts (
+  version_id uuid primary key references public.document_versions(id) on delete cascade,
+  source_revision uuid not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'processing', 'ready', 'failed')),
+  text_content text,
+  textless_page_count integer,
+  updated_at timestamptz not null default now(),
+  constraint document_version_texts_ready
+    check ((status = 'ready') = (text_content is not null))
+);
+
+alter table public.document_version_texts enable row level security;
+revoke all on public.document_version_texts from public, anon, authenticated;
+grant select, insert, update, delete on public.document_version_texts to service_role;
+
+create extension if not exists pg_trgm;
+
+do $$
+declare extension_schema text;
+begin
+  select n.nspname into extension_schema
+    from pg_extension e
+    join pg_namespace n on n.oid = e.extnamespace
+   where e.extname = 'pg_trgm';
+  if extension_schema is not null then
+    execute format(
+      'create index if not exists document_version_texts_find_idx on public.document_version_texts using gin (lower(text_content) %I.gin_trgm_ops) where status = %L',
+      extension_schema,
+      'ready'
+    );
+  end if;
+end $$;
+
+create or replace function public.touch_document_text_revision()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if tg_op = 'UPDATE' and (
+    new.storage_path is distinct from old.storage_path
+    or new.content_sha256 is distinct from old.content_sha256
+    or new.file_type is distinct from old.file_type
+  ) then
+    new.text_revision := gen_random_uuid();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists document_versions_touch_text_revision on public.document_versions;
+create trigger document_versions_touch_text_revision
+  before update of storage_path, content_sha256, file_type
+  on public.document_versions
+  for each row execute procedure public.touch_document_text_revision();
+
+create table if not exists public.playbooks (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  org_id uuid references public.organizations(id) on delete cascade,
+  name text not null check (char_length(name) between 1 and 200),
+  represented_party text,
+  description text,
+  visibility text not null default 'private'
+    check (visibility in ('private', 'public')),
+  content jsonb not null default '{"rules":[]}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.playbook_shares (
+  playbook_id uuid not null references public.playbooks(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  role text not null check (role in ('viewer', 'editor')),
+  primary key (playbook_id, user_id)
+);
+
+create table if not exists public.playbook_runs (
+  id uuid primary key default gen_random_uuid(),
+  playbook_id uuid not null references public.playbooks(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  document_id uuid,
+  mode text not null default 'strict' check (mode in ('strict', 'permissive')),
+  summary text not null default '',
+  findings jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table public.playbooks enable row level security;
+alter table public.playbook_shares enable row level security;
+alter table public.playbook_runs enable row level security;
+revoke all on public.playbooks from public, anon, authenticated;
+revoke all on public.playbook_shares from public, anon, authenticated;
+revoke all on public.playbook_runs from public, anon, authenticated;
+grant select, insert, update, delete on public.playbooks to service_role;
+grant select, insert, update, delete on public.playbook_shares to service_role;
+grant select, insert, update, delete on public.playbook_runs to service_role;
 
 create table if not exists public.upload_sessions (
   id uuid primary key,
@@ -1448,6 +1669,9 @@ create table if not exists public.upload_session_files (
   -- Set once the worker has written the destination documents row, so a
   -- retry can tell "never created" from "created, then deleted by the user".
   document_created_at timestamptz,
+  -- Caller-supplied per-file metadata the worker copies onto the created
+  -- document (today: the manifest's optional `external` block).
+  client_meta jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint upload_session_files_client_id_check
@@ -1455,7 +1679,7 @@ create table if not exists public.upload_session_files (
   constraint upload_session_files_filename_check
     check (length(filename) between 1 and 255),
   constraint upload_session_files_file_type_check
-    check (file_type in ('pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt')),
+    check (file_type in ('pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt', 'eml', 'msg', 'zip')),
   constraint upload_session_files_content_type_check
     check (length(content_type) between 1 and 255),
   constraint upload_session_files_size_check
@@ -2384,7 +2608,15 @@ create table if not exists public.chats (
   -- the workspace its author was in. Null is personal.
   org_id uuid references public.organizations(id) on delete restrict,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- One assistant turn at a time. Held by claim_chat_turn, kept alive by
+  -- heartbeat_chat_turn, cleared by release_chat_turn; a stale heartbeat
+  -- lets the next request reclaim the chat after a crashed process.
+  active_turn_id uuid,
+  active_turn_message_id uuid,
+  active_turn_started_at timestamptz,
+  active_turn_heartbeat_at timestamptz,
+  active_turn_cancel_requested_at timestamptz
 );
 
 create index if not exists idx_chats_user
@@ -2679,6 +2911,140 @@ begin
       end
   where id = target.id;
   return 'appended';
+end;
+$$;
+
+-- Claim the chat for one turn. A live lease belongs to another turn while its
+-- heartbeat is fresh; a stale heartbeat means the owning process is gone and
+-- the chat may be reclaimed.
+create or replace function public.claim_chat_turn(
+  p_chat_id uuid,
+  p_turn_id uuid,
+  p_assistant_message_id uuid,
+  p_stale_after_seconds integer default 90
+)
+returns table(
+  claimed boolean,
+  active_turn_id uuid,
+  active_turn_message_id uuid,
+  active_turn_started_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target public.chats%rowtype;
+begin
+  if p_turn_id is null or p_assistant_message_id is null
+    or p_stale_after_seconds < 10 or p_stale_after_seconds > 3600
+  then
+    raise exception using errcode = '22023', message = 'invalid_chat_turn_claim';
+  end if;
+
+  select * into target from public.chats where id = p_chat_id for update;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'chat_not_found';
+  end if;
+
+  if target.active_turn_id is not null
+    and target.active_turn_id <> p_turn_id
+    and coalesce(target.active_turn_heartbeat_at, target.active_turn_started_at)
+        > now() - make_interval(secs => p_stale_after_seconds)
+  then
+    return query select
+      false,
+      target.active_turn_id,
+      target.active_turn_message_id,
+      target.active_turn_started_at;
+    return;
+  end if;
+
+  update public.chats
+  set active_turn_id = p_turn_id,
+      active_turn_message_id = p_assistant_message_id,
+      active_turn_started_at = now(),
+      active_turn_heartbeat_at = now(),
+      active_turn_cancel_requested_at = null
+  where id = p_chat_id;
+
+  return query select true, p_turn_id, p_assistant_message_id, now();
+end;
+$$;
+
+-- Keep the lease alive and learn whether a cancel was requested. `alive` is
+-- false when another turn has taken the chat; the caller must stop.
+create or replace function public.heartbeat_chat_turn(
+  p_chat_id uuid,
+  p_turn_id uuid
+)
+returns table(alive boolean, cancel_requested boolean)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target public.chats%rowtype;
+begin
+  select * into target from public.chats where id = p_chat_id for update;
+  if not found or target.active_turn_id is distinct from p_turn_id then
+    return query select false, false;
+    return;
+  end if;
+  update public.chats
+  set active_turn_heartbeat_at = now()
+  where id = p_chat_id;
+  return query select true, target.active_turn_cancel_requested_at is not null;
+end;
+$$;
+
+create or replace function public.release_chat_turn(
+  p_chat_id uuid,
+  p_turn_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.chats
+  set active_turn_id = null,
+      active_turn_message_id = null,
+      active_turn_started_at = null,
+      active_turn_heartbeat_at = null,
+      active_turn_cancel_requested_at = null
+  where id = p_chat_id and active_turn_id = p_turn_id;
+  return found;
+end;
+$$;
+
+-- Ask the running turn to stop. The turn itself notices on its next
+-- heartbeat (or immediately when it runs in the same process).
+create or replace function public.request_chat_turn_cancel(
+  p_chat_id uuid,
+  p_assistant_message_id uuid
+)
+returns table(requested boolean, turn_id uuid)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target public.chats%rowtype;
+begin
+  select * into target from public.chats where id = p_chat_id for update;
+  if not found
+    or target.active_turn_id is null
+    or target.active_turn_message_id is distinct from p_assistant_message_id
+  then
+    return query select false, null::uuid;
+    return;
+  end if;
+  update public.chats
+  set active_turn_cancel_requested_at = coalesce(active_turn_cancel_requested_at, now())
+  where id = p_chat_id;
+  return query select true, target.active_turn_id;
 end;
 $$;
 
@@ -3303,6 +3669,7 @@ returns table (
   id uuid,
   project_id uuid,
   user_id text,
+  org_id uuid,
   status text,
   folder_id uuid,
   library_kind text,
@@ -3326,6 +3693,7 @@ as $$
     d.id,
     d.project_id,
     d.user_id::text as user_id,
+    d.org_id,
     d.status,
     d.folder_id,
     d.library_kind,
@@ -3376,6 +3744,14 @@ as $$
     case when p_sort_key = 'created' and p_sort_direction = 'desc' then d.created_at else null end desc,
     case when p_sort_key = 'updated' and p_sort_direction = 'asc' then d.updated_at else null end asc,
     case when p_sort_key = 'updated' and p_sort_direction = 'desc' then d.updated_at else null end desc,
+    case when p_sort_key = 'arrived' and p_sort_direction = 'asc' then coalesce(d.email_received_at, '-infinity'::timestamptz) else null end asc,
+    case when p_sort_key = 'arrived' and p_sort_direction = 'desc' then coalesce(d.email_received_at, '-infinity'::timestamptz) else null end desc,
+    case when p_sort_key = 'from' and p_sort_direction = 'asc' then lower(coalesce(d.email_from, '')) else null end asc,
+    case when p_sort_key = 'from' and p_sort_direction = 'desc' then lower(coalesce(d.email_from, '')) else null end desc,
+    case when p_sort_key = 'to' and p_sort_direction = 'asc' then lower(coalesce(d.email_to, '')) else null end asc,
+    case when p_sort_key = 'to' and p_sort_direction = 'desc' then lower(coalesce(d.email_to, '')) else null end desc,
+    case when p_sort_key = 'subject' and p_sort_direction = 'asc' then lower(coalesce(d.email_subject, '')) else null end asc,
+    case when p_sort_key = 'subject' and p_sort_direction = 'desc' then lower(coalesce(d.email_subject, '')) else null end desc,
     d.updated_at desc,
     d.id asc
   limit greatest(coalesce(p_limit, 50), 1)
@@ -3520,12 +3896,13 @@ create or replace function public.get_library_document_ids(
 )
 returns table (
   id uuid,
-  user_id text
+  user_id text,
+  org_id uuid
 )
 language sql
 stable
 as $$
-  select d.id, d.user_id::text as user_id
+  select d.id, d.user_id::text as user_id, d.org_id
   from public.documents d
   left join public.document_versions v
     on v.id = d.current_version_id
@@ -3705,17 +4082,21 @@ begin
   if base_folder_id is not null and not exists (
     select 1 from public.library_folders
     where id = base_folder_id
-      and user_id = target_user_id
       and library_kind = target_library_kind
       and org_id is not distinct from target_org_id
+      and (
+        target_org_id is not null
+        or user_id = target_user_id
+      )
   ) then
     raise exception 'Parent folder not found';
   end if;
 
   perform pg_advisory_xact_lock(
     hashtextextended(
-      'library-folder-path:' || target_user_id::text || ':' || target_library_kind
-        || ':' || coalesce(target_org_id::text, 'personal'),
+      'library-folder-path:'
+        || coalesce(target_org_id::text, target_user_id::text)
+        || ':' || target_library_kind,
       0
     )
   );
@@ -3729,9 +4110,12 @@ begin
 
     select * into folder_row
     from public.library_folders
-    where user_id = target_user_id
-      and library_kind = target_library_kind
+    where library_kind = target_library_kind
       and org_id is not distinct from target_org_id
+      and (
+        target_org_id is not null
+        or user_id = target_user_id
+      )
       and parent_folder_id is not distinct from current_parent_id
       and lower(btrim(name)) = lower(segment)
     order by created_at, id
@@ -3743,9 +4127,12 @@ begin
         candidate_name := segment || ' (' || suffix || ')';
         exit when not exists (
           select 1 from public.library_folders
-          where user_id = target_user_id
-            and library_kind = target_library_kind
+          where library_kind = target_library_kind
             and org_id is not distinct from target_org_id
+            and (
+              target_org_id is not null
+              or user_id = target_user_id
+            )
             and parent_folder_id is not distinct from current_parent_id
             and lower(btrim(name)) = lower(candidate_name)
         );
@@ -3845,7 +4232,8 @@ begin
     content_type text,
     expected_size_bytes bigint,
     staging_storage_path text,
-    sealed_storage_path text
+    sealed_storage_path text,
+    client_meta jsonb
   );
 
   if manifest_file_count < 1 or manifest_file_count > 50 then
@@ -3866,17 +4254,19 @@ begin
       content_type text,
       expected_size_bytes bigint,
       staging_storage_path text,
-      sealed_storage_path text
+      sealed_storage_path text,
+      client_meta jsonb
     )
     where file_row.id is null
        or file_row.resource_id is null
        or length(file_row.client_id) not between 1 and 128
        or length(file_row.filename) not between 1 and 255
-       or file_row.file_type not in ('pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt')
+       or file_row.file_type not in ('pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt', 'eml', 'msg', 'zip')
        or length(file_row.content_type) not between 1 and 255
        or file_row.expected_size_bytes not between 1 and 104857600
        or length(file_row.staging_storage_path) < 1
        or length(file_row.sealed_storage_path) < 1
+       or (file_row.client_meta is not null and jsonb_typeof(file_row.client_meta) <> 'object')
   ) then
     raise exception using errcode = '22023', message = 'invalid_upload_manifest';
   end if;
@@ -3970,7 +4360,8 @@ begin
     content_type,
     expected_size_bytes,
     staging_storage_path,
-    sealed_storage_path
+    sealed_storage_path,
+    client_meta
   )
   select
     file_row.id,
@@ -3983,7 +4374,8 @@ begin
     file_row.content_type,
     file_row.expected_size_bytes,
     file_row.staging_storage_path,
-    file_row.sealed_storage_path
+    file_row.sealed_storage_path,
+    file_row.client_meta
   from jsonb_to_recordset(target_files) as file_row(
     id uuid,
     resource_id uuid,
@@ -3994,7 +4386,8 @@ begin
     content_type text,
     expected_size_bytes bigint,
     staging_storage_path text,
-    sealed_storage_path text
+    sealed_storage_path text,
+    client_meta jsonb
   );
 end;
 $$;
@@ -4331,6 +4724,30 @@ $$;
 -- backend verifies the user's JWT. Do not grant the browser anon/authenticated
 -- roles direct table privileges for backend-owned data.
 
+-- These tables were created without ENABLE ROW LEVEL SECURITY. Deny-all (no
+-- policies) is the firewall; service_role bypasses it for the backend path.
+alter table public.user_profiles enable row level security;
+alter table public.projects enable row level security;
+alter table public.project_subfolders enable row level security;
+alter table public.library_folders enable row level security;
+alter table public.documents enable row level security;
+alter table public.document_versions enable row level security;
+alter table public.document_edits enable row level security;
+alter table public.workflows enable row level security;
+alter table public.hidden_workflows enable row level security;
+alter table public.workflow_shares enable row level security;
+alter table public.default_workflow_installations enable row level security;
+alter table public.quick_actions enable row level security;
+alter table public.mike_workflows enable row level security;
+alter table public.mike_workflow_assets enable row level security;
+alter table public.workflow_addons enable row level security;
+alter table public.chats enable row level security;
+alter table public.chat_messages enable row level security;
+alter table public.tabular_reviews enable row level security;
+alter table public.tabular_cells enable row level security;
+alter table public.tabular_review_chats enable row level security;
+alter table public.tabular_review_chat_messages enable row level security;
+
 -- Audit history of user actions (queried via the service-role backend only).
 -- Defined here — above the service_role grant block — so `grant ... on all
 -- tables in schema public` below covers it on a fresh install. Like every other
@@ -4540,14 +4957,12 @@ alter table public.db_jobs enable row level security;
 -- there is no version history and no separate object to keep in step.
 create table if not exists public.memory_files (
   id uuid primary key default gen_random_uuid(),
-  scope text not null check (scope in ('user', 'project')),
+  scope text not null check (scope in ('user', 'project', 'org')),
   user_id uuid references auth.users(id) on delete cascade,
   project_id uuid references public.projects(id) on delete cascade,
-  -- For a 'user' file: the organization whose workspace it is the person's
-  -- memory for, or null for Personal. A person has one per workspace, each
-  -- private to them; a conversation reads and learns only its own
-  -- workspace's (memory_source_org_id).
-  org_id uuid,
+  -- Shared firm memory when scope is 'org'. For a 'user' file, the workspace
+  -- it belongs to, or null for Personal. Deleted with the organization.
+  org_id uuid references public.organizations(id) on delete cascade,
   enabled boolean not null default true,
   epoch bigint not null default 0 check (epoch >= 0),
   -- Monotonic change token for compare-and-swap. Nothing is retained per
@@ -4575,9 +4990,11 @@ create table if not exists public.memory_files (
     (scope = 'user' and user_id is not null and project_id is null)
     or (scope = 'project' and project_id is not null and user_id is null
         and org_id is null)
+    or (scope = 'org' and org_id is not null and user_id is null and project_id is null)
   ),
-  -- Tied to the membership, not just to the organization: leaving, being
-  -- removed, and the organization being deleted all take it away.
+  -- User-workspace files leave with the membership. Org-scoped files have a
+  -- null user_id, so this match-simple key does not apply to them; the
+  -- organizations foreign key removes those when the organization goes.
   constraint memory_files_workspace_member_fkey
     foreign key (org_id, user_id)
     references public.org_members(org_id, user_id) on delete cascade
@@ -4592,6 +5009,8 @@ create index if not exists memory_files_org_idx
   on public.memory_files(org_id) where org_id is not null;
 create unique index if not exists memory_files_project_unique
   on public.memory_files(project_id);
+create unique index if not exists memory_files_org_unique
+  on public.memory_files(org_id) where scope = 'org';
 
 create table if not exists public.memory_consolidation_states (
   id uuid primary key default gen_random_uuid(),
@@ -4739,6 +5158,9 @@ on conflict do nothing;
 insert into public.memory_files(scope, project_id, enabled)
 select 'project', id, true from public.projects
 on conflict do nothing;
+insert into public.memory_files(scope, org_id, enabled)
+select 'org', id, true from public.organizations
+on conflict do nothing;
 
 create or replace function public.initialize_new_user_memory()
 returns trigger
@@ -4759,13 +5181,36 @@ create trigger on_auth_user_created_memory
   after insert on auth.users
   for each row execute function public.initialize_new_user_memory();
 
+create or replace function public.initialize_new_org_memory()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.memory_files(scope, org_id, enabled)
+  values ('org', new.id, true)
+  on conflict (org_id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_organization_created_memory on public.organizations;
+create trigger on_organization_created_memory
+  after insert on public.organizations
+  for each row execute function public.initialize_new_org_memory();
+
 create or replace function public.create_project_with_memory(
   p_user_id uuid,
   p_name text,
   p_cm_number text,
   p_practice text,
   p_org_id uuid,
-  p_memory_enabled boolean
+  p_memory_enabled boolean,
+  p_client_name text default null,
+  p_description text default null,
+  p_zoho_deal_id text default null,
+  p_sharepoint_folder_url text default null
 )
 returns public.projects
 language plpgsql
@@ -4775,8 +5220,14 @@ as $$
 declare
   created public.projects%rowtype;
 begin
-  insert into public.projects(user_id, name, cm_number, practice, org_id)
-  values (p_user_id, p_name, p_cm_number, p_practice, p_org_id)
+  insert into public.projects(
+    user_id, name, cm_number, practice, org_id, client_name, description,
+    zoho_deal_id, sharepoint_folder_url
+  )
+  values (
+    p_user_id, p_name, p_cm_number, p_practice, p_org_id,
+    p_client_name, p_description, p_zoho_deal_id, p_sharepoint_folder_url
+  )
   returning * into created;
   insert into public.memory_files(scope, project_id, enabled)
   values ('project', created.id, p_memory_enabled);
@@ -6897,6 +7348,13 @@ revoke all on public.tabular_review_chats from anon, authenticated;
 revoke all on public.tabular_review_chat_messages from anon, authenticated;
 revoke all on public.user_api_keys from anon, authenticated;
 revoke all on public.org_api_keys from anon, authenticated;
+grant select, insert, update, delete on public.org_api_keys to service_role;
+revoke all on public.user_microsoft_tokens from anon, authenticated;
+grant select, insert, update, delete on public.user_microsoft_tokens to service_role;
+revoke all on public.user_outlook_signatures from anon, authenticated;
+grant select, insert, update, delete on public.user_outlook_signatures to service_role;
+revoke all on public.legal_source_documents from anon, authenticated;
+grant select, insert, update, delete on public.legal_source_documents to service_role;
 revoke all on public.auth_handoff_tickets from anon, authenticated;
 revoke all on public.user_router_models from anon, authenticated;
 revoke all on public.org_router_models from anon, authenticated;
@@ -6933,7 +7391,7 @@ revoke all on function public.claim_db_job(uuid, integer)
   from public, anon, authenticated;
 revoke all on function public.cancel_db_jobs(text[])
   from public, anon, authenticated;
-revoke all on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean)
+revoke all on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean, text, text, text, text)
   from public, anon, authenticated;
 revoke all on function public.initialize_new_user_memory()
   from public, anon, authenticated;
@@ -6958,6 +7416,14 @@ revoke all on function public.delete_user_private_memories(uuid, uuid)
 revoke all on function public.append_chat_assistant_events(uuid, uuid, uuid, jsonb, jsonb)
   from public, anon, authenticated;
 revoke all on function public.append_chat_ask_inputs_response(uuid, uuid, uuid, text, jsonb)
+  from public, anon, authenticated;
+revoke all on function public.claim_chat_turn(uuid, uuid, uuid, integer)
+  from public, anon, authenticated;
+revoke all on function public.heartbeat_chat_turn(uuid, uuid)
+  from public, anon, authenticated;
+revoke all on function public.release_chat_turn(uuid, uuid)
+  from public, anon, authenticated;
+revoke all on function public.request_chat_turn_cancel(uuid, uuid)
   from public, anon, authenticated;
 revoke all on function public.enable_memory_file(uuid, uuid)
   from public, anon, authenticated;
@@ -7047,7 +7513,7 @@ grant execute
 grant execute
   on function public.cancel_db_jobs(text[])
   to service_role;
-grant execute on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean)
+grant execute on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean, text, text, text, text)
   to service_role;
 grant execute on function public.initialize_new_user_memory()
   to service_role;
@@ -7078,6 +7544,14 @@ grant execute
   to service_role;
 grant execute
   on function public.append_chat_ask_inputs_response(uuid, uuid, uuid, text, jsonb)
+  to service_role;
+grant execute on function public.claim_chat_turn(uuid, uuid, uuid, integer)
+  to service_role;
+grant execute on function public.heartbeat_chat_turn(uuid, uuid)
+  to service_role;
+grant execute on function public.release_chat_turn(uuid, uuid)
+  to service_role;
+grant execute on function public.request_chat_turn_cancel(uuid, uuid)
   to service_role;
 grant execute
   on function public.enable_memory_file(uuid, uuid)

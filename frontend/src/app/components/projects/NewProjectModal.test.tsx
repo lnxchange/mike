@@ -17,6 +17,10 @@ import {
   updateProject,
   uploadProjectDocuments,
 } from "@/app/lib/mikeApi";
+import {
+  hasPendingProjectUploads,
+  takePendingProjectUploads,
+} from "@/app/lib/pendingProjectUploads";
 import { NewProjectModal } from "./NewProjectModal";
 
 const { useUserProfile, activeWorkspace } = vi.hoisted(() => ({
@@ -595,62 +599,32 @@ describe("NewProjectModal sharing", () => {
     );
   });
 
-  it("persists a changed memory opt-out before continuing after a partial upload", async () => {
+  it("hands chosen files to the project page instead of uploading from the dialog", async () => {
     const user = userEvent.setup({ delay: null });
     const onCreated = renderModal();
-    // Echo the client ids the modal sends: completed uploads are tracked by
-    // the id each File went out under, so an outcome with an invented id
-    // would read as a file that never landed.
-    vi.mocked(uploadProjectDocuments).mockImplementation(async (_id, inputs) =>
-      inputs.map((input) =>
-        input.file.name === "saved.pdf"
-          ? {
-              clientId: input.clientId ?? "one",
-              filename: "saved.pdf",
-              status: "completed" as const,
-              result: { id: "doc-1", filename: "saved.pdf" } as never,
-              errorCode: null,
-            }
-          : {
-              clientId: input.clientId ?? "two",
-              filename: "failed.pdf",
-              status: "error" as const,
-              result: null,
-              errorCode: "processing_failed",
-            },
-      ),
-    );
 
     await user.type(screen.getByPlaceholderText("Add project name"), "P");
     const fileInput =
       document.querySelector<HTMLInputElement>('input[type="file"]');
     expect(fileInput).not.toBeNull();
+    expect(fileInput!.accept).toContain(".pdf");
+    const saved = new File(["saved"], "saved.pdf");
+    const deed = new File(["deed"], "deed.docx");
     fireEvent.change(fileInput!, {
       target: {
-        files: [
-          new File(["saved"], "saved.pdf"),
-          new File(["failed"], "failed.pdf"),
-        ],
+        // The PNG is refused at selection time; it must never reach the
+        // upload, where it would fail every file in its batch.
+        files: [saved, new File(["png"], "chart.png"), deed],
       },
     });
+    expect(
+      await screen.findByText("Some files were skipped"),
+    ).toBeInTheDocument();
     await submit(user);
-    await screen.findByRole("button", { name: "Continue" });
 
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await user.click(
-      screen.getByRole("switch", { name: "Enable project memory" }),
-    );
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() =>
-      expect(setProjectMemoryEnabled).toHaveBeenCalledWith("p1", false),
-    );
-    expect(onCreated).toHaveBeenCalledWith(
-      expect.objectContaining({ memory_enabled: false }),
-    );
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+    expect(uploadProjectDocuments).not.toHaveBeenCalled();
+    expect(takePendingProjectUploads("p1")).toEqual([saved, deed]);
   });
 
     it("shows direct sharing only on step two with Owner, Editor and Viewer", async () => {
@@ -954,10 +928,11 @@ describe("NewProjectModal sharing", () => {
         await screen.findByRole("button", { name: /Upload \(1\)/ });
     }
 
-    it("uploads an attached file once when a refused grant is retried", async () => {
+    it("hands an attached file to the project page once when a refused grant is retried", async () => {
         // The grant refusal used to return with the pending files still
-        // queued, so the retry — which correctly skipped creation — re-ran the
-        // upload and the project ended up with the same document twice.
+        // queued, so the retry — which correctly skipped creation — attached
+        // the same document twice. Grants still run first; the files are
+        // stashed for the project page only after they succeed.
         const user = userEvent.setup({ delay: null });
         const onCreated = vi.fn();
         render(
@@ -966,15 +941,6 @@ describe("NewProjectModal sharing", () => {
         vi.mocked(grantProjectAccess).mockRejectedValueOnce(
             new MikeApiError({ status: 403, message: "Not allowed" }),
         );
-        vi.mocked(uploadProjectDocuments).mockResolvedValue([
-            {
-                clientId: "c1",
-                filename: "brief.pdf",
-                status: "completed",
-                result: null,
-                errorCode: null,
-            },
-        ]);
 
         await fillAndAdd(user, "counsel@firm.test", "editor");
         await user.click(screen.getByRole("button", { name: "Next" }));
@@ -988,15 +954,18 @@ describe("NewProjectModal sharing", () => {
                 /Project created, but access was not granted to counsel@firm\.test/,
             ),
         ).toBeInTheDocument();
-        // Grants run first, so a refusal leaves no upload to redo.
+        // Grants run first, so a refusal leaves nothing for the project page.
         expect(uploadProjectDocuments).not.toHaveBeenCalled();
+        expect(hasPendingProjectUploads("p1")).toBe(false);
 
         await user.click(
             screen.getByRole("button", { name: "Create project" }),
         );
         await waitFor(() => expect(onCreated).toHaveBeenCalled());
         expect(createProject).toHaveBeenCalledTimes(1);
-        expect(uploadProjectDocuments).toHaveBeenCalledTimes(1);
+        expect(uploadProjectDocuments).not.toHaveBeenCalled();
+        expect(takePendingProjectUploads("p1")).toHaveLength(1);
+        expect(takePendingProjectUploads("p1")).toEqual([]);
     });
 
     it("tells the caller to refetch when a created project is never handed over", async () => {
@@ -1066,13 +1035,15 @@ describe("NewProjectModal sharing", () => {
             screen.getByRole("button", { name: "Create project" }),
         );
 
-        await waitFor(() => expect(uploadProjectDocuments).toHaveBeenCalled());
-        const [, sentFiles] = vi.mocked(uploadProjectDocuments).mock.calls[0];
+        await waitFor(() => expect(createProject).toHaveBeenCalled());
+        const sentFiles = takePendingProjectUploads("p1");
         expect(sentFiles).toHaveLength(2);
-        // Each carries its own id, so an outcome can be traced back to the
-        // File that produced it rather than to a name they share.
-        expect(sentFiles[0].clientId).toBeTruthy();
-        expect(sentFiles[0].clientId).not.toBe(sentFiles[1].clientId);
+        // Identity, not the shared name, is what the project page uploads.
+        expect(sentFiles[0]).not.toBe(sentFiles[1]);
+        expect(sentFiles.map((file) => file.name)).toEqual([
+            "contract.pdf",
+            "contract.pdf",
+        ]);
     });
 
     it("says the attached files are still pending when a grant is refused", async () => {

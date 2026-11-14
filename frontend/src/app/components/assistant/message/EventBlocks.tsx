@@ -1,9 +1,19 @@
-import { useMarkdownCheckpoint } from "./markdownCheckpoint";
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
-import { useReasoningDisclosure, DocEditBlockUI, DocFindBlockUI, DocReadBlockUI } from "@mike/ui";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import DOMPurify from "dompurify";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Download, Loader2 } from "lucide-react";
+import { Download, ExternalLink, Loader2, Mail } from "lucide-react";
+import {
+    DocEditBlockUI,
+    DocFindBlockUI,
+    DocReadBlockUI,
+    GLASS_CARD_SURFACE_CLASS,
+    PillButtonUI,
+    pillButtonUIClassName,
+    useReasoningDisclosure,
+} from "@mike/ui";
+import { errorCode, userFacingApiError } from "@/app/lib/userFacingError";
+import { useMarkdownCheckpoint } from "./markdownCheckpoint";
 import {
     EventDisclosureButton,
     EventLabel,
@@ -324,6 +334,275 @@ export function DocCreatedBlock({
                         <span className="truncate">{filename}</span>
                     </button>
                 )}
+            </div>
+        </EventBlock>
+    );
+}
+
+function outlookThreadCopy(
+    threaded?: boolean,
+    threadStatus?: "matched" | "ambiguous" | "not_found" | "new",
+) {
+    if (threadStatus === "matched" || (threaded && !threadStatus)) {
+        return "This draft continues the existing conversation.";
+    }
+    if (threadStatus === "ambiguous") {
+        return "More than one matching conversation was found, so this is a new draft.";
+    }
+    if (threadStatus === "not_found") {
+        return "No matching conversation was found, so this is a new draft.";
+    }
+    return "This is a new draft.";
+}
+
+const DRAFT_HTML_SANITIZER = {
+    ALLOWED_TAGS: [
+        "a",
+        "b",
+        "br",
+        "div",
+        "em",
+        "i",
+        "li",
+        "ol",
+        "p",
+        "span",
+        "strong",
+        "u",
+        "ul",
+    ],
+    ALLOWED_ATTR: ["href", "rel", "target"],
+    ALLOW_DATA_ATTR: false,
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|#)/i,
+    FORBID_TAGS: ["script", "style", "iframe", "object", "embed"],
+};
+
+const DRAFT_BODY_CLASS =
+    "mt-3 font-serif text-[15px] leading-6 text-gray-900 [&_b]:font-semibold [&_i]:italic [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5";
+
+function DraftEmailCard({
+    subject,
+    to,
+    cc,
+    htmlBody,
+    attachmentNames,
+    isStreaming,
+    children,
+}: {
+    subject: string;
+    to: string[];
+    cc?: string[];
+    htmlBody: string;
+    attachmentNames: string[];
+    isStreaming?: boolean;
+    children?: ReactNode;
+}) {
+    const sanitizedBody = useMemo(
+        () => (htmlBody ? DOMPurify.sanitize(htmlBody, DRAFT_HTML_SANITIZER) : ""),
+        [htmlBody],
+    );
+    return (
+        <section
+            aria-label="Draft email"
+            className={`${RESPONSE_GLASS_SURFACE} px-4 py-3 text-sm text-gray-800`}
+        >
+            <div className="flex min-w-0 items-center gap-2 text-gray-700">
+                <Mail className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="font-medium">
+                    {isStreaming ? "Drafting email" : "Draft email"}
+                </span>
+            </div>
+            <p className="mt-2 truncate font-medium text-gray-950">
+                {isStreaming ? subject || "Writing the draft" : subject}
+            </p>
+            {!isStreaming && to.length > 0 ? (
+                <p className="mt-1 text-xs text-gray-500">To {to.join(", ")}</p>
+            ) : null}
+            {!isStreaming && cc && cc.length > 0 ? (
+                <p className="text-xs text-gray-500">Cc {cc.join(", ")}</p>
+            ) : null}
+            {!isStreaming && attachmentNames.length > 0 ? (
+                <p className="text-xs text-gray-500">
+                    Attached {attachmentNames.join(", ")}
+                </p>
+            ) : null}
+            {!isStreaming && sanitizedBody ? (
+                <div
+                    className={DRAFT_BODY_CLASS}
+                    dangerouslySetInnerHTML={{ __html: sanitizedBody }}
+                />
+            ) : null}
+            {!isStreaming ? children : null}
+        </section>
+    );
+}
+
+export function OutlookDraftPreviewBlock({
+    subject,
+    to,
+    cc,
+    htmlBody,
+    attachmentNames,
+    isStreaming,
+    showConnector: _showConnector,
+    onStage,
+}: {
+    subject: string;
+    to: string[];
+    cc?: string[];
+    htmlBody: string;
+    attachmentNames: string[];
+    isStreaming?: boolean;
+    showConnector?: boolean;
+    onStage?: () => Promise<void>;
+}) {
+    const [staging, setStaging] = useState(false);
+    const stagingRef = useRef(false);
+    const [stageError, setStageError] = useState<string | null>(null);
+    const [needsConnect, setNeedsConnect] = useState(false);
+
+    async function stage() {
+        if (!onStage || stagingRef.current) return;
+        stagingRef.current = true;
+        setStaging(true);
+        setStageError(null);
+        setNeedsConnect(false);
+        try {
+            await onStage();
+        } catch (error) {
+            if (errorCode(error) === "outlook_auth_required") {
+                setNeedsConnect(true);
+                setStageError(
+                    "Connect Microsoft in Settings to stage this draft.",
+                );
+            } else {
+                setStageError(
+                    userFacingApiError(
+                        error,
+                        "The draft could not be staged. Please try again.",
+                    ),
+                );
+            }
+        } finally {
+            stagingRef.current = false;
+            setStaging(false);
+        }
+    }
+
+    return (
+        <DraftEmailCard
+            subject={subject}
+            to={to}
+            cc={cc}
+            htmlBody={htmlBody}
+            attachmentNames={attachmentNames}
+            isStreaming={isStreaming}
+        >
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+                <PillButtonUI
+                    tone="black"
+                    size="sm"
+                    disabled={!onStage}
+                    loading={staging}
+                    onClick={() => void stage()}
+                >
+                    Stage in Outlook
+                </PillButtonUI>
+                {needsConnect ? (
+                    <a
+                        href="/settings/security"
+                        className="text-xs font-medium text-gray-700 underline-offset-2 hover:text-gray-950 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+                    >
+                        Open Settings
+                    </a>
+                ) : null}
+            </div>
+            <p className="mt-2 text-xs text-gray-500">
+                {stageError ??
+                    "This draft stays in the chat until you stage it. Your signature is added in Outlook."}
+            </p>
+        </DraftEmailCard>
+    );
+}
+
+export function OutlookDraftBlock({
+    subject,
+    to,
+    cc,
+    htmlBody = "",
+    attachmentNames,
+    threaded,
+    threadStatus,
+    webLink,
+    isStreaming,
+    showConnector: _showConnector,
+}: {
+    subject: string;
+    to: string[];
+    cc?: string[];
+    htmlBody?: string;
+    attachmentNames: string[];
+    threaded?: boolean;
+    threadStatus?: "matched" | "ambiguous" | "not_found" | "new";
+    webLink?: string;
+    isStreaming?: boolean;
+    showConnector?: boolean;
+}) {
+    return (
+        <DraftEmailCard
+            subject={subject}
+            to={to}
+            cc={cc}
+            htmlBody={htmlBody}
+            attachmentNames={attachmentNames}
+            isStreaming={isStreaming}
+        >
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+                {webLink ? (
+                    <a
+                        href={webLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={pillButtonUIClassName({
+                            tone: "black",
+                            size: "sm",
+                        })}
+                    >
+                        See draft in Outlook
+                        <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    </a>
+                ) : null}
+            </div>
+            <p className="mt-2 text-xs text-gray-500">
+                {outlookThreadCopy(threaded, threadStatus)}
+            </p>
+            <p className="text-xs text-gray-500">
+                This draft is in your Outlook, ready for you to send.
+            </p>
+        </DraftEmailCard>
+    );
+}
+
+export function OutlookConnectBlock({
+    showConnector,
+}: {
+    showConnector?: boolean;
+}) {
+    return (
+        <EventBlock showConnector={showConnector} dotColor="gray">
+            <div className="min-w-0">
+                <EventLabel>Connect Microsoft</EventLabel>
+                <p className="mt-1 text-xs text-gray-500">
+                    Connect Microsoft in Settings to stage a review-only Outlook
+                    draft.
+                </p>
+                <a
+                    href="/settings/security"
+                    className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-gray-700 transition-colors hover:text-gray-950"
+                >
+                    Open Settings
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </a>
             </div>
         </EventBlock>
     );
@@ -678,6 +957,40 @@ export function AskInputsBlock({
     );
 }
 
+const PLAN_STATUS_LABEL: Record<
+    Extract<AssistantEvent, { type: "plan" }>["items"][number]["status"],
+    string
+> = {
+    pending: "Pending",
+    in_progress: "In progress",
+    completed: "Done",
+};
+
+export function PlanBlock({
+    event,
+}: {
+    event: Extract<AssistantEvent, { type: "plan" }>;
+}) {
+    return (
+        <div className={`${GLASS_CARD_SURFACE_CLASS} px-4 py-3`}>
+            <p className="font-serif text-sm text-gray-900">{event.title}</p>
+            <ol className="mt-2 space-y-1.5">
+                {event.items.map((item, index) => (
+                    <li
+                        key={item.id}
+                        className="font-serif text-sm text-gray-700"
+                    >
+                        <span className="text-gray-500">
+                            {index + 1}. {PLAN_STATUS_LABEL[item.status]}
+                        </span>
+                        <span className="ml-2">{item.content}</span>
+                    </li>
+                ))}
+            </ol>
+        </div>
+    );
+}
+
 export type CourtListenerBlockItem = {
     caseName: string | null;
     citation: string | null;
@@ -777,6 +1090,46 @@ export function CourtListenerBlock({
                 </ul>
             )}
         </EventBlock>
+    );
+}
+
+export function DocFinalizedBlock({
+    filename,
+    sourceFilename,
+    accepted,
+    showConnector,
+    isStreaming,
+    hasError,
+    onClick,
+}: {
+    filename: string;
+    sourceFilename?: string;
+    accepted?: number;
+    showConnector?: boolean;
+    isStreaming?: boolean;
+    hasError?: boolean;
+    onClick?: () => void;
+}) {
+    const label = isStreaming
+        ? "Finalising"
+        : hasError
+          ? "Finalise failed"
+          : "Clean copy";
+    const detail =
+        !isStreaming && !hasError && typeof accepted === "number"
+            ? `${accepted} change${accepted === 1 ? "" : "s"} accepted from ${sourceFilename ?? "the marked-up file"}`
+            : undefined;
+
+    return (
+        <DocEditBlockUI
+            label={label}
+            filename={isStreaming ? sourceFilename ?? filename : filename}
+            detail={detail}
+            onClick={onClick}
+            showConnector={showConnector}
+            isStreaming={isStreaming}
+            dotColor={hasError ? "red" : "green"}
+        />
     );
 }
 

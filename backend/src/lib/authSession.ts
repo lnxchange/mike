@@ -111,13 +111,14 @@ export function createRequestSupabase(
         // GoTrue can announce a session change after this request's
         // response has started. Writing then throws ERR_HTTP_HEADERS_SENT
         // inside GoTrue's subscriber loop, which rethrows it out of
-        // getUser() as a 500. Nothing can still reach this response, so
-        // skip the write. The browser keeps the refresh token that was just
-        // rotated: its next request works only if GoTrue still accepts that
-        // token (inside its reuse interval) or joins a refresh in flight;
-        // after that GoTrue refuses it and the user signs in again. Still
-        // better than the 500 it replaces. The route is logged so operators
-        // can see how often a session is lost this way.
+        // getUser() as a 500 — including during the Microsoft code exchange.
+        // Nothing can still reach this response, so skip the write. The
+        // browser keeps the refresh token that was just rotated: its next
+        // request works only if GoTrue still accepts that token (inside its
+        // reuse interval) or joins a refresh in flight; after that GoTrue
+        // refuses it and the user signs in again. Still better than the 500
+        // it replaces. The route is logged so operators can see how often a
+        // session is lost this way.
         if (res.headersSent) {
           console.warn(
             "[auth] session cookies changed after the response was sent",
@@ -153,13 +154,18 @@ export interface PublicAuthUser {
   email: string;
   pendingEmail: string | null;
   createdWithGoogle: boolean;
+  microsoftConnected: boolean;
 }
 
-export function publicAuthUser(user: User): PublicAuthUser {
+export function publicAuthUser(
+  user: User,
+  extras?: { microsoftConnected?: boolean },
+): PublicAuthUser {
   return {
     id: user.id,
     email: user.email ?? "",
     pendingEmail: user.new_email ?? null,
     createdWithGoogle: user.app_metadata?.provider === "google",
+    microsoftConnected: extras?.microsoftConnected === true,
   };
 }

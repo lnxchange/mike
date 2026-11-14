@@ -17,6 +17,7 @@ import { SiteLogo } from "@/app/components/site-logo";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { cn } from "@/app/lib/utils";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
+import { appConfig } from "@/config";
 import {
     reportFault,
     UserVisibleError,
@@ -67,6 +68,7 @@ import {
 } from "@/app/components/auth/passwordPolicy";
 import { TOO_MANY_ATTEMPTS_MESSAGE, authMessages } from "@/app/lib/authMessages";
 import { GoogleAuthButton } from "@/app/components/auth/GoogleAuthButton";
+import { MicrosoftAuthButton } from "@/app/components/auth/MicrosoftAuthButton";
 import { FieldLabel } from "@/app/components/ui/form-field";
 
 function SignupContent() {
@@ -244,7 +246,7 @@ function SignupContent() {
                             <div className="text-center text-xs text-gray-500">
                                 By signing up, you agree to our{" "}
                                 <Link
-                                    href="https://mikeoss.com/terms"
+                                    href={appConfig.externalLinks.terms}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="text-blue-600 hover:underline"
@@ -253,7 +255,7 @@ function SignupContent() {
                                 </Link>{" "}
                                 and{" "}
                                 <Link
-                                    href="https://mikeoss.com/privacy"
+                                    href={appConfig.externalLinks.privacy}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="text-blue-600 hover:underline"
@@ -273,6 +275,15 @@ function SignupContent() {
                             <AuthDividerUI />
                             <GoogleAuthButton
                                 onError={setError}
+                                disabled={loading}
+                                onLoadingChange={setLoading}
+                            />
+                            <MicrosoftAuthButton
+                                onError={(message) =>
+                                    setError(
+                                        message ? localSignupError(message) : null,
+                                    )
+                                }
                                 disabled={loading}
                                 onLoadingChange={setLoading}
                             />

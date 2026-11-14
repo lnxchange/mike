@@ -23,6 +23,7 @@ import { userFacingApiError } from "@/app/lib/userFacingError";
 import { GlassCardUI, LIQUID_GLASS_SUBTLE_CLASS, PillButtonUI } from "@mike/ui";
 import { DeletedOrganizations } from "./DeletedOrganizations";
 import { CreateOrganizationModal } from "./OrganizationModals";
+import { appConfig } from "@/config";
 import { organizationSettingsHref } from "./OrganizationSettingsShell";
 
 /** Organizations follow the two-column settings card layout. */
@@ -179,8 +180,9 @@ export function OrganizationsOverview() {
           </GlassCardUI>
         ) : listedOrgs.length === 0 ? (
           <SettingsDescription>
-            No organizations yet. Create one to share projects and
-            workflows with your team.
+            No organizations yet. Create one to share{" "}
+            {appConfig.terminology.projectsLower} and workflows with your
+            team.
           </SettingsDescription>
         ) : (
           <div className={CARD_GRID_CLASS}>

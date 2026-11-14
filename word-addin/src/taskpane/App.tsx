@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { useSuspendBackdropWhileSelecting } from "../../../packages/ui/src/suspendBackdropWhileSelecting";
 import { useAuth } from "./auth/useAuth";
 import { LoginPage } from "./auth/LoginPage";
 import { ApiKeyBanner } from "./components/shell/ApiKeyBanner";
@@ -21,13 +22,15 @@ import {
 } from "./lib/wordChatSettings";
 import { useWordDocumentIdentity } from "./lib/wordDocumentIdentity";
 import { clearLocalWordChats } from "./lib/localWordChats";
-import type {
-  ReasoningLevel,
-  WordChatOpenHandler,
+import {
+  DEFAULT_WORD_REASONING_LEVEL,
+  type ReasoningLevel,
+  type WordChatOpenHandler,
 } from "./lib/wordChatTypes";
 import { setReportingUser } from "./lib/errorReporting";
 
 export default function App(): React.ReactElement {
+  useSuspendBackdropWhileSelecting();
   const { user, loading, error, logout } = useAuth();
   const pendingOwnerId = user?.id ?? null;
   // Error reports carry the user id (never the email); cleared on sign-out.
@@ -47,7 +50,7 @@ export default function App(): React.ReactElement {
   const [chatReasoningLevel, setChatReasoningLevel] =
     useState<ReasoningLevel | null>(null);
   const [lastSelectedReasoningLevel, setLastSelectedReasoningLevel] =
-    useState<ReasoningLevel>("high");
+    useState<ReasoningLevel>(DEFAULT_WORD_REASONING_LEVEL);
   const [chatInSession, setChatInSession] = useState(false);
   const [initialMessages, setInitialMessages] = useState<Message[]>([]);
   // The turn the opened chat still has running on the server, if any. The

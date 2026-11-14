@@ -88,6 +88,8 @@ export interface WordTurnHandlers {
    * citations frame; the final frame supersedes earlier partial ones.
    */
   onCitations?: (citations: unknown[]) => void;
+  /** A server tool has started. Research tools use this to show progress. */
+  onToolCallStart?: (name: string) => void;
   /** The sequence number of each frame applied, for a reconnect's `from`. */
   onEventId?: (seq: number) => void;
 }
@@ -177,6 +179,12 @@ async function consumeTurnStream(
         });
       } else if (d.type === "citations" && Array.isArray(d.citations)) {
         params.onCitations?.(d.citations);
+      } else if (
+        d.type === "tool_call_start" &&
+        typeof d.name === "string" &&
+        d.name
+      ) {
+        params.onToolCallStart?.(d.name);
       } else if (d.type === "error") {
         streamError = terminalErrorFromFrame(d);
       }

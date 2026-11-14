@@ -10,6 +10,7 @@ import type {
   NormalizedToolResult,
   OpenAIToolSchema,
   Provider,
+  ReasoningLevel,
   ProviderWebSearchEvent,
   StreamChatParams,
   StreamChatResult,
@@ -27,6 +28,111 @@ import {
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 
 installProviderWarningLogger();
+
+/**
+ * Output budget when an adapter does not declare its own. Reasoning tokens
+ * count against this on every provider, so it must leave room for a long
+ * think plus the tool call or answer that follows it.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+/** Hosted frontier models accept far more; give thinking room to finish. */
+export const HOSTED_MAX_OUTPUT_TOKENS = 32_768;
+
+/**
+ * How many times one turn may recover from a step that spent its whole
+ * output budget thinking and produced neither text nor a tool call.
+ */
+export const MAX_REASONING_OVERRUN_RETRIES = 2;
+
+export const REASONING_OVERRUN_NUDGE = `Your previous attempt ran out of output room while thinking and produced nothing the user can see. Do not re-plan or re-read. Take the next concrete action now: either call one tool, or write the user-facing answer from what is already in this conversation.`;
+
+export function isTruncatedToolInputError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? `${error.name} ${error.message}`
+      : typeof error === "string"
+        ? error
+        : "";
+  return /Invalid input for tool|JSON parsing failed|malformed JSON arguments/i.test(
+    message,
+  );
+}
+
+export function truncatedToolName(error: unknown): string | null {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  const match =
+    /Invalid input for tool ([A-Za-z0-9_]+)/.exec(message) ??
+    /malformed JSON arguments for tool "([^"]+)"/.exec(message);
+  return match?.[1] ?? null;
+}
+
+export function truncatedToolNudge(toolName: string | null): string {
+  if (toolName === "create_plan" || toolName === "update_plan") {
+    return `Your previous ${toolName} call was cut off before its arguments finished. Call ${toolName} now. Use a short title and at most 8 items. Each item must be one short sentence. Do not think at length first.`;
+  }
+  return `Your previous tool call was cut off before its arguments finished. Call one tool again with short arguments, or write the user-facing answer from what is already in this conversation. Do not think at length first.`;
+}
+
+const REASONING_STEP_DOWN: Partial<Record<ReasoningLevel, ReasoningLevel>> = {
+  max: "xhigh",
+  xhigh: "high",
+  high: "medium",
+  medium: "low",
+  low: "low",
+};
+
+/** One notch less thinking for the retry after an overrun; "none" stays put. */
+export function lowerReasoningLevel(
+  level: ReasoningLevel | undefined,
+): ReasoningLevel | undefined {
+  if (!level) return level;
+  return REASONING_STEP_DOWN[level] ?? level;
+}
+
+export type FinishedStepShape = {
+  finishReason: string | undefined;
+  producedText: boolean;
+  producedToolCall: boolean;
+};
+
+/** A step that hit the output cap with nothing to show is a thinking overrun. */
+export function isReasoningOverrunStep(
+  step: FinishedStepShape | null,
+): boolean {
+  return (
+    step !== null &&
+    step.finishReason === "length" &&
+    !step.producedText &&
+    !step.producedToolCall
+  );
+}
+
+type ModelMessageLike = AiSdk.ModelMessage;
+
+/**
+ * Assistant messages that carry nothing (the overrun step itself) would be
+ * rejected by Anthropic as empty content; drop them before the retry.
+ */
+export function messagesForOverrunRetry(
+  original: ModelMessageLike[],
+  responseMessages: ModelMessageLike[],
+  nudge: string = REASONING_OVERRUN_NUDGE,
+): ModelMessageLike[] {
+  const kept = responseMessages.filter((message) => {
+    if (message.role !== "assistant") return true;
+    if (typeof message.content === "string")
+      return message.content.trim() !== "";
+    return Array.isArray(message.content) && message.content.length > 0;
+  });
+  return [...original, ...kept, { role: "user", content: nudge }];
+}
+
+/** Ensure a proxy-closed final SSE event is still visible to SDK parsers. */
 
 /** Keep SDK retry backoff for throttling, but don't repeat a proven account refusal. */
 function quotaRefusalRetries(): LanguageModelMiddleware {
@@ -260,7 +366,9 @@ export type AiSdkAdapterConfig = {
   supportsReasoning?: boolean;
   /** OpenAI's CourtListener tools require an extra instruction after use. */
   courtlistenerCitationReminder?: boolean;
-  /** The provider's own web search tool. */
+  /** Output-token cap for this adapter when the provider sends none. */
+  maxOutputTokens?: number;
+    /** The provider's own web search tool. */
   webSearchTool?: (options: { maxUses: number }) => ToolSet[string];
   /** Send stored reasoning on earlier assistant turns; see ConfiguredModel. */
   replayReasoning?: boolean;
@@ -479,6 +587,100 @@ function toModelMessage(
   };
 }
 
+export const LAST_STEP_WRITE_REMINDER = `LAST STEP: Do not call any tools. Write the user-facing answer now from the documents and notes already in this response. If you cannot finish every attachment or edit, write what you have and state what remains.`;
+
+/** Research steps already taken before the next step must be the answer. */
+export const RESEARCH_ROUNDS_BEFORE_WRITE = 4;
+
+const WRITE_FROM_RESEARCH_NUDGE = `Write the user-facing answer now from the documents and notes already in this conversation. Do not call tools. Do not start the research again. If something is still unread, say what remains.`;
+
+export const PLAN_NOW_REMINDER = `PLAN NOW: Call create_plan. Name the parts of the response, including what you still need to read. Each item is one short sentence. Do not review, explain, draft, or answer the substance in this response.`;
+
+export const PLAN_COMPLETE_SUMMARY = `PLAN COMPLETE: The plan has no remaining steps. Do not call any tools. Write a short summary of what was actually produced for the user. Name the documents, edits, and notes that exist in this conversation. If a step was marked done but the document, edit, or note was not produced, say so and include the text now. Do not claim something was drafted, filed, or placed in Outlook unless that happened in this conversation.`;
+
+export type StreamStepState = {
+  toolCalls: Array<{ toolName: string }>;
+};
+
+function isResearchToolName(name: string): boolean {
+  return name.startsWith("au_") || name.startsWith("courtlistener_");
+}
+
+function researchRoundCount(steps: StreamStepState[]): number {
+  let count = 0;
+  for (const step of steps) {
+    if (step.toolCalls.some((call) => isResearchToolName(call.toolName))) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+export type PreparedStreamStep = {
+  system?: string;
+  activeTools?: string[];
+  toolChoice?: "none" | "required" | { type: "tool"; toolName: "create_plan" };
+};
+
+export function prepareAssistantStreamStep(args: {
+  steps: StreamStepState[];
+  maxIterations: number;
+  systemPrompt: string;
+  courtlistenerReminder?: boolean;
+  requirePlan?: boolean;
+  planSummaryNow?: { current: boolean };
+}): PreparedStreamStep | undefined {
+  const maxIterations = Math.max(1, args.maxIterations);
+  const lastStep = args.steps.length >= maxIterations - 1;
+  if (args.planSummaryNow?.current) {
+    return {
+      activeTools: [],
+      toolChoice: "none",
+      system: `${args.systemPrompt}\n\n${PLAN_COMPLETE_SUMMARY}`,
+    };
+  }
+  const requirePlan = args.requirePlan === true;
+  // After one look, or immediately when this is the only step, the turn
+  // names its work and stops. It does not become the written answer.
+  const forcePlan = requirePlan && (args.steps.length >= 1 || lastStep);
+  const requireTool = requirePlan && !forcePlan;
+  // A research question was spending every remaining round on another
+  // fetch, so the reserved writing step arrived with nothing to say.
+  const forceWrite =
+    !requirePlan &&
+    (lastStep || researchRoundCount(args.steps) >= RESEARCH_ROUNDS_BEFORE_WRITE);
+  const courtlistener =
+    !forcePlan &&
+    !forceWrite &&
+    args.courtlistenerReminder === true &&
+    usesCourtlistenerTool(args.steps);
+  if (!forceWrite && !courtlistener && !forcePlan && !requireTool) {
+    return undefined;
+  }
+  if (forcePlan) {
+    return {
+      activeTools: ["create_plan"],
+      toolChoice: { type: "tool", toolName: "create_plan" },
+      system: `${args.systemPrompt}\n\n${PLAN_NOW_REMINDER}`,
+    };
+  }
+  if (requireTool) {
+    return { toolChoice: "required" };
+  }
+  const extras = [
+    courtlistener ? COURTLISTENER_CITATION_REMINDER : "",
+    forceWrite ? LAST_STEP_WRITE_REMINDER : "",
+  ].filter(Boolean);
+  return {
+    ...(forceWrite
+      ? { activeTools: [] as [], toolChoice: "none" as const }
+      : {}),
+    system: extras.length
+      ? `${args.systemPrompt}\n\n${extras.join("\n\n")}`
+      : args.systemPrompt,
+  };
+}
+
 export function withPrefixCacheHints(
   params: StreamChatParams,
   options: { replayReasoning?: boolean; bedrockCachePoint?: boolean } = {},
@@ -603,7 +805,8 @@ export async function streamAiSdk(
       tools,
       maxOutputTokens: maxOutputTokensFor(
         config.provider,
-        config.defaultMaxOutputTokens?.(params.reasoning),
+        config.maxOutputTokens ??
+          config.defaultMaxOutputTokens?.(params.reasoning),
       ),
       stopWhen: sdk.stepCountIs(maxIterations),
       abortSignal: internalAbort.signal,
@@ -624,35 +827,40 @@ export async function streamAiSdk(
       // where it is classified and the caller reports it once
       // (MIKE-BACKEND-C). Every failure still arrives through fullStream.
       onError: () => {},
-      ...(config.courtlistenerCitationReminder ||
-      params.finishWithoutToolsOnLastStep
-        ? {
-            prepareStep: ({
-              steps,
-              stepNumber,
-            }: {
-              steps: Array<{ toolCalls: Array<{ toolName: string }> }>;
-              stepNumber: number;
-            }) => {
-              const step: { system?: string; toolChoice?: "none" } = {};
-              if (
-                config.courtlistenerCitationReminder &&
-                usesCourtlistenerTool(steps)
-              ) {
-                step.system = `${params.systemPrompt}\n\n${COURTLISTENER_CITATION_REMINDER}`;
-              }
-              // Removing tools instead would break providers that reject a
-              // history of calls to a tool the request no longer defines.
-              if (
-                params.finishWithoutToolsOnLastStep &&
-                stepNumber === maxIterations - 1
-              ) {
-                step.toolChoice = "none";
-              }
-              return Object.keys(step).length ? step : undefined;
-            },
-          }
-        : {}),
+      prepareStep: ({
+        steps,
+        stepNumber,
+      }: {
+        steps: Array<{ toolCalls: Array<{ toolName: string }> }>;
+        stepNumber: number;
+      }) => {
+        const prepared = prepareAssistantStreamStep({
+          steps,
+          maxIterations,
+          systemPrompt: params.systemPrompt,
+          courtlistenerReminder: config.courtlistenerCitationReminder,
+          requirePlan: params.requirePlan,
+          planSummaryNow: params.planSummaryNow,
+        });
+        const step: {
+          system?: string;
+          activeTools?: string[];
+          toolChoice?:
+            | "none"
+            | "required"
+            | { type: "tool"; toolName: "create_plan" };
+        } = { ...(prepared ?? {}) };
+        // Removing tools instead would break providers that reject a
+        // history of calls to a tool the request no longer defines.
+        if (
+          params.finishWithoutToolsOnLastStep &&
+          stepNumber === maxIterations - 1 &&
+          step.toolChoice == null
+        ) {
+          step.toolChoice = "none";
+        }
+        return Object.keys(step).length ? step : undefined;
+      },
     });
 
     for await (const part of result.stream) {

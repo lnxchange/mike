@@ -47,12 +47,13 @@ import { AddDocumentsModal } from "../documents/AddDocumentsModal";
 import { FileTypeIcon } from "../documents/DirectoryIcons";
 import { DocumentSourceMenu } from "../documents/DocumentSourceMenu";
 import { ModelToggle } from "./ModelToggle";
-import type {
-  PlaybookAttachment,
-  WorkflowAttachment,
-  ReasoningLevel,
-  WordChatSubmission,
-  WordChatSubmitOptions,
+import {
+  DEFAULT_WORD_REASONING_LEVEL,
+  type PlaybookAttachment,
+  type WorkflowAttachment,
+  type ReasoningLevel,
+  type WordChatSubmission,
+  type WordChatSubmitOptions,
 } from "../../lib/wordChatTypes";
 import {
   isModelAvailable,
@@ -163,7 +164,9 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     const [profileLastSelectedReasoningLevel, setProfileLastSelectedReasoningLevel] =
       useState<ReasoningLevel>(lastSelectedReasoningLevel);
     const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>(
-      chatReasoningLevel ?? lastSelectedReasoningLevel ?? "high",
+      chatReasoningLevel ??
+        lastSelectedReasoningLevel ??
+        DEFAULT_WORD_REASONING_LEVEL,
     );
     const [slashWorkflows, setSlashWorkflows] = useState<Workflow[] | null>(
       null,
@@ -182,7 +185,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       : (chatReasoningLevel ??
         lastSelectedReasoningLevel ??
         profileLastSelectedReasoningLevel ??
-        "high");
+        DEFAULT_WORD_REASONING_LEVEL);
     const chatSettingsLoading =
       chatModel === undefined ||
       chatReasoningLevel === undefined ||
@@ -306,7 +309,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           setRouterSelections(routerSelectionsFromProfile(profile));
           setProfileLastSelectedModel(profile.lastSelectedChatModel ?? null);
           setProfileLastSelectedReasoningLevel(
-            profile.lastSelectedReasoningLevel ?? "high",
+            profile.lastSelectedReasoningLevel ?? DEFAULT_WORD_REASONING_LEVEL,
           );
           setProfileLoaded(true);
         }
@@ -333,7 +336,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         chatReasoningLevel ??
           lastSelectedReasoningLevel ??
           profileLastSelectedReasoningLevel ??
-          "high",
+          DEFAULT_WORD_REASONING_LEVEL,
       );
     }, [sessionKey]);
 
@@ -343,7 +346,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         chatReasoningLevel ??
           lastSelectedReasoningLevel ??
           profileLastSelectedReasoningLevel ??
-          "high",
+          DEFAULT_WORD_REASONING_LEVEL,
       );
     }, [
       chatReasoningLevel,

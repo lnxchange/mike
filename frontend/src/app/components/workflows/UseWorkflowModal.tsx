@@ -29,7 +29,10 @@ import { useModelApiKeys } from "@/app/hooks/useModelApiKeys";
 import { useModelRouterSelections } from "@/app/hooks/useModelRouterSelections";
 import { isModelAvailable } from "@/app/lib/modelAvailability";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { appConfig } from "@/config";
 import { roleFrom } from "@/app/lib/permissions";
+
+const t = appConfig.terminology;
 
 interface Props {
     workflow: Workflow | null;
@@ -290,13 +293,16 @@ function UseWorkflowModalForWorkspace({ workflow, onClose, skipSelect = false }:
         wf.metadata.type === "assistant"
             ? [
                   { value: "workspace" as const, label: "Assistant" },
-                  { value: "project" as const, label: "Project assistant" },
+                  {
+                      value: "project" as const,
+                      label: `${t.project} assistant`,
+                  },
               ]
             : [
                   { value: "workspace" as const, label: "Tabular reviews" },
                   {
                       value: "project" as const,
-                      label: "Project tabular reviews",
+                      label: `${t.project} tabular reviews`,
                   },
               ];
 
@@ -426,7 +432,9 @@ function UseWorkflowModalForWorkspace({ workflow, onClose, skipSelect = false }:
 
                         {inProject && (
                             <div>
-                                <FieldLabel htmlFor="workflow-project">Project</FieldLabel>
+                                <FieldLabel htmlFor="workflow-project">
+                                    {t.project}
+                                </FieldLabel>
                                 <ModalSelect
                                     id="workflow-project"
                                     value={selectedProjectId ?? ""}
@@ -440,10 +448,10 @@ function UseWorkflowModalForWorkspace({ workflow, onClose, skipSelect = false }:
                                     }}
                                     placeholder={
                                         dirLoading
-                                            ? "Loading projects..."
+                                            ? `Loading ${t.projectsLower}...`
                                             : projects.length
-                                              ? "Select project..."
-                                              : "No projects found"
+                                              ? `Select ${t.projectLower}...`
+                                              : `No ${t.projectsLower} found`
                                     }
                                     disabled={dirLoading || projects.length === 0}
                                 />

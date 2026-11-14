@@ -12,6 +12,8 @@ export interface PreResponseWrapperUIProps {
     shouldMinimize: boolean;
     isStreaming: boolean;
     forceOpen?: boolean;
+    /** A turn that stopped before an answer. The summary says so instead of "Completed". */
+    incomplete?: boolean;
 }
 
 function ActivityList({ children }: { children: ReactNode }) {
@@ -95,6 +97,7 @@ export function PreResponseWrapperUI({
     shouldMinimize,
     isStreaming,
     forceOpen = false,
+    incomplete = false,
 }: PreResponseWrapperUIProps) {
     const [userToggled, setUserToggled] = useState(false);
     const [isOpen, setIsOpen] = useState(!shouldMinimize);
@@ -120,7 +123,9 @@ export function PreResponseWrapperUI({
             : "";
     const label = isStreaming
         ? "Working"
-        : `Completed in ${stepCount} ${stepWord}${subagents}`;
+        : incomplete
+          ? `Stopped after ${stepCount} ${stepWord}`
+          : `Completed in ${stepCount} ${stepWord}${subagents}`;
 
     return (
         <GlassCardUI>

@@ -146,3 +146,18 @@
     background: var(--liquid-glass-translucent-background-action-hover);
     box-shadow: var(--liquid-glass-shadow-translucent-action-hover);
 }
+
+/*
+ * A live text selection under a backdrop-filter makes Chrome and WKWebView
+ * repaint the pane continuously until the selection is cleared. The chat
+ * transcript is always under a frosted header or composer. Drop the blur
+ * for the life of the selection; the translucent fills stay.
+ */
+html[data-text-selected] :is(
+    .liquid-glass-translucent,
+    .liquid-glass-translucent-action,
+    [class*="backdrop-blur"]
+) {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+}

@@ -13,6 +13,13 @@ const API_BASE = (process.env.REACT_APP_API_BASE_URL || "/api").replace(
   "",
 );
 const REQUEST_STORAGE_KEY = "mike-word-google-oauth-request";
+const PROVIDER_STORAGE_KEY = "mike-word-oauth-provider";
+
+function providerLabel(): "Google" | "Microsoft" {
+  const query = new URL(window.location.href).searchParams.get("provider");
+  const stored = window.sessionStorage.getItem(PROVIDER_STORAGE_KEY);
+  return query === "azure" || stored === "azure" ? "Microsoft" : "Google";
+}
 
 function setStatus(message: string): void {
   const element = document.getElementById("status");
@@ -54,6 +61,7 @@ function clearTemporaryAuthStorage(): void {
     storage.removeItem("mike-word-google-oauth-code-verifier");
   }
   window.sessionStorage.removeItem(REQUEST_STORAGE_KEY);
+  window.sessionStorage.removeItem(PROVIDER_STORAGE_KEY);
 }
 
 /**
@@ -63,14 +71,14 @@ function clearTemporaryAuthStorage(): void {
  */
 async function responseError(response: Response): Promise<string> {
   if (response.status >= 500) {
-    return "Google sign-in is temporarily unavailable. Try again.";
+    return `${providerLabel()} sign-in is temporarily unavailable. Try again.`;
   }
   const body = (await response.json().catch(() => ({}))) as {
     detail?: unknown;
   };
   return typeof body.detail === "string" && body.detail
     ? body.detail
-    : "Google sign-in failed. Try again.";
+    : `${providerLabel()} sign-in failed. Try again.`;
 }
 
 async function runGoogleOAuth(): Promise<void> {
@@ -78,6 +86,10 @@ async function runGoogleOAuth(): Promise<void> {
   const requestedId = currentUrl.searchParams.get("requestId");
   if (requestedId) {
     window.sessionStorage.setItem(REQUEST_STORAGE_KEY, requestedId);
+  }
+  const requestedProvider = currentUrl.searchParams.get("provider");
+  if (requestedProvider === "azure" || requestedProvider === "google") {
+    window.sessionStorage.setItem(PROVIDER_STORAGE_KEY, requestedProvider);
   }
   const requestId =
     requestedId ?? window.sessionStorage.getItem(REQUEST_STORAGE_KEY) ?? "";
@@ -119,7 +131,10 @@ async function runGoogleOAuth(): Promise<void> {
       !/^[A-Za-z0-9_-]{32,256}$/.test(data.handoffTicket)
     ) {
       clearTemporaryAuthStorage();
-      sendError(requestId, "Google sign-in did not produce a valid handoff.");
+      sendError(
+        requestId,
+        `${providerLabel()} sign-in did not produce a valid handoff.`,
+      );
       return;
     }
 
@@ -141,7 +156,10 @@ async function runGoogleOAuth(): Promise<void> {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      provider: "google",
+      provider:
+        window.sessionStorage.getItem(PROVIDER_STORAGE_KEY) === "azure"
+          ? "azure"
+          : "google",
       callbackPath: "/oauth-dialog.html",
       next: "/assistant",
     }),
@@ -155,7 +173,7 @@ async function runGoogleOAuth(): Promise<void> {
   const data = (await response.json()) as { url?: string };
   if (!data.url) {
     clearTemporaryAuthStorage();
-    sendError(requestId, "Unable to open Google sign-in.");
+    sendError(requestId, `Unable to open ${providerLabel()} sign-in.`);
     return;
   }
 
@@ -170,7 +188,7 @@ Office.onReady(() => {
     // Whatever threw here — fetch, Office.js, a bad redirect — its text is
     // for the console. The pane shows this sentence.
     const message = describeError(error, {
-      fallback: "Mike couldn't complete Google sign-in. Try again.",
+      fallback: `Couldn't complete ${providerLabel()} sign-in. Try again.`,
     }).message;
     if (requestId) {
       sendError(requestId, message);
