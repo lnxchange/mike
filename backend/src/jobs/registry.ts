@@ -1,9 +1,12 @@
 // Composition root: domain handlers are reached through their public facades.
 import { handleChatTurnAudit } from "../modules/audit/audit.service";
-import { handleAccountDelete, handleExportBuild, handleMcpRefreshToken } from "../modules/user/user.service";
-import { handleDocumentCleanup, handleDocumentPrecomputeText, handleConversionConvert, markConversionFailed } from "../modules/documents/documents.service";
+import { handleAccountDelete } from "../application/jobs/accountDelete";
+import { handleExportBuild } from "../application/jobs/exportBuild";
+import { handleMcpRefreshToken } from "../modules/user/user.service";
+import { handleDocumentCleanup, handleDocumentExtractText, markDocumentTextFailed, handleDocumentPrecomputeText, handleConversionConvert, markConversionFailed } from "../modules/documents/documents.service";
 import { handleExtractionExtract, markExtractionJobFailed } from "../modules/tabular/tabular.service";
 import { handleMemoryConsolidation, markMemoryConsolidationFailed } from "../modules/memory/memory.service";
+import { handlePlaybookImport, handlePlaybookReview, markPlaybookImportJobFailed, markPlaybookReviewJobFailed } from "../modules/playbooks/playbooks.service";
 import { handleStorageCleanup } from "../lib/dbq/storageCleanup";
 import { type DbJobHandlers } from "../lib/dbq/types";
 import { type DbJobFailureHook } from "../lib/dbq/runner";
@@ -18,12 +21,18 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
   "extraction.extract": handleExtractionExtract,
   "mcp.refresh_token": handleMcpRefreshToken,
   "document.precompute_text": handleDocumentPrecomputeText,
+  "document.extract_text": handleDocumentExtractText,
   "memory.consolidate": handleMemoryConsolidation,
+  "playbook.review": handlePlaybookReview,
+  "playbook.import": handlePlaybookImport,
 };
 export const DB_JOB_FAILURE_HOOKS: Record<string, DbJobFailureHook> = {
   "conversion.convert": markConversionFailed,
+  "document.extract_text": markDocumentTextFailed,
   "extraction.extract": markExtractionJobFailed,
   "memory.consolidate": markMemoryConsolidationFailed,
+  "playbook.review": markPlaybookReviewJobFailed,
+  "playbook.import": markPlaybookImportJobFailed,
 };
 export {
   handleChatTurnAudit,
@@ -31,8 +40,7 @@ export {
   handleExportBuild,
   handleMcpRefreshToken,
   handleDocumentPrecomputeText,
-  handleConversionConvert,
-  handleExtractionExtract,
   handleStorageCleanup,
 };
-export { EXPORT_TYPES, MAX_ZIP_EXPORT_DOCUMENTS, MCP_TOKEN_REFRESH_WINDOW_MS, type ExportType } from "../modules/user/user.service";
+export { MAX_ZIP_EXPORT_DOCUMENTS } from "../application/exports/exportContracts";
+export { MCP_TOKEN_REFRESH_WINDOW_MS } from "../modules/user/user.service";

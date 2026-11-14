@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { EditCardsSectionUI } from "@/shared/ui/EditCardsSectionUI";
-import { GLASS_CARD_SURFACE_CLASS } from "@/shared/ui/GlassCardUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { EditCardsSectionUI, PillButtonUI } from "@mike/ui";
+import { RESPONSE_GLASS_SURFACE } from "./messageStyles";
 import { resolveDocumentEdit } from "@/app/lib/mikeApi";
 import type { EditAnnotation } from "../../shared/types";
 import { applyOptimisticResolution } from "../EditCard";
@@ -134,7 +133,7 @@ function BulkEditActions({
         <div className="flex w-full items-center gap-2">
             <PillButtonUI
                 tone="blue"
-                size="sm"
+                size="xs"
                 onClick={() => handleAll("accept")}
                 disabled={!!busy}
                 loading={busy === "accept"}
@@ -143,7 +142,7 @@ function BulkEditActions({
             </PillButtonUI>
             <PillButtonUI
                 tone="white"
-                size="sm"
+                size="xs"
                 onClick={() => handleAll("reject")}
                 disabled={!!busy}
                 loading={busy === "reject"}
@@ -158,7 +157,7 @@ function BulkEditActions({
             {onViewClick && first && (
                 <PillButtonUI
                     tone="black"
-                    size="sm"
+                    size="xs"
                     onClick={() =>
                         onViewClick(first.annotation, first.filename)
                     }
@@ -229,7 +228,7 @@ export function EditCardsSection({
     return (
         <EditCardsSectionUI
             summary={summary}
-            className={`${GLASS_CARD_SURFACE_CLASS} overflow-hidden`}
+            className={`${RESPONSE_GLASS_SURFACE} overflow-hidden`}
             actions={
                 pending.length > 0 ? (
                     <BulkEditActions

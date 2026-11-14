@@ -2,7 +2,7 @@
 import { type Db } from "../../lib/supabase";
 import { findMissingUserEmails, loadProfileUsersByEmail } from "../../lib/userLookup";
 import { type ProjectRole } from "../../lib/permissions";
-import { deleteOrgAccessOverride, findAssignableOrgMember, isOrgAssignableRole, listOrgAccessPeople, setOrgAccessOverride } from "../../lib/orgAccessOverrides";
+import { deleteOrgAccessOverride, findAssignableOrgMembers, isOrgAssignableRole, listOrgAccessPeople, setOrgAccessOverrides } from "../../lib/orgAccessOverrides";
 import { resolveWorkflowAccess, resolveCreatorScopedWorkflow } from "./workflows.access";
 
 export type ListSharesResult =
@@ -18,6 +18,7 @@ export type ListWorkflowPeopleResult =
 // GET /workflows/:workflowId/people — the access roster any viewer of the
 // workflow may read. Organization workflows answer from the org roster (with
 // its overrides); personal ones answer from the direct-grant table.
+/** Authorizes workflow access before returning its organization or direct-share roster and scoped profile photos. */
 export async function listWorkflowPeople(
   db: Db,
   params: { workflowId: string; userId: string; userEmail: string | undefined },
@@ -33,6 +34,7 @@ export async function listWorkflowPeople(
       resourceId: workflowId,
       orgId,
       creatorId: access.workflow.user_id,
+      visibility: access.workflow.visibility,
     });
     if (!listed.ok) return { ok: false, kind: "db_error", error: listed.detail };
     const creator = listed.people.find(
@@ -47,6 +49,7 @@ export async function listWorkflowPeople(
               user_id: creator.user_id,
               email: creator.email,
               display_name: creator.display_name,
+              profile_photo: creator.profile_photo ?? null,
               role: "owner",
             }
           : null,
@@ -62,7 +65,10 @@ export async function listWorkflowPeople(
     .select("shared_with_email, role")
     .eq("workflow_id", workflowId);
   if (error) return { ok: false, kind: "db_error", error };
-  const { userByEmail, userById } = await loadProfileUsersByEmail(db);
+  const { userByEmail, userById } = await loadProfileUsersByEmail(db, {
+    userIds: access.workflow.user_id ? [access.workflow.user_id] : [],
+    emails: (shares ?? []).map((share) => share.shared_with_email as string),
+  });
   const creator = access.workflow.user_id
     ? userById.get(access.workflow.user_id)
     : undefined;
@@ -75,6 +81,7 @@ export async function listWorkflowPeople(
             user_id: access.workflow.user_id,
             email: creator?.email ?? null,
             display_name: creator?.display_name ?? null,
+            profile_photo: creator?.profile_photo ?? null,
             role: "owner",
           }
         : null,
@@ -85,6 +92,8 @@ export async function listWorkflowPeople(
         }[]
       ).map((share) => ({
         email: share.shared_with_email,
+        user_id: userByEmail.get(share.shared_with_email)?.id ?? null,
+        profile_photo: userByEmail.get(share.shared_with_email)?.profile_photo ?? null,
         display_name:
           userByEmail.get(share.shared_with_email)?.display_name ?? null,
         role: share.role,
@@ -114,6 +123,7 @@ export async function listWorkflowShares(
       resourceId: workflowId,
       orgId,
       creatorId: wf.user_id,
+      visibility: wf.visibility,
     });
     if (!listed.ok) return { ok: false, kind: "db_error", error: listed.detail };
     return {
@@ -153,6 +163,7 @@ export async function deleteWorkflowShare(
 ): Promise<
   | { ok: true }
   | { ok: false; kind: "not_found" }
+  | { ok: false; kind: "share_not_found"; detail: string }
   | { ok: false; kind: "db_error"; error: unknown }
 > {
   const { workflowId, shareId, userId, userEmail } = params;
@@ -173,12 +184,30 @@ export async function deleteWorkflowShare(
       userId: shareId,
     });
     if (!result.ok) return { ok: false, kind: "db_error", error: result.detail };
+    if (!result.removed)
+      return {
+        ok: false,
+        kind: "share_not_found",
+        detail: "Access override not found",
+      };
   } else {
-    await db
+    // Read the result. Ignoring it made a failed delete and an unknown
+    // share id indistinguishable from a real revocation: both answered
+    // 204, so the client removed the row from its list while the person
+    // it named kept access. Mirrors DELETE /projects/:id/access/:email.
+    const { data: removed, error } = await db
       .from("workflow_shares")
       .delete()
       .eq("id", shareId)
-      .eq("workflow_id", workflowId);
+      .eq("workflow_id", workflowId)
+      .select("id");
+    if (error) return { ok: false, kind: "db_error", error };
+    if (((removed ?? []) as unknown[]).length === 0)
+      return {
+        ok: false,
+        kind: "share_not_found",
+        detail: "Access grant not found",
+      };
   }
   return { ok: true };
 }
@@ -241,20 +270,35 @@ export async function shareWorkflow(
         kind: "validation",
         detail: "role must be owner, editor, viewer or deny",
       };
-    for (const email of normalizedEmails) {
-      const target = await findAssignableOrgMember(db, orgId, email, wf.user_id);
-      if (!target.ok) return target;
-      const result = await setOrgAccessOverride(db, {
-        kind: "workflow",
-        resourceId: workflowId,
-        orgId,
-        userId: target.member.userId,
-        role,
-        assignedBy: userId,
-      });
-      if (!result.ok)
-        return { ok: false, kind: "db_error", error: result.detail };
-    }
+    // Validate EVERY target before writing ANY override. Interleaving the
+    // two loops meant a rejected third email — a non-member, the creator,
+    // an admin — returned 400 with the first two overrides already
+    // persisted: the caller read "nothing happened" while access had
+    // silently changed for two people.
+    const found = await findAssignableOrgMembers(
+      db,
+      orgId,
+      normalizedEmails,
+      wf.user_id,
+      wf.visibility,
+    );
+    if (!found.ok) return found;
+    const targets = found.members.map((member) => ({ userId: member.userId }));
+    // Validation is complete, so only a database failure can still stop
+    // this — and it must not stop it HALF WAY. One bulk upsert is one
+    // statement: the org-membership triggers on the override table can
+    // still refuse a row, and when they do the whole batch rolls back
+    // instead of leaving the people ahead of the refusal already granted.
+    const written = await setOrgAccessOverrides(db, {
+      kind: "workflow",
+      resourceId: workflowId,
+      orgId,
+      userIds: targets.map((target) => target.userId),
+      role,
+      assignedBy: userId,
+    });
+    if (!written.ok)
+      return { ok: false, kind: "db_error", error: written.detail };
     return { ok: true };
   }
 

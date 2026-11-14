@@ -1,40 +1,53 @@
-// User BYO API keys: status read + save.
-//
-// Service layer behind user.routes.ts — see user.shared.ts for the module's
-// contract. Security boundary preserved verbatim: writes funnel through
-// saveUserApiKey (the crypto is never reimplemented here).
-
+// Personal settings adapters over the shared owner-aware credential capability.
+import type { Db } from "../../lib/supabase";
+import type { ServiceResult } from "../../lib/serviceResult";
 import {
+    getUserApiKeyStatus,
+    userKeyOwner,
+    saveApiKeyForOwner,
+    setApiKeyEnabledFor,
     type ApiKeyProvider,
     type ApiKeyStatus,
-    getUserApiKeyStatus,
-    saveUserApiKey,
-} from "./user.apiKeyStore";
-import { type Db, errorMessage } from "./user.shared";
-
+    type SaveApiKeyResult,
+} from "../../lib/providerCredentials/index";
 export function getApiKeyStatus(db: Db, userId: string) {
     return getUserApiKeyStatus(userId, db);
 }
 
-export type SaveApiKeyResult =
-    | { ok: true; status: ApiKeyStatus }
-    | { ok: false; kind: "save_failed"; error: unknown };
-
-export async function saveApiKey(
+/**
+ * Save, replace or remove a key. Keys that are only usable with a setting
+ * (Bedrock, Azure OpenAI, Azure AI Foundry, Vertex AI, a custom endpoint)
+ * also take `settings` (`{ region }` / `{ endpoint }` / `{ location }` /
+ * `{ baseUrl }`):
+ * - a key with valid settings saves both together;
+ * - settings without a key change the settings of the already-saved key,
+ *   except that moving a key to a different endpoint host (custom endpoint,
+ *   Azure OpenAI, Azure AI Foundry) requires the key to be re-entered;
+ * - neither removes the key and its settings.
+ */
+export function saveApiKey(
     db: Db,
-    params: { userId: string; provider: ApiKeyProvider; apiKey: string | null },
+    params: {
+        userId: string;
+        provider: ApiKeyProvider;
+        apiKey: string | null;
+        settings?: unknown;
+    },
 ): Promise<SaveApiKeyResult> {
-    const { userId, provider, apiKey } = params;
-    try {
-        await saveUserApiKey(userId, provider, apiKey, db);
-        const status = await getUserApiKeyStatus(userId, db);
-        return { ok: true, status };
-    } catch (err) {
-        const detail = errorMessage(err);
-        console.error("[user/api-keys] save failed", {
-            provider,
-            error: detail,
-        });
-        return { ok: false, kind: "save_failed", error: err };
-    }
+    return saveApiKeyForOwner(db, {
+        owner: userKeyOwner(params.userId),
+        provider: params.provider,
+        apiKey: params.apiKey,
+        settings: params.settings,
+    });
+}
+
+/** Toggle a saved credential without changing its encrypted value or models. */
+export function setApiKeyEnabled(
+    db: Db,
+    userId: string,
+    provider: ApiKeyProvider,
+    enabled: boolean,
+): Promise<ServiceResult<ApiKeyStatus>> {
+    return setApiKeyEnabledFor(db, userKeyOwner(userId), provider, enabled);
 }

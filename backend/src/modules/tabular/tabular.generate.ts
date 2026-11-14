@@ -18,12 +18,16 @@
 // snapshot.
 
 import { type UserApiKeys } from "../../lib/llm";
-import {
-    ensureReviewAccess,
-    filterAccessibleDocumentIds,
-} from "../../lib/access";
+import { ensureReviewAccess } from "../../lib/access";
+import { can } from "../../lib/permissions";
+import { queryFailureCause } from "../../lib/batchedQuery";
 import { failure, internalFailure } from "../../lib/serviceResult";
-import { loadReviewRows, type ReviewRow } from "./tabular.rows";
+import {
+    filterReadableReviewRows,
+    loadReviewCells,
+    loadReviewRows,
+    type ReviewRow,
+} from "./tabular.rows";
 import {
     statusFailure,
     validateSelectedModel,
@@ -33,6 +37,7 @@ import {
     type ModelValidationFailure,
     type TabularFailure,
     type TabularResult,
+    REVIEW_EDIT_FORBIDDEN,
 } from "./tabular.shared";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +58,7 @@ export async function prepareTabularGenerate(
 ): Promise<
     | { ok: true; data: PreparedGenerate }
     | { ok: false; kind: "not_found" }
+    | { ok: false; kind: "forbidden" }
     | { ok: false; kind: "no_columns" }
     | ({ ok: false; kind: "model" } & Omit<ModelValidationFailure, "ok">)
 > {
@@ -66,6 +72,13 @@ export async function prepareTabularGenerate(
     if (reviewError || !review) return { ok: false, kind: "not_found" };
     const access = await ensureReviewAccess(review, userId, userEmail, db);
     if (!access.ok) return { ok: false, kind: "not_found" };
+    // GENERATION IS A WRITE. It claims the review's generation lease, calls a
+    // paid model with the caller's keys, persists a cell per column per row
+    // and stamps an audit event in the caller's name. `access.ok` alone let a
+    // review VIEWER do all of that — read-only access is not permission to
+    // rewrite the review's contents.
+    if (!can(access.projectRole, "content.edit"))
+        return { ok: false, kind: "forbidden" };
 
     const columns: Column[] = review.columns_config ?? [];
     if (columns.length === 0) return { ok: false, kind: "no_columns" };
@@ -74,7 +87,12 @@ export async function prepareTabularGenerate(
     // of the user's global defaults, and it must still resolve + be keyed for
     // this user. Failures are carried out verbatim so both the sync and the
     // async endpoint answer with the same status/body.
-    const selected = await validateSelectedModel(review.model, userId, db);
+    const selected = await validateSelectedModel(
+        review.model,
+        userId,
+        db,
+        review.org_id ?? null,
+    );
     if (!selected.ok)
         return {
             ok: false,
@@ -94,6 +112,40 @@ export async function prepareTabularGenerate(
     };
 }
 
+/**
+ * The gate for STOPPING a generation: the review exists, the caller can see
+ * it, and the caller may edit its contents. Nothing else.
+ *
+ * Stop deliberately does not reuse `prepareTabularGenerate`: that precheck also
+ * demands a non-empty column set and a model the CALLER holds a working key
+ * for, because starting a run will spend that key. Stopping spends nothing.
+ * The run may have been started by another editor with their keys, the
+ * review's model may no longer resolve for this caller, or the last column may
+ * have been deleted mid-run — none of that should leave a run that no socket
+ * can stop any more running to completion.
+ */
+export async function ensureReviewGenerateStopAccess(
+    db: Db,
+    args: { reviewId: string; userId: string; userEmail?: string },
+): Promise<
+    | { ok: true }
+    | { ok: false; kind: "not_found" }
+    | { ok: false; kind: "forbidden" }
+> {
+    const { reviewId, userId, userEmail } = args;
+    const { data: review, error: reviewError } = await db
+        .from("tabular_reviews")
+        .select("*")
+        .eq("id", reviewId)
+        .single();
+    if (reviewError || !review) return { ok: false, kind: "not_found" };
+    const access = await ensureReviewAccess(review, userId, userEmail, db);
+    if (!access.ok) return { ok: false, kind: "not_found" };
+    if (!can(access.projectRole, "content.edit"))
+        return { ok: false, kind: "forbidden" };
+    return { ok: true };
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 — post-lease work snapshot
 // ---------------------------------------------------------------------------
@@ -105,38 +157,36 @@ export type TabularGenerateWork = {
     cellMap: Map<string, Record<string, unknown>>;
 };
 
+/** Load the post-lease work snapshot, distinguishing lookup errors from access denials. */
 export async function loadTabularGenerateWork(
     db: Db,
     args: { reviewId: string; userId: string; userEmail: string | undefined },
 ): Promise<
     | { ok: true; data: TabularGenerateWork }
     | { ok: false; kind: "cells_error"; error: unknown }
+    | { ok: false; kind: "error"; error: unknown }
 > {
     const { reviewId, userId, userEmail } = args;
 
     let rows = await loadReviewRows(db, reviewId);
 
-    const { data: cells, error: cellsError } = await db
-        .from("tabular_cells")
-        .select("*")
-        .eq("review_id", reviewId);
-    if (cellsError)
-        return { ok: false, kind: "cells_error", error: cellsError };
+    let cells: Record<string, unknown>[];
+    try {
+        cells = await loadReviewCells(db, reviewId);
+    } catch (cellsError) {
+        return { ok: false, kind: "cells_error", error: queryFailureCause(cellsError) };
+    }
     const cellMap = new Map<string, Record<string, unknown>>();
-    for (const cell of cells ?? [])
+    for (const cell of cells)
         cellMap.set(`${cell.row_id}:${cell.column_index}`, cell);
 
     // A row is only extractable if the requester can access every source
     // document feeding it; drop rows containing anything they cannot see.
-    const sourceIds = [
-        ...new Set(rows.flatMap((row) => row.source_document_ids ?? [])),
-    ];
-    const allowedSourceIds = new Set(
-        await filterAccessibleDocumentIds(sourceIds, userId, userEmail, db),
-    );
-    rows = rows.filter((row) =>
-        (row.source_document_ids ?? []).every((id) => allowedSourceIds.has(id)),
-    );
+    try {
+        ({ rows } = await filterReadableReviewRows(db, rows, [], userId, userEmail));
+    } catch (error) {
+        return { ok: false, kind: "error", error };
+    }
 
     return { ok: true, data: { rows, cellMap } };
 }
@@ -214,6 +264,12 @@ export function preparedGenerateFailure(
 ): TabularFailure {
     if (prepared.kind === "not_found")
         return failure("not_found", "Review not found");
+    // Same gate as the POST the stream resumes: the reconnect stream exists
+    // to rejoin a run this caller was entitled to start, and a Viewer never
+    // was. They read the finished cells through the review itself, not
+    // through the generation channel.
+    if (prepared.kind === "forbidden")
+        return failure("forbidden", REVIEW_EDIT_FORBIDDEN);
     if (prepared.kind === "no_columns")
         return failure("validation", "No columns configured");
     return statusFailure(prepared.status, prepared.body);

@@ -2,9 +2,12 @@
 
 import {
     forwardRef,
+    type ReactNode,
     useImperativeHandle,
+    useMemo,
     useRef,
     useState,
+    useSyncExternalStore,
 } from "react";
 import { Loader2, Plus, Upload } from "lucide-react";
 import type {
@@ -20,16 +23,20 @@ import {
     SkeletonCheckbox,
     SkeletonLine,
     TableScrollArea,
+    TableRow,
 } from "../shared/TablePrimitive";
 import { EmptyState } from "@/app/components/ui/empty-state";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI } from "@mike/ui";
 import { TabularReviewSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
+import type { ReviewCellStore } from "./reviewCellStore";
+import { indexReviewCells } from "./reviewCellIndex";
 import { TRFirstColumnCell } from "./TRFirstColumnCell";
 import {
     LIQUID_GLASS_SELECTED_CLASS,
     LIQUID_GLASS_GROUP_HOVER_CLASS,
     LIQUID_GLASS_HOVER_CLASS,
 } from "@/app/components/ui/liquid-surface";
+import { useIdSet } from "@/app/hooks/useIdSet";
 
 const SKELETON_COLS = 4;
 const SKELETON_ROWS = 5;
@@ -37,10 +44,6 @@ const SKELETON_ROWS = 5;
 const COL_W = "w-[300px] shrink-0";
 const DOC_COL_W = "w-[332px] shrink-0";
 const TR_STICKY_CELL_CLASS = "table-sticky-cell";
-// The review grid keeps the wider page gutter. Its first column is a fixed
-// 332px cell rather than a checkbox aligned to the page header, so the
-// narrower gutter the other tables use would buy it nothing.
-const TR_GUTTER_CLASS = "md:mx-8";
 
 // Pixel widths matching the CSS constants above
 const DOC_COL_W_PX = 332;
@@ -58,6 +61,7 @@ interface Props {
     rows: TabularReviewRow[];
     documents: Document[];
     cells: TabularCell[];
+    cellStore?: ReviewCellStore;
     savingColumn: boolean;
     savingColumnsConfig: boolean;
     selectedRowIds: string[];
@@ -65,6 +69,7 @@ interface Props {
     dragOverFiles?: boolean;
     highlightedCell?: { colIdx: number; rowIdx: number } | null;
     onSelectionChange: (ids: string[]) => void;
+    rightClickDropdown?: (row: TabularReviewRow, close: () => void) => ReactNode;
     onDocumentOpen: (row: TabularReviewRow, document: Document) => void;
     onExpand: (cell: TabularCell) => void;
     onCitationClick: (
@@ -90,6 +95,7 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
         rows,
         documents,
         cells,
+        cellStore,
         savingColumn,
         savingColumnsConfig,
         selectedRowIds,
@@ -97,6 +103,7 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
         dragOverFiles = false,
         highlightedCell,
         onSelectionChange,
+        rightClickDropdown,
         onDocumentOpen,
         onExpand,
         onCitationClick,
@@ -121,10 +128,11 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
         }
     }
 
-    const sortedColumns = [...columns].sort((a, b) => a.index - b.index);
-    const documentsById = new Map(
-        documents.map((document) => [document.id, document]),
-    );
+    const sortedColumns = useMemo(() => [...columns].sort((a, b) => a.index - b.index), [columns]);
+    const columnPositions = useMemo(() => new Map(sortedColumns.map((column, index) => [column.index, index])), [sortedColumns]);
+    const documentsById = useMemo(() => new Map(documents.map((document) => [document.id, document])), [documents]);
+    const cellsByRow = useMemo(() => indexReviewCells(cells), [cells]);
+    const selectedRows = useIdSet(selectedRowIds);
     const firstColumnLabel =
         documentGrouping === "folder" ? "Folder / Document" : "Document";
     const totalContentWidth =
@@ -158,17 +166,10 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
         },
     }));
 
-    function getCell(row: TabularReviewRow, colIdx: number) {
-        return cells.find(
-            (cell) =>
-                cell.row_id === row.id && cell.column_index === colIdx,
-        );
-    }
-
     const allSelected =
-        rows.length > 0 && rows.every((row) => selectedRowIds.includes(row.id));
+        rows.length > 0 && rows.every((row) => selectedRows.has(row.id));
     const someSelected =
-        !allSelected && rows.some((row) => selectedRowIds.includes(row.id));
+        !allSelected && rows.some((row) => selectedRows.has(row.id));
 
     function toggleAll() {
         if (allSelected) {
@@ -179,7 +180,7 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
     }
 
     function toggleRow(id: string) {
-        if (selectedRowIds.includes(id)) {
+        if (selectedRows.has(id)) {
             onSelectionChange(selectedRowIds.filter((x) => x !== id));
         } else {
             onSelectionChange([...selectedRowIds, id]);
@@ -190,7 +191,6 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
         return (
             <TableScrollArea
                 preserveGridBorder
-                className={TR_GUTTER_CLASS}
                 header={
                     <div
                         className="flex h-10 shrink-0"
@@ -248,7 +248,6 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
         return (
             <TableScrollArea
                 preserveGridBorder
-                className={TR_GUTTER_CLASS}
                 header={
                     <div className="shrink-0 flex h-10 items-center border-b border-gray-200">
                         <div
@@ -298,7 +297,6 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
     return (
         <TableScrollArea
             preserveGridBorder
-            className={TR_GUTTER_CLASS}
             scrollRef={scrollContainerRef}
             onScroll={handleRowsScroll}
             header={
@@ -387,7 +385,7 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                     </div>
                     ))}
                     {rows.map((row, rowIdx) => {
-                    const isSelected = selectedRowIds.includes(row.id);
+                    const isSelected = selectedRows.has(row.id);
                     const sourceDocuments = row.source_document_ids
                         .map((documentId) => documentsById.get(documentId))
                         .filter(
@@ -400,9 +398,12 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                         ? LIQUID_GLASS_SELECTED_CLASS
                         : "";
                     return (
-                        <div
+                        <TableRow
                             key={row.id}
-                            className={`group flex transition-colors ${rowBg}`}
+                            interactive={false}
+                            selected={isSelected}
+                            rightClickDropdown={rightClickDropdown ? (close) => rightClickDropdown(row, close) : undefined}
+                            className={`h-auto items-stretch pr-0 ${rowBg}`}
                             style={{ minWidth: totalContentWidth }}
                         >
                             <TRFirstColumnCell
@@ -417,10 +418,8 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                                 className={`${TR_STICKY_CELL_CLASS} sticky left-0 z-[60] ${DOC_COL_W} border-b border-r border-gray-200 py-2 pl-3 pr-2 text-xs text-gray-800 flex items-center transition-colors ${stickyRowBg} ${isSelected ? "" : LIQUID_GLASS_GROUP_HOVER_CLASS}`}
                             />
                             {columns.map((col) => {
-                                const cell = getCell(row, col.index);
-                                const colPos = sortedColumns.findIndex(
-                                    (c) => c.index === col.index,
-                                );
+                                const cell = cellsByRow.get(row.id)?.get(col.index);
+                                const colPos = columnPositions.get(col.index);
                                 const isHighlighted =
                                     highlightedCell?.colIdx === colPos &&
                                     highlightedCell?.rowIdx === rowIdx;
@@ -429,40 +428,47 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                                         key={col.index}
                                         className={`${COL_W} border-b border-r border-gray-200 transition-colors ${isHighlighted ? "bg-blue-200" : ""}`}
                                     >
-                                        {cell && (
-                                            <TabularCellComponent
-                                                cell={cell}
-                                                column={col}
-                                                closeSignal={scrollCloseSignal}
-                                                onExpand={() => onExpand(cell)}
-                                                onCitationClick={(
-                                                    page,
-                                                    quote,
-                                                    citationRef,
-                                                    sheet,
-                                                    citationCell,
-                                                    documentId,
-                                                ) =>
-                                                    onCitationClick(
-                                                        cell,
-                                                        page,
-                                                        quote,
-                                                        citationRef,
-                                                        sheet,
-                                                        citationCell,
-                                                        documentId,
-                                                    )
-                                                }
-                                            />
-                                        )}
+                                        <LiveReviewCell
+                                            cell={cell}
+                                            rowId={row.id}
+                                            column={col}
+                                            store={cellStore}
+                                            closeSignal={scrollCloseSignal}
+                                            onExpand={onExpand}
+                                            onCitationClick={onCitationClick}
+                                        />
                                     </div>
                                 );
                             })}
                             <div className="flex-1 border-b border-gray-200 min-h-8 min-w-8" />
-                        </div>
+                        </TableRow>
                     );
                     })}
                 </div>
         </TableScrollArea>
     );
 });
+
+const noopSubscribe = () => () => {};
+function LiveReviewCell({ cell, rowId, column, store, closeSignal, onExpand, onCitationClick }: {
+    cell: TabularCell | undefined;
+    rowId: string;
+    column: ColumnConfig;
+    store?: ReviewCellStore;
+    closeSignal: number;
+    onExpand: Props["onExpand"];
+    onCitationClick: Props["onCitationClick"];
+}) {
+    const current = useSyncExternalStore(
+        store ? listener => store.subscribeCell(rowId, column.index, listener) : noopSubscribe,
+        () => store ? store.get(rowId, column.index) : cell,
+        () => cell,
+    );
+    return current ? <TabularCellComponent
+        cell={current}
+        column={column}
+        closeSignal={closeSignal}
+        onExpand={() => onExpand(current)}
+        onCitationClick={(...args) => onCitationClick(current, ...args)}
+    /> : null;
+}

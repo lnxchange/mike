@@ -13,6 +13,7 @@ import {
   deleteDocumentVersion,
   deleteWorkflowAsset,
   failedUploadMessage,
+  uploadOutcomeNeedsRetry,
   getDocumentUrl,
   listDocumentVersions,
   listWorkflowAssets,
@@ -27,7 +28,12 @@ import {
   formatUnsupportedDocumentWarning,
   partitionSupportedDocumentFiles,
 } from "@/app/lib/documentUploadValidation";
-import { userFacingApiError } from "@/app/lib/userFacingError";
+import { reportFault,
+    notifyError,
+    notifyPartialFailure,
+    uploadBatchFault,
+    userFacingApiError,
+} from "@/app/lib/userFacingError";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { ConfirmPopup } from "../popups/ConfirmPopup";
 import { FileTypeIcon } from "../shared/FileTypeIcon";
@@ -44,6 +50,9 @@ import {
   TableScrollArea,
   TableStickyCell,
 } from "../shared/TablePrimitive";
+
+/** Every failure on this screen belongs to the workflow it serves. */
+const ASSET_FLOW = { operation: "workflows.run" } as const;
 
 const ASSET_NAME_COL_W =
   "w-[292px] sm:w-[332px] md:w-[392px] lg:w-[452px] shrink-0";
@@ -120,6 +129,7 @@ export const WorkflowAssets = forwardRef<
       setFiles(await listWorkflowAssets(workflowId));
       setError("");
     } catch (caught) {
+      reportFault(caught, ASSET_FLOW);
       setError(userFacingApiError(caught, "Unable to load assets."));
     } finally {
       setLoading(false);
@@ -140,6 +150,13 @@ export const WorkflowAssets = forwardRef<
     setError((current) =>
       current && current !== message ? `${current} ${message}` : message,
     );
+  }
+
+  function uploadAction(failedCount: number, total: number) {
+    if (failedCount === 1 && total === 1) return "upload this file";
+    return failedCount === total
+      ? `upload ${total} files`
+      : `upload ${failedCount} of ${total} files`;
   }
 
   async function upload(filesToUpload: File[]) {
@@ -169,12 +186,43 @@ export const WorkflowAssets = forwardRef<
           : [],
       );
       setFiles((current) => [...current, ...created]);
-      const failedCount = outcomes.length - created.length;
-      if (failedCount > 0) {
-        appendWarning(failedUploadMessage(outcomes));
+      // The upload client returns one outcome per input, in input order.
+      // Filenames are not identities: separate files can share a name.
+      const failedFiles = supported.filter((_, index) => outcomes[index]?.status === "error");
+      // A Retry re-sends only the failures that could still land; a file the
+      // server refused for its content is reported but not re-sent.
+      const retryableFiles = supported.filter((_, index) => {
+        const outcome = outcomes[index];
+        return outcome !== undefined && uploadOutcomeNeedsRetry(outcome);
+      });
+      if (failedFiles.length > 0) {
+        // One notification for the batch, naming the files that did not make
+        // it, with a retry that re-runs only those that can.
+        notifyPartialFailure(
+          failedUploadMessage(outcomes),
+          {
+            action: uploadAction(failedFiles.length, supported.length),
+            onRetry:
+              retryableFiles.length > 0
+                ? () => void upload(retryableFiles)
+                : undefined,
+            // Storage failures were reported per part by the API client;
+            // what is left to report is a file the server never finished.
+            ...ASSET_FLOW,
+            cause: uploadBatchFault(outcomes) ?? undefined,
+          },
+        );
       }
     } catch (caught) {
-      appendWarning(userFacingApiError(caught, "Upload failed."));
+      notifyError(caught, {
+        action: uploadAction(supported.length, supported.length),
+        ...ASSET_FLOW,
+        fallback:
+          supported.length === 1
+            ? `${supported[0]?.name ?? "That file"} could not be uploaded. Try again.`
+            : "Those files could not be uploaded. Try again.",
+        onRetry: () => void upload(supported),
+      });
     } finally {
       uploadInFlightRef.current = false;
       setBusyId(null);
@@ -199,6 +247,7 @@ export const WorkflowAssets = forwardRef<
       );
       setFiles((current) => [...current, ...created]);
     } catch (caught) {
+      reportFault(caught, ASSET_FLOW);
       setError(userFacingApiError(caught, "Unable to add saved files."));
     } finally {
       uploadInFlightRef.current = false;
@@ -220,6 +269,7 @@ export const WorkflowAssets = forwardRef<
         return next;
       });
     } catch (caught) {
+      reportFault(caught, ASSET_FLOW);
       setError(userFacingApiError(caught, "Unable to load asset versions."));
     } finally {
       setLoadingVersionAssetIds((current) => {
@@ -245,6 +295,7 @@ export const WorkflowAssets = forwardRef<
       setViewingVersionId(null);
       await refreshVersionState(target.id);
     } catch (caught) {
+      reportFault(caught, ASSET_FLOW);
       setError(userFacingApiError(caught, "Version upload failed."));
     } finally {
       setBusyId(null);
@@ -260,6 +311,7 @@ export const WorkflowAssets = forwardRef<
       anchor.download = resolved.filename || file.filename;
       anchor.click();
     } catch (caught) {
+      reportFault(caught, ASSET_FLOW);
       setError(userFacingApiError(caught, "Download failed."));
     } finally {
       setBusyId(null);
@@ -290,6 +342,7 @@ export const WorkflowAssets = forwardRef<
     try {
       await deleteAsset(file);
     } catch (caught) {
+      reportFault(caught, ASSET_FLOW);
       setError(userFacingApiError(caught, "Delete failed."));
     } finally {
       setBusyId(null);
@@ -329,7 +382,12 @@ export const WorkflowAssets = forwardRef<
         }}
       />
       {error && (
-        <p className="mx-4 mb-2 -mt-1 text-xs text-red-600 md:mx-8">{error}</p>
+        <p
+          role="alert"
+          className="mx-4 mb-2 -mt-1 text-xs text-red-600 md:mx-8"
+        >
+          {error}
+        </p>
       )}
       <TableScrollArea
         header={

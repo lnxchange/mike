@@ -1,5 +1,3 @@
-export { STANDARD_FONT_DATA_URL } from "../../../lib/pdfText";
-
 // Re-exported so the chat modules that already import it from here keep
 // working; the definition lives in lib/log.ts.
 export { devLog } from "../../../lib/log";
@@ -22,6 +20,8 @@ export type DocStore = Map<
      * the model when it chooses to read them.
      */
     inline_text?: string;
+    /** Search handles pin the source revision and reauthorize every subsequent read. */
+    search_source?: { revision: string; userId: string; userEmail?: string | null };
   }
 >;
 
@@ -75,6 +75,13 @@ export type ChatMessage = {
     version_number?: number;
   }[];
   workflow?: { id: string; title: string };
+  /** The playbook the user picked to run, shown as a pill. */
+  playbook?: { id: string; title: string };
+  /**
+   * Stored reasoning for an assistant turn, attached server-side by
+   * attachPriorReasoning. Never accepted from the request body.
+   */
+  reasoning?: string;
 };
 
 /**
@@ -83,7 +90,6 @@ export type ChatMessage = {
  * single-segment quotes that matched.
  */
 export type { QuoteVerification } from "@mike/contracts";
-import type { QuoteVerification } from "@mike/contracts";
 
 // ---------------------------------------------------------------------------
 // Doc resolution helpers (used by citations + documentOps)
@@ -102,16 +108,37 @@ export function resolveDocLabel(
   docStore: DocStore,
   docIndex?: DocIndex,
 ): string | null {
-  if (docStore.has(rawId)) return rawId;
-  for (const [label, info] of docStore.entries()) {
-    if (info.filename === rawId) return label;
-  }
-  if (docIndex) {
-    for (const [label, info] of Object.entries(docIndex)) {
-      if (info.document_id === rawId) return label;
+  return createDocLabelResolver(docStore, docIndex)(rawId);
+}
+
+/**
+ * resolveDocLabel for a batch of ids. The filename and document-id indexes
+ * are built once, on the first id that is not already a label, so resolving
+ * k ids against N documents is O(N + k) instead of O(N·k). Use it only while
+ * the store is not being mutated (one tool call's id list, end-of-turn
+ * citation checks): it snapshots the store when it first needs an index.
+ * First match in insertion order wins, as in a linear scan.
+ */
+export function createDocLabelResolver(
+  docStore: DocStore,
+  docIndex?: DocIndex,
+): (rawId: string) => string | null {
+  let byFilename: Map<string, string> | null = null;
+  let byDocumentId: Map<string, string> | null = null;
+  return (rawId) => {
+    if (docStore.has(rawId)) return rawId;
+    if (!byFilename) {
+      byFilename = new Map();
+      for (const [label, info] of docStore) {
+        if (!byFilename.has(info.filename)) byFilename.set(info.filename, label);
+      }
+      byDocumentId = new Map();
+      for (const [label, info] of Object.entries(docIndex ?? {})) {
+        if (!byDocumentId.has(info.document_id)) byDocumentId.set(info.document_id, label);
+      }
     }
-  }
-  return null;
+    return byFilename.get(rawId) ?? byDocumentId!.get(rawId) ?? null;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -119,21 +146,18 @@ export function resolveDocLabel(
 // ---------------------------------------------------------------------------
 
 export type { AskInputOption } from "@mike/contracts";
-import type { AskInputOption } from "@mike/contracts";
 
 export const MAX_ASK_INPUT_TEXT_LENGTH = 5_000;
+export const MAX_ASK_INPUT_CHOICE_LENGTH = 1_000;
+/** What the user sees for a failed tool call; the raw error stays server-side. */
+export const TOOL_ERROR_MESSAGE = "This tool could not complete its request.";
 
 export type { AskInputItem } from "@mike/contracts";
-import type { AskInputItem } from "@mike/contracts";
 
 export type { AskInputsEvent } from "@mike/contracts";
-import type { AskInputsEvent } from "@mike/contracts";
 
 export type { AskInputResponseItem } from "@mike/contracts";
-import type { AskInputResponseItem } from "@mike/contracts";
 
 export type { AskInputsResponseRequest } from "@mike/contracts";
-import type { AskInputsResponseRequest } from "@mike/contracts";
 
 export type { EditAnnotation } from "@mike/contracts";
-import type { EditAnnotation } from "@mike/contracts";

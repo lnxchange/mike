@@ -62,7 +62,12 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
     ).__fakePdf!.getDocument(),
 }));
 
-import { extractPdfText } from "./pdfText";
+import {
+  countPagesWithoutText,
+  extractPdfText,
+  extractPdfTextForModel,
+  textLayerNotice,
+} from "./pdfText";
 
 function withPdf(
   pages: FakeItem[][],
@@ -114,6 +119,81 @@ describe("extractPdfText layout reconstruction", () => {
       );
     },
   );
+
+  it("reads down each column of a two-column page", async () => {
+    // The counterpart to the table above, and the regression this exists for:
+    // a table row reads across, but a two-column page reads down. Grouping by
+    // baseline alone glued the left column's line to the right column's, so a
+    // quote spanning two lines of one column was not contiguous in the
+    // extracted text and failed citation verification outright.
+    const left = [
+      "The defendant contends that the statute of",
+      "limitations had expired before the complaint",
+      "was filed, and that the tolling agreement is",
+      "unenforceable for want of consideration.",
+    ];
+    const right = [
+      "We disagree. The record shows the parties",
+      "exchanged mutual promises to forbear suit,",
+      "which this court has long held sufficient to",
+      "support a tolling agreement.",
+    ];
+    // `item` reports 6pt per character, so the widest left line ends 18pt
+    // short of the right column: a gutter, not a word gap.
+    const rightX = 72 + Math.max(...left.map((l) => l.length * 6)) + 18;
+    withPdf([
+      [
+        ...left.map((line, i) => item(line, 72, 700 - i * 14)),
+        ...right.map((line, i) => item(line, rightX, 700 - i * 14)),
+      ],
+    ]);
+
+    // Each column's lines stay contiguous. The right column keeps the indent
+    // its x position implies, which whitespace-normalized quote matching
+    // collapses.
+    const indent = " ".repeat(24);
+    await expect(extractPdfText(new ArrayBuffer(8))).resolves.toBe(
+      [
+        "[Page 1]",
+        ...left,
+        "",
+        ...right.map((line) => indent + line),
+      ].join("\n"),
+    );
+  });
+
+  it("keeps a full-width heading above the columns it introduces", async () => {
+    // A heading spanning both columns breaks the gutter, so requiring one
+    // unbroken over the whole page would find no columns at all on exactly
+    // the pages that have them.
+    // Three lines a side: a column is a block of text, so a candidate gutter
+    // supported by only a row or two is not taken as one.
+    const left = [
+      "Left line one aaaaaaaaaa",
+      "Left line two aaaaaaaaaa",
+      "Left line three aaaaaaaa",
+    ];
+    const right = [
+      "Right line one bbbbbbbbb",
+      "Right line two bbbbbbbbb",
+      "Right line three bbbbbbb",
+    ];
+    const rightX = 72 + 24 * 6 + 18;
+    withPdf([
+      [
+        item("OPINION OF THE COURT", 72, 730),
+        ...left.map((line, i) => item(line, 72, 700 - i * 14)),
+        ...right.map((line, i) => item(line, rightX, 700 - i * 14)),
+      ],
+    ]);
+
+    const text = await extractPdfText(new ArrayBuffer(8));
+    expect(text.indexOf("OPINION OF THE COURT")).toBeLessThan(
+      text.indexOf("Left line one"),
+    );
+    expect(text).toContain(`${left[0]}\n${left[1]}`);
+    expect(text.indexOf(left[1])).toBeLessThan(text.indexOf(right[0]));
+  });
 
   it("groups near-equal baselines and sorts fragments by X", async () => {
     withPdf([
@@ -332,5 +412,94 @@ describe("extractPdfText layout reconstruction", () => {
     };
 
     await expect(extractPdfText(new ArrayBuffer(8))).resolves.toBe("");
+  });
+});
+
+describe("text layer detection", () => {
+  const unreadable = () => {
+    (globalThis as { __fakePdf?: unknown }).__fakePdf = {
+      getDocument: () => ({ promise: Promise.reject(new Error("bad pdf")) }),
+    };
+  };
+
+  it("leaves a PDF with text on every page unchanged", async () => {
+    withPdf([[item("Intro", 72, 700)], [item("Terms", 72, 700)]]);
+
+    await expect(extractPdfTextForModel(new ArrayBuffer(8))).resolves.toBe(
+      "[Page 1]\nIntro\n\n[Page 2]\nTerms",
+    );
+    await expect(countPagesWithoutText(new ArrayBuffer(8))).resolves.toBe(0);
+  });
+
+  it("replaces a fully scanned PDF with a single notice", async () => {
+    withPdf([[], []]);
+
+    await expect(extractPdfTextForModel(new ArrayBuffer(8))).resolves.toBe(
+      "[This PDF has no text layer, so its content cannot be read. It is most likely a scanned document that needs OCR.]",
+    );
+    await expect(countPagesWithoutText(new ArrayBuffer(8))).resolves.toBe(2);
+  });
+
+  it("names the pages without text in a partly scanned PDF", async () => {
+    withPdf([
+      [item("Brief", 72, 700)],
+      [],
+      [],
+      [],
+      [item("Closing", 72, 700)],
+      [],
+    ]);
+
+    const text = await extractPdfTextForModel(new ArrayBuffer(8));
+    expect(text).toMatch(
+      /^\[Pages 2–4, 6 of this PDF have no text layer, so their content cannot be read\. They are most likely scanned and need OCR\.\]\n\n\[Page 1\]\nBrief/,
+    );
+    await expect(countPagesWithoutText(new ArrayBuffer(8))).resolves.toBe(4);
+  });
+
+  it("uses the singular for one page without text", () => {
+    expect(textLayerNotice([2], 3)).toMatch(
+      /^\[Page 2 of this PDF has no text layer/,
+    );
+  });
+
+  it("treats a content line that reads like a page marker as text", async () => {
+    withPdf([[item("[Page 2]", 72, 700)], [item("Terms", 72, 700)]]);
+
+    await expect(countPagesWithoutText(new ArrayBuffer(8))).resolves.toBe(0);
+    await expect(extractPdfTextForModel(new ArrayBuffer(8))).resolves.toBe(
+      "[Page 1]\n[Page 2]\n\n[Page 2]\nTerms",
+    );
+  });
+
+  it("counts unpositioned form field values as page text", async () => {
+    withPdf([[]], [[{ fieldName: "Name", fieldValue: "Jane Doe" }]]);
+
+    await expect(countPagesWithoutText(new ArrayBuffer(8))).resolves.toBe(0);
+  });
+
+  it("reports an unreadable PDF as unknown, not as fully readable", async () => {
+    unreadable();
+    await expect(countPagesWithoutText(new ArrayBuffer(8))).resolves.toBeNull();
+    await expect(extractPdfTextForModel(new ArrayBuffer(8))).resolves.toBe("");
+  });
+
+  it("destroys the pdfjs loading task after reading, and after a failure", async () => {
+    const destroy = vi.fn(() => Promise.resolve());
+    const readable = fakePdf([[item("Text", 72, 700)]]);
+    (globalThis as { __fakePdf?: unknown }).__fakePdf = {
+      getDocument: () => ({ ...readable.getDocument(), destroy }),
+    };
+    await countPagesWithoutText(new ArrayBuffer(8));
+    expect(destroy).toHaveBeenCalledTimes(1);
+
+    (globalThis as { __fakePdf?: unknown }).__fakePdf = {
+      getDocument: () => ({
+        promise: Promise.reject(new Error("bad pdf")),
+        destroy,
+      }),
+    };
+    await extractPdfText(new ArrayBuffer(8));
+    expect(destroy).toHaveBeenCalledTimes(2);
   });
 });

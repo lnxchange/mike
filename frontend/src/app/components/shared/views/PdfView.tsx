@@ -13,7 +13,10 @@ import {
     highlightQuote,
     STANDARD_FONT_DATA_URL,
 } from "./highlightQuote";
-import { LIQUID_GLASS_TRANSLUCENT_CLASS } from "@/shared/ui/LiquidGlassUI";
+import { createPdfQuoteMatcher, normalizePdfQuoteText } from "./pdfQuoteSearch";
+import { orderTextItemLines, type TextItemGeometry } from "./pdfTextOrder";
+import { LIQUID_GLASS_TRANSLUCENT_CLASS } from "@mike/ui";
+import { viewRoundingClass, type ViewRounding } from "./viewRounding";
 
 interface Props {
     doc: { document_id: string; version_id?: string | null } | null;
@@ -26,7 +29,7 @@ interface Props {
     /** Back-compat single-quote API. Ignored if `quotes` is provided. */
     quote?: string;
     fallbackPage?: number;
-    rounded?: boolean;
+    rounded?: ViewRounding;
 }
 
 type QuoteEntry = { page?: number; quote: string };
@@ -42,7 +45,20 @@ type RenderedPage = {
     wrapper: HTMLDivElement;
     canvas: HTMLCanvasElement;
     textDivs: HTMLElement[];
+    /** Indices into `textDivs` in reading order; undefined falls back to drawing order. */
+    readingOrder: number[] | undefined;
+    ensureRendered: () => Promise<void>;
+    searchText: () => Promise<string>;
 };
+
+type PdfTextStreamItem = {
+    str?: string;
+    transform?: number[];
+    width?: number;
+    height?: number;
+};
+
+type CollectedTextItem = { str: string; geometry: TextItemGeometry };
 
 /**
  * ResizeObserver's content box shrinks when an overflow scrollbar appears.
@@ -58,6 +74,137 @@ export function getObservedPanelWidth(entry: ResizeObserverEntry): number {
         ? borderBoxSize[0]
         : borderBoxSize;
     return Math.round(borderBox?.inlineSize ?? entry.contentRect.width);
+}
+
+/**
+ * PDF.js 6 exposes text geometry through CSS custom properties instead of
+ * writing font size and transforms directly onto each text span. Keep our
+ * custom text layer aligned with that contract without importing the full
+ * stock PDF viewer stylesheet.
+ *
+ * `--scale-round-*` matter as much as the scale factors. Constructing a
+ * `TextLayer` overwrites the container's width and height with
+ * `round(down, var(--total-scale-factor) * <page>px, var(--scale-round-x))`,
+ * and PDF.js 6 writes that `var()` with no fallback. Leaving the property
+ * undefined makes the declaration invalid at computed-value time, so the
+ * container falls back to `width: auto` and — since every text span is
+ * absolutely positioned — collapses to 0x0. Text spans are placed with
+ * percentage offsets, so they would all pile up at the origin and get clipped
+ * by the layer's `overflow: hidden`, hiding every citation highlight. The
+ * stock viewer stylesheet declares these on `.page`; we declare them here.
+ */
+export function configurePdfTextLayer(
+    container: HTMLElement,
+    scale: number,
+    textDivs: HTMLElement[] = [],
+) {
+    container.style.setProperty("--scale-factor", String(scale));
+    container.style.setProperty("--total-scale-factor", String(scale));
+    container.style.setProperty("--scale-round-x", "1px");
+    container.style.setProperty("--scale-round-y", "1px");
+    for (const textDiv of textDivs) {
+        textDiv.classList.add("pdf-text-item");
+    }
+}
+
+/**
+ * Read a page's text-content stream for item geometry.
+ *
+ * `TextLayer` consumes the stream and exposes only DOM spans, which carry no
+ * usable coordinates, so the caller tees the stream and passes the second
+ * branch here. Reading the same stream guarantees the same item sequence,
+ * which is what keeps the result index-aligned with `textLayer.textDivs`.
+ *
+ * The x/y/width/height derivation mirrors the extractor's in
+ * `backend/src/lib/pdfText.ts`, so both sides cluster on identical numbers.
+ * Width matters as much as the rest: column detection reads it to tell a
+ * page gutter from the whitespace inside a table.
+ */
+async function collectTextItemGeometry(
+    stream: ReadableStream<{ items: PdfTextStreamItem[] }>,
+): Promise<CollectedTextItem[]> {
+    const collected: CollectedTextItem[] = [];
+    const reader = stream.getReader();
+    try {
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            for (const item of value?.items ?? []) {
+                // TextLayer creates one span per item carrying a `str`, and
+                // skips marked-content boundaries, which carry none.
+                if (item.str === undefined) continue;
+                const transform = Array.isArray(item.transform)
+                    ? item.transform
+                    : [];
+                const scaleY =
+                    typeof transform[3] === "number" ? transform[3] : 0;
+                collected.push({
+                    str: item.str,
+                    geometry: {
+                        x: typeof transform[4] === "number" ? transform[4] : 0,
+                        y: typeof transform[5] === "number" ? transform[5] : 0,
+                        w: typeof item.width === "number" ? item.width : 0,
+                        h:
+                            Math.abs(scaleY) ||
+                            (typeof item.height === "number"
+                                ? item.height
+                                : 0) ||
+                            10,
+                    },
+                });
+            }
+        }
+    } catch (error) {
+        // Zooming or navigating mid-render cancels the stream. Returning what
+        // was collected lets computeReadingOrder see the length mismatch and
+        // fall back to drawing order. Rejecting instead would surface as an
+        // unhandled rejection, because a stale render returns before the
+        // caller ever awaits this promise.
+        console.warn("PDF text geometry read did not complete", error);
+    } finally {
+        reader.releaseLock();
+    }
+    return collected;
+}
+
+/**
+ * Order `textDivs` the way the backend extractor orders the same items, so a
+ * quote taken from the extracted text can be found in the rendered text layer.
+ *
+ * Returns undefined when the collected items are not index-aligned with
+ * `textDivs`, which would make any ordering meaningless; callers then fall
+ * back to drawing order, i.e. the behavior before reading order existed.
+ */
+export function computeReadingOrder(
+    textDivs: HTMLElement[],
+    collected: CollectedTextItem[],
+): number[] | undefined {
+    if (collected.length !== textDivs.length) {
+        console.warn(
+            `PDF text items (${collected.length}) are not aligned with text layer spans (${textDivs.length}); matching citations in drawing order.`,
+        );
+        return undefined;
+    }
+
+    // The extractor drops empty items before clustering, so they must not
+    // influence line grouping here either. They hold no text to match anyway.
+    const divIndices: number[] = [];
+    const geometry: TextItemGeometry[] = [];
+    for (let i = 0; i < collected.length; i++) {
+        if (collected[i].str === "") continue;
+        divIndices.push(i);
+        geometry.push(collected[i].geometry);
+    }
+
+    return orderTextItemLines(geometry)
+        .flat()
+        .map((index) => divIndices[index]);
+}
+
+function normalizedPageText(items: CollectedTextItem[]) {
+    const nonEmpty = items.filter(item => item.str !== "");
+    return normalizePdfQuoteText(orderTextItemLines(nonEmpty.map(item => item.geometry))
+        .flat().map(index => nonEmpty[index].str).join(""));
 }
 
 export function PdfView({
@@ -76,7 +223,15 @@ export function PdfView({
         null,
     );
     const renderedPagesRef = useRef<RenderedPage[]>([]);
+    const pageObserverRef = useRef<IntersectionObserver | null>(null);
+    const sourceTextRef = useRef(new Map<number, Promise<string>>());
     const renderGenerationRef = useRef(0);
+    // Highlight requests are lazy (a cited page may first have to render), so
+    // an older selection's request can finish after a newer one. Each request
+    // takes a number; a request that is no longer the latest stops touching
+    // highlights and scroll. Bumped by every selection change (including a
+    // clear), every re-render (zoom, resize) and every document change.
+    const highlightRequestRef = useRef(0);
     const quoteListRef = useRef<QuoteEntry[]>([]);
     const zoomRef = useRef(1.0);
     const currentPageRef = useRef(1);
@@ -152,6 +307,9 @@ export function PdfView({
                     closest = i;
                 }
             });
+            for (const page of pages.slice(Math.max(0, closest - 1), closest + 2)) {
+                void page.ensureRendered().catch(error => console.warn("PDF page render failed", error));
+            }
             currentPageRef.current = closest + 1;
             setCurrentPage(closest + 1);
         };
@@ -161,50 +319,45 @@ export function PdfView({
     }, []);
 
     // Highlights all entries in `list` across the already-rendered pages.
-    // Returns the 1-based page number of the first successfully highlighted entry, or null.
+    // Returns the 1-based page number of the first successfully highlighted
+    // entry, or null. Stops (returning null) as soon as `isCurrent` turns
+    // false, so the caller must check it again before acting on the result.
     const applyHighlights = useCallback(
-        async (list: QuoteEntry[]): Promise<number | null> => {
+        async (list: QuoteEntry[], isCurrent: () => boolean): Promise<number | null> => {
             // Clear any prior highlights across all pages
             for (const p of renderedPagesRef.current)
                 clearHighlights(p.textDivs);
 
-            let firstHitPage: number | null = null;
-            for (const entry of list) {
-                let hitPage: number | null = null;
-
-                if (entry.page) {
-                    const target = renderedPagesRef.current[entry.page - 1];
-                    if (target) {
-                        const found = await highlightQuote(
-                            target.textDivs,
-                            entry.quote,
-                        );
-                        if (found) hitPage = entry.page;
+            const pages = renderedPagesRef.current;
+            const hits = new Map<number, number>();
+            const missing: {entry: QuoteEntry; index: number}[] = [];
+            for (const [index, entry] of list.entries()) {
+                const target = entry.page ? pages[entry.page - 1] : undefined;
+                if (target) {
+                    await target.ensureRendered();
+                    if (pages !== renderedPagesRef.current || !isCurrent()) return null;
+                    if (await highlightQuote(target.textDivs, entry.quote, target.readingOrder)) {
+                        hits.set(index, entry.page!);
+                        continue;
                     }
                 }
-
-                // Fall back to scanning all pages for this quote
-                if (hitPage === null) {
-                    console.warn(
-                        `Quote not found on hinted page, scanning all pages: "${entry.quote.slice(0, 60)}..."`,
-                    );
-                    for (let i = 0; i < renderedPagesRef.current.length; i++) {
-                        const p = renderedPagesRef.current[i];
-                        const found = await highlightQuote(
-                            p.textDivs,
-                            entry.quote,
-                        );
-                        if (found) {
-                            hitPage = i + 1;
-                            break;
-                        }
-                    }
+                missing.push({entry, index});
+            }
+            if (missing.length) {
+                const matcher = createPdfQuoteMatcher(missing.map(({entry}) => entry.quote));
+                for (const [index, page] of pages.entries()) {
+                    matcher.scan(await page.searchText(), index + 1);
+                    if (pages !== renderedPagesRef.current || !isCurrent()) return null;
+                    if (matcher.pages.size === missing.length) break;
                 }
-
-                if (hitPage !== null && firstHitPage === null) {
-                    firstHitPage = hitPage;
+                for (const [index, pageNumber] of matcher.pages) {
+                    const page = pages[pageNumber - 1];
+                    await page.ensureRendered();
+                    if (pages !== renderedPagesRef.current || !isCurrent()) return null;
+                    if (await highlightQuote(page.textDivs, missing[index].entry.quote, page.readingOrder)) hits.set(missing[index].index, pageNumber);
                 }
             }
+            const firstHitPage = [...hits].sort(([a], [b]) => a - b)[0]?.[1] ?? null;
             return firstHitPage;
         },
         [],
@@ -257,6 +410,9 @@ export function PdfView({
             const container = containerRef.current;
             if (!container) return;
             const renderGeneration = ++renderGenerationRef.current;
+            // The pages are about to be replaced: no older highlight request
+            // may land on them.
+            highlightRequestRef.current += 1;
             const isStale = () =>
                 renderGenerationRef.current !== renderGeneration ||
                 containerRef.current !== container;
@@ -267,6 +423,7 @@ export function PdfView({
             // a page already inside page.render() keeps painting.
             renderTaskRef.current?.cancel();
             renderTaskRef.current = null;
+            pageObserverRef.current?.disconnect();
             container.innerHTML = "";
             renderedPagesRef.current = [];
             const lib = await getPdfJs();
@@ -297,94 +454,155 @@ export function PdfView({
             );
             const scale = baseScale * zoomRef.current;
 
+            let renderQueue = Promise.resolve();
+            if (typeof IntersectionObserver !== "undefined") {
+                pageObserverRef.current = new IntersectionObserver(entries => {
+                    for (const observed of entries) if (observed.isIntersecting) {
+                        const page = renderedPagesRef.current[Number((observed.target as HTMLElement).dataset.page) - 1];
+                        if (page) void page.ensureRendered().catch(error => console.warn("PDF page render failed", error));
+                    }
+                }, {root: scrollContainerRef.current, rootMargin: "600px 0px"});
+            }
             for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
-                const page = await doc.getPage(pageNum);
+                const page = pageNum === 1 ? firstPage : await doc.getPage(pageNum);
                 if (isStale()) return;
                 const viewport = page.getViewport({ scale });
-
                 const wrapper = document.createElement("div");
                 wrapper.style.position = "relative";
                 wrapper.style.margin = "0 auto 8px";
-                wrapper.style.width = "fit-content";
+                wrapper.style.width = `${viewport.width}px`;
+                wrapper.style.height = `${viewport.height}px`;
+                wrapper.dataset.page = String(pageNum);
                 wrapper.className = "shadow-md";
-
                 const canvas = document.createElement("canvas");
-                canvas.width = viewport.width;
-                canvas.height = viewport.height;
+                canvas.width = 0;
+                canvas.height = 0;
                 canvas.style.display = "block";
                 wrapper.appendChild(canvas);
                 container.appendChild(wrapper);
+                let pending: Promise<void> | undefined;
+                const entry: RenderedPage = {
+                    page, viewport, wrapper, canvas, textDivs: [], readingOrder: undefined,
+                    searchText: () => {
+                        let cached = sourceTextRef.current.get(pageNum);
+                        if (!cached) {
+                            cached = collectTextItemGeometry(page.streamTextContent()).then(normalizedPageText);
+                            sourceTextRef.current.set(pageNum, cached);
+                        }
+                        return cached;
+                    },
+                    ensureRendered: () => {
+                        if (!pending) {
+                            pending = renderQueue.then(async () => {
+                                if (isStale()) return;
+                                canvas.width = viewport.width;
+                                canvas.height = viewport.height;
+                                const ctx = canvas.getContext("2d");
+                                if (!ctx) return;
 
-                const ctx = canvas.getContext("2d");
-                if (!ctx) continue;
+                                const task = page.render({
+                                    canvas,
+                                    canvasContext: ctx,
+                                    viewport,
+                                });
+                                renderTaskRef.current = task;
+                                try {
+                                    await task.promise;
+                                    if (isStale()) return;
+                                } catch (e: unknown) {
+                                    if (isStale()) return;
+                                    if (
+                                        (e as { name?: string })?.name !==
+                                        "RenderingCancelledException"
+                                    ) {
+                                        console.error("PDF render error", e);
+                                    }
+                                    return;
+                                } finally {
+                                    if (renderTaskRef.current === task)
+                                        renderTaskRef.current = null;
+                                }
+                                if (isStale()) return;
 
-                const task = page.render({
-                    canvas,
-                    canvasContext: ctx,
-                    viewport,
-                });
-                renderTaskRef.current = task;
-                try {
-                    await task.promise;
-                    if (isStale()) return;
-                } catch (e: unknown) {
-                    if (isStale()) return;
-                    if (
-                        (e as { name?: string })?.name !==
-                        "RenderingCancelledException"
-                    ) {
-                        console.error("PDF render error", e);
-                    }
-                    continue;
-                } finally {
-                    if (renderTaskRef.current === task)
-                        renderTaskRef.current = null;
-                }
-                if (isStale()) return;
+                                const textLayerDiv = document.createElement("div");
+                                textLayerDiv.className = "pdf-text-layer";
+                                textLayerDiv.style.position = "absolute";
+                                textLayerDiv.style.left = "0";
+                                textLayerDiv.style.top = "0";
+                                textLayerDiv.style.width = `${viewport.width}px`;
+                                textLayerDiv.style.height = `${viewport.height}px`;
+                                configurePdfTextLayer(textLayerDiv, scale);
+                                wrapper.appendChild(textLayerDiv);
 
-                const textLayerDiv = document.createElement("div");
-                textLayerDiv.className = "pdf-text-layer";
-                textLayerDiv.style.position = "absolute";
-                textLayerDiv.style.left = "0";
-                textLayerDiv.style.top = "0";
-                textLayerDiv.style.width = `${viewport.width}px`;
-                textLayerDiv.style.height = `${viewport.height}px`;
-                textLayerDiv.style.setProperty("--scale-factor", String(scale));
-                wrapper.appendChild(textLayerDiv);
+                                // One branch renders the layer, the other yields the item
+                                // geometry the layer discards. Both must be consumed or the
+                                // tee stalls on backpressure.
+                                const [layerStream, geometryStream] = (
+                                    page.streamTextContent() as ReadableStream<{
+                                        items: PdfTextStreamItem[];
+                                    }>
+                                ).tee();
+                                const geometry = collectTextItemGeometry(geometryStream);
 
-                const textLayer = new lib.TextLayer({
-                    textContentSource: page.streamTextContent(),
-                    container: textLayerDiv,
-                    viewport,
-                });
-                await textLayer.render();
-                if (isStale()) return;
-                const textDivs = textLayer.textDivs;
+                                const textLayer = new lib.TextLayer({
+                                    textContentSource: layerStream,
+                                    container: textLayerDiv,
+                                    viewport,
+                                });
+                                await textLayer.render();
+                                if (isStale()) return;
+                                const textDivs = textLayer.textDivs;
+                                configurePdfTextLayer(textLayerDiv, scale, textDivs);
+                                const collected = await geometry;
+                                if (isStale()) return;
+                                const readingOrder = computeReadingOrder(textDivs, collected);
+                                if (!sourceTextRef.current.has(pageNum)) sourceTextRef.current.set(pageNum, Promise.resolve(normalizedPageText(collected)));
+                                if (isStale()) return;
 
-                renderedPagesRef.current.push({
-                    page,
-                    viewport,
-                    wrapper,
-                    canvas,
-                    textDivs,
-                });
+                                entry.textDivs = textDivs;
+                                entry.readingOrder = readingOrder;
+                            });
+                            renderQueue = pending.catch(() => {});
+                        }
+                        return pending;
+                    },
+                };
+                renderedPagesRef.current.push(entry);
+                pageObserverRef.current?.observe(wrapper);
             }
+            // Initial paint is bounded; the observer/scroll handler paints nearby pages.
+            if (!list.length) await renderedPagesRef.current[(scrollToPage ?? 1) - 1]?.ensureRendered();
 
             if (isStale()) return;
 
-            // Apply highlights across all entries, then scroll to the first hit.
+            // Apply highlights across all entries, then scroll to the first
+            // hit. The selection may have changed while the pages were built:
+            // highlight the latest one, never the snapshot this run began with.
+            // A selection change from here on owns highlight and scroll, and
+            // this run only reveals the viewer.
+            const quotesNow = quoteListRef.current;
+            const request = ++highlightRequestRef.current;
+            const superseded = () => highlightRequestRef.current !== request;
             let targetPage: number | null = null;
-            if (list.length) {
-                targetPage = await applyHighlights(list);
+            if (quotesNow.length) {
+                targetPage = await applyHighlights(quotesNow, () => !superseded());
                 if (isStale()) return;
                 if (targetPage === null) {
                     // Fallback: scroll to the first entry's page hint, even without a highlight
-                    const hint = list.find((e) => e.page)?.page ?? null;
+                    const hint = quotesNow.find((e) => e.page)?.page ?? null;
                     targetPage = hint;
                 }
             }
+            if (!targetPage && hasCitation) await renderedPagesRef.current[0]?.ensureRendered();
+            if (isStale()) return;
+            if (superseded()) {
+                reveal();
+                return;
+            }
             if (targetPage && targetPage >= 1) {
-                scrollToHighlightOnPage(targetPage);
+                await renderedPagesRef.current[targetPage - 1]?.ensureRendered();
+                if (isStale()) return;
+                if (!superseded()) scrollToHighlightOnPage(targetPage);
             } else if (!hasCitation && scrollToPage && scrollToPage > 1) {
                 // Restore scroll position after zoom re-render
                 const pageEntry = renderedPagesRef.current[scrollToPage - 1];
@@ -402,7 +620,10 @@ export function PdfView({
 
     const rehighlightQuotes = useCallback(
         async (list: QuoteEntry[]) => {
-            const targetPage = await applyHighlights(list);
+            const request = ++highlightRequestRef.current;
+            const isCurrent = () => highlightRequestRef.current === request;
+            const targetPage = await applyHighlights(list, isCurrent);
+            if (!isCurrent()) return;
             const scrollPage =
                 targetPage ?? list.find((e) => e.page)?.page ?? null;
             if (scrollPage && scrollPage >= 1) {
@@ -516,6 +737,8 @@ export function PdfView({
     useEffect(() => {
         return () => {
             renderGenerationRef.current += 1;
+            highlightRequestRef.current += 1;
+            pageObserverRef.current?.disconnect();
             getPdfJs().then((lib) => lib.TextLayer.cleanup());
         };
     }, []);
@@ -525,6 +748,7 @@ export function PdfView({
         if (!result || result.type !== "pdf") return;
         pdfDocRef.current = null;
         renderedPagesRef.current = [];
+        sourceTextRef.current = new Map();
         quoteListRef.current = quoteList;
         zoomRef.current = 1.0;
         const list = quoteList;
@@ -558,7 +782,9 @@ export function PdfView({
         });
         return () => {
             cancelled = true;
+            pageObserverRef.current?.disconnect();
             renderGenerationRef.current += 1;
+            highlightRequestRef.current += 1;
             pdfDocRef.current = null;
             renderedPagesRef.current = [];
             void loadingTask?.destroy().catch(() => {});
@@ -578,8 +804,10 @@ export function PdfView({
 
     // Re-highlight when quotes change without full re-render
     useEffect(() => {
-        if (!pdfDocRef.current) return;
+        // Recorded even while the document is still loading: the render that
+        // follows highlights whatever this ref holds when it gets there.
         quoteListRef.current = quoteList;
+        if (!pdfDocRef.current) return;
         rehighlightQuotes(quoteList);
     }, [quoteKey, quoteFocusKey, rehighlightQuotes]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -617,10 +845,11 @@ export function PdfView({
 
     return (
         <div
-            className={`document-canvas relative flex flex-col flex-1 overflow-hidden ${rounded ? "rounded-lg" : ""}`}
+            className={`document-canvas relative flex flex-col flex-1 overflow-hidden ${viewRoundingClass(rounded)}`}
         >
             <div
                 ref={scrollContainerRef}
+                data-document-scroll-viewport
                 className="flex-1 overflow-auto px-3 pt-5 pb-3 [scrollbar-gutter:stable]"
             >
                 {loading && (

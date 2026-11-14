@@ -1,12 +1,20 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppError } from "../../appError";
 import {
   ensureMemoryFile,
+  MemoryConversationNotQuietError,
+  MemoryDisabledError,
+  MemoryEpochSupersededError,
+  MemoryJobSupersededError,
+  MemoryRevisionConflictError,
+  MemoryValidationError,
   normalizeMemoryMarkdown,
   wipeMemoryFile,
   writeMemoryFile,
   type MemoryFileRow,
+  wipeMemoryFiles,
 } from "../files";
 
 const file: MemoryFileRow = {
@@ -39,7 +47,7 @@ function dbFor(
   }),
 ) {
   const builder: Record<string, unknown> = {};
-  for (const name of ["select", "eq", "order", "limit", "delete", "update", "in", "upsert"]) {
+  for (const name of ["select", "eq", "is", "order", "limit", "delete", "update", "in", "upsert"]) {
     builder[name] = () => builder;
   }
   builder.maybeSingle = async () => ({ data: row, error: null });
@@ -54,6 +62,44 @@ function dbFor(
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("memory failure classes", () => {
+  it.each([
+    [MemoryValidationError, "memory.validation"],
+    [MemoryRevisionConflictError, "memory.revision_conflict"],
+    [MemoryDisabledError, "memory.disabled"],
+    [MemoryJobSupersededError, "memory.job_superseded"],
+    [MemoryEpochSupersededError, "memory.epoch_superseded"],
+    [MemoryConversationNotQuietError, "memory.conversation_not_quiet"],
+  ])("%o is an AppError whose kind names the failure", (Failure, kind) => {
+    const cause = new Error("raw database internals");
+    const error = new Failure("fixed text", { cause });
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toBeInstanceOf(Failure);
+    expect(error.kind).toBe(kind);
+    expect(error.name).toBe(Failure.name);
+    expect(error.message).toBe("fixed text");
+    expect(error.cause).toBe(cause);
+    expect(new Failure("no cause").cause).toBeUndefined();
+  });
+
+  it("raises the row lock's conflict under its kind", async () => {
+    const db = dbFor({ ...file, revision: 5 }, () => ({
+      data: null,
+      error: { message: "error: memory_revision_conflict" },
+    }));
+    const thrown = await writeMemoryFile({
+      db: db as never,
+      file,
+      content: "# Next",
+      expectedRevision: 3,
+      source: "manual",
+      updatedBy: "user-1",
+    }).catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(MemoryRevisionConflictError);
+    expect((thrown as AppError).kind).toBe("memory.revision_conflict");
+  });
 });
 
 describe("direct memory file writes", () => {
@@ -91,6 +137,131 @@ describe("direct memory file writes", () => {
       },
       { onConflict: "project_id", ignoreDuplicates: true },
     );
+  });
+
+  // A person has one memory per workspace: Personal, and one for each team
+  // organization they belong to.
+  describe("a person's memory for one workspace", () => {
+    /** Records each lookup's filters; answers them from `found` in turn. */
+    function workspaceDb(
+      found: Array<{ data: unknown; error: unknown }>,
+      rpc: (name: string, args: Record<string, unknown>) => unknown = () => ({
+        data: [],
+        error: null,
+      }),
+    ) {
+      const lookups: Array<[string, ...unknown[]][]> = [];
+      const upserts: unknown[] = [];
+      const db = {
+        from: vi.fn(() => {
+          const filters: [string, ...unknown[]][] = [];
+          lookups.push(filters);
+          const builder: Record<string, unknown> = {
+            select: () => builder,
+            eq: (...args: unknown[]) => (filters.push(["eq", ...args]), builder),
+            is: (...args: unknown[]) => (filters.push(["is", ...args]), builder),
+            upsert: (payload: unknown) => (upserts.push(payload), builder),
+            maybeSingle: async () => found.shift() ?? { data: null, error: null },
+            single: async () => found.shift() ?? { data: null, error: null },
+          };
+          return builder;
+        }),
+        rpc: vi.fn(async (name: string, args: Record<string, unknown>) =>
+          rpc(name, args),
+        ),
+      };
+      return { db, lookups, upserts };
+    }
+    const workspaceFile: MemoryFileRow = {
+      ...file,
+      id: "file-org",
+      org_id: "org-1",
+    };
+
+    it("looks for the file of that person in that organization", async () => {
+      const { db, lookups } = workspaceDb([{ data: workspaceFile, error: null }]);
+      await expect(
+        ensureMemoryFile(db as never, "user", "user-1", "org-1"),
+      ).resolves.toEqual(workspaceFile);
+      expect(lookups[0]).toEqual([
+        ["eq", "scope", "user"],
+        ["eq", "user_id", "user-1"],
+        ["eq", "org_id", "org-1"],
+      ]);
+      expect(db.rpc).not.toHaveBeenCalled();
+    });
+
+    it("looks for Personal as the file with no organization, never 'any file of theirs'", async () => {
+      const { db, lookups } = workspaceDb([{ data: file, error: null }]);
+      await ensureMemoryFile(db as never, "user", "user-1");
+      expect(lookups[0]).toEqual([
+        ["eq", "scope", "user"],
+        ["eq", "user_id", "user-1"],
+        ["is", "org_id", null],
+      ]);
+    });
+
+    it("has the database create a missing one, which knows who belongs where", async () => {
+      const { db } = workspaceDb([{ data: null, error: null }], () => ({
+        data: [workspaceFile],
+        error: null,
+      }));
+      await expect(
+        ensureMemoryFile(db as never, "user", "user-1", "org-1"),
+      ).resolves.toEqual(workspaceFile);
+      expect(db.rpc).toHaveBeenCalledWith("ensure_user_memory_file", {
+        p_user_id: "user-1",
+        p_org_id: "org-1",
+      });
+    });
+
+    it("refuses a memory in an organization the person does not belong to", async () => {
+      // The database returns no row for a non-member.
+      const { db } = workspaceDb([{ data: null, error: null }]);
+      await expect(
+        ensureMemoryFile(db as never, "user", "user-1", "org-elsewhere"),
+      ).rejects.toThrow("Failed to create memory settings");
+    });
+
+    it("re-reads the same workspace's file after a write, not the person's Personal one", async () => {
+      const { db, lookups } = workspaceDb([{ data: workspaceFile, error: null }], () => ({
+        data: [{ applied: true, new_revision: 4 }],
+        error: null,
+      }));
+      await writeMemoryFile({
+        db: db as never,
+        file: workspaceFile,
+        content: "# Learned at the firm",
+        expectedRevision: 3,
+        source: "manual",
+        updatedBy: "user-1",
+      });
+      expect(lookups.at(-1)).toContainEqual(["eq", "org_id", "org-1"]);
+    });
+
+    it("still serves Personal from a database that has not been migrated yet", async () => {
+      // No org_id column: the filter fails, and there is one file per person.
+      const { db, lookups } = workspaceDb([
+        { data: null, error: { code: "42703", message: "column does not exist" } },
+        { data: file, error: null },
+      ]);
+      await expect(
+        ensureMemoryFile(db as never, "user", "user-1"),
+      ).resolves.toEqual(file);
+      expect(lookups[1]).toEqual([
+        ["eq", "scope", "user"],
+        ["eq", "user_id", "user-1"],
+      ]);
+    });
+
+    it("has no workspace memory to offer from such a database", async () => {
+      const { db } = workspaceDb([
+        { data: null, error: { code: "42703", message: "column does not exist" } },
+      ]);
+      await expect(
+        ensureMemoryFile(db as never, "user", "user-1", "org-1"),
+      ).rejects.toThrow("Failed to load memory settings");
+    });
   });
 
   it("rejects executable HTML but preserves Markdown hard breaks", () => {
@@ -135,8 +306,14 @@ describe("direct memory file writes", () => {
     expect(result.applied).toBe(true);
   });
 
-  it("does not spend a revision on an unchanged body", async () => {
-    const db = dbFor(file);
+  it("lets the row lock decide that an unchanged body is not a write", async () => {
+    // The RPC answers applied=false for a body whose digest matches, while
+    // still stamping the curator's job receipt. A client-side short-circuit
+    // would skip that receipt and make a retried job re-run the model.
+    const db = dbFor(file, () => ({
+      data: [{ applied: false, new_revision: 3 }],
+      error: null,
+    }));
 
     const result = await writeMemoryFile({
       db: db as never,
@@ -145,16 +322,20 @@ describe("direct memory file writes", () => {
       expectedRevision: 3,
       source: "curator",
       updatedBy: "user-1",
+      sourceJobId: "job-1",
     });
 
-    expect(db.rpc).not.toHaveBeenCalled();
+    expect(db.rpc).toHaveBeenCalledTimes(1);
     expect(result.applied).toBe(false);
     expect(result.current.content).toBe("# Existing");
     expect(result.current.revision).toBe(3);
   });
 
-  it("refuses a stale draft before it can reach the row", async () => {
-    const db = dbFor({ ...file, revision: 5 });
+  it("maps a stale draft to a revision conflict raised under the row lock", async () => {
+    const db = dbFor({ ...file, revision: 5 }, () => ({
+      data: null,
+      error: { message: "error: memory_revision_conflict" },
+    }));
 
     await expect(
       writeMemoryFile({
@@ -166,7 +347,7 @@ describe("direct memory file writes", () => {
         updatedBy: "user-1",
       }),
     ).rejects.toThrow("Memory revision changed");
-    expect(db.rpc).not.toHaveBeenCalled();
+    expect(db.rpc).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -249,5 +430,28 @@ describe("direct memory file writes", () => {
       source: "settings",
       status: "idle",
     });
+  });
+});
+
+describe("wipeMemoryFiles", () => {
+  it("wipes in batches and, when a batch is refused, keeps the old one-by-one progress", async () => {
+    const calls: Array<[string, unknown]> = [];
+    const db = {
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        calls.push([name, name === "wipe_memory_files" ? (args.p_ids as string[]).length : args.p_memory_file_id]);
+        // The second batch names a file deleted meanwhile: the batch RPC
+        // rolls back as a whole, and so does that file's single wipe.
+        if (name === "wipe_memory_files" && (args.p_ids as string[]).includes("m55"))
+          return { data: null, error: { code: "P0002" } };
+        if (name === "wipe_memory_file" && args.p_memory_file_id === "m55")
+          return { data: null, error: { code: "P0002" } };
+        return { data: [], error: null };
+      },
+    };
+    const ids = Array.from({ length: 70 }, (_, i) => `m${i}`);
+    await expect(wipeMemoryFiles(db as never, ids, { enabled: null })).rejects.toThrow("Failed to wipe memory");
+    expect(calls.slice(0, 2)).toEqual([["wipe_memory_files", 50], ["wipe_memory_files", 20]]);
+    // m50..m54 were still wiped individually before m55 stopped the cleanup.
+    expect(calls.slice(2).map(([, id]) => id)).toEqual(["m50", "m51", "m52", "m53", "m54", "m55"]);
   });
 });

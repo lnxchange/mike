@@ -8,8 +8,9 @@ vi.mock("../../../lib/access", async (original) => ({
 vi.mock("../../../lib/dbq/enqueue", () => ({
   enqueueStorageCleanup: mocks.cleanup,
 }));
-import { updateProjectFolder, deleteProjectFolder } from "../projects.service";
+import { createProject, updateProject, createProjectFolder, updateProjectFolder, deleteProjectFolder } from "../projects.service";
 import {
+  createLibraryFolder,
   updateLibraryFolder,
   deleteLibraryFolder,
 } from "../../library/library.service";
@@ -21,16 +22,46 @@ beforeEach(() => {
 });
 const actor = { userId: "actor", projectId: "p", folderId: "root" };
 
+/** A paged read: its rows, then the empty page that ends it. */
+function paged(table: string, rows: Record<string, unknown>[]) {
+  return rows.length ? [{ table, data: rows }, { table, data: [] }] : [{ table, data: [] }];
+}
+
+/** The folder exists, has one child, and that child has none. */
+function subtreeWalk(table: string) {
+  return [
+    { table, data: { id: "root" } },
+    ...paged(table, [{ id: "child" }]),
+    ...paged(table, []),
+  ];
+}
+
 describe("folder callers retain their scope and failure policies", () => {
+  // The gate still runs first; what changed is the ANSWER. A Viewer can see
+  // the project, so they are refused by name (403) instead of being told the
+  // matter is missing; `forbidden` (404) is now reserved for a caller
+  // checkProjectAccess itself refuses.
   it("keeps project permissions ahead of all folder operations", async () => {
     mocks.access.mockResolvedValue({ ok: true, projectRole: "viewer" });
     const fake = scriptedDb([]);
+    const refusal = {
+      ok: false,
+      kind: "role_forbidden",
+      detail: "You do not have permission to organize documents in this project.",
+    };
     expect(
       await updateProjectFolder(fake.db, {
         ...actor,
         body: { parent_folder_id: "parent" },
       }),
-    ).toEqual({ ok: false, kind: "forbidden" });
+    ).toEqual(refusal);
+    expect(await deleteProjectFolder(fake.db, actor)).toEqual(refusal);
+    fake.done();
+  });
+
+  it("hides the project entirely from a caller with no access", async () => {
+    mocks.access.mockResolvedValue({ ok: false });
+    const fake = scriptedDb([]);
     expect(await deleteProjectFolder(fake.db, actor)).toEqual({
       ok: false,
       kind: "forbidden",
@@ -112,15 +143,8 @@ describe("folder callers retain their scope and failure policies", () => {
       const library = kind === "library";
       const table = library ? "library_folders" : "project_subfolders";
       const fake = scriptedDb([
-        {
-          table,
-          data: [
-            { id: "root", parent_folder_id: null },
-            { id: "child", parent_folder_id: "root" },
-            { id: "other", parent_folder_id: null },
-          ],
-        },
-        { table: "documents", data: [{ id: "doc" }] },
+        ...subtreeWalk(table),
+        ...paged("documents", [{ id: "doc", user_id: "actor" }]),
         ...(library ? [{ table: "documents", data: [{ id: "doc" }] }] : []),
         {
           table: "documents",
@@ -132,7 +156,9 @@ describe("folder callers retain their scope and failure policies", () => {
         ? await deleteLibraryFolder(fake.db, "actor", "file", "root")
         : await deleteProjectFolder(fake.db, actor);
       expect(result.ok).toBe(false);
-      expect(fake.calls[1].filters).toContainEqual([
+      // The walk asked only for children of the folder, level by level.
+      expect(fake.calls[1].filters).toContainEqual(["in", "parent_folder_id", ["root"]]);
+      expect(fake.calls[4].filters).toContainEqual([
         "in",
         library ? "library_folder_id" : "folder_id",
         ["root", "child"],
@@ -141,4 +167,57 @@ describe("folder callers retain their scope and failure policies", () => {
       fake.done();
     },
   );
+
+  // Deleting a single document is creator-scoped, so cascading a folder must
+  // not let an Editor delete colleagues' documents wholesale.
+  const subtree = subtreeWalk("project_subfolders");
+  it.each([
+    ["a colleague's document", "colleague"],
+    ["a document whose creator is gone", null],
+  ])("refuses an Editor when the subtree holds %s", async (_label, creator) => {
+    const fake = scriptedDb([
+      ...subtree,
+      ...paged("documents", [
+        { id: "mine", user_id: "actor" },
+        { id: "theirs", user_id: creator },
+      ]),
+    ]);
+    expect(await deleteProjectFolder(fake.db, actor)).toEqual({
+      ok: false,
+      kind: "role_forbidden",
+      detail:
+        "This folder contains documents added by other people. Only the project owner can delete it.",
+    });
+    expect(fake.calls.some((call) => call.op === "delete")).toBe(false);
+    fake.done();
+  });
+
+  it("lets an Owner clear a subtree holding colleagues' documents", async () => {
+    mocks.access.mockResolvedValue({ ok: true, projectRole: "owner" });
+    const fake = scriptedDb([
+      ...subtree,
+      ...paged("documents", [{ id: "theirs", user_id: "colleague" }]),
+      {
+        table: "documents",
+        op: "delete",
+        error: { message: "stop after the gate" },
+      },
+    ]);
+    expect(await deleteProjectFolder(fake.db, actor)).toMatchObject({
+      ok: false,
+      kind: "db_error",
+    });
+    fake.done();
+  });
+});
+
+it.each([null, 7, {}, [], "", "   "])("rejects an invalid project/folder name: %j", async name => {
+  mocks.access.mockResolvedValue({ ok: true, projectRole: "owner" });
+  const fake = scriptedDb([]);
+  expect(await createProject(fake.db, { userId: "actor", name })).toMatchObject({ ok: false, kind: "validation" });
+  expect(await updateProject(fake.db, { ...actor, body: { name } })).toMatchObject({ ok: false, kind: "validation" });
+  expect(await createProjectFolder(fake.db, { ...actor, name })).toMatchObject({ ok: false, kind: "validation" });
+  expect(await updateProjectFolder(fake.db, { ...actor, body: { name } })).toMatchObject({ ok: false, kind: "validation" });
+  expect(await createLibraryFolder(fake.db, "actor", "file", { name })).toMatchObject({ ok: false, status: 400 });
+  fake.done();
 });

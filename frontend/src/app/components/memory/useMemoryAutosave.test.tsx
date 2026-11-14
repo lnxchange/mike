@@ -45,6 +45,29 @@ describe("useMemoryAutosave", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it("asks the browser to confirm unload while an edit is still unsaved", async () => {
+    // The debounce window already reads "Saving…", so a reload inside it
+    // would silently drop the edit. The guard exists exactly for that gap.
+    vi.useFakeTimers();
+    const save = vi.fn(async (content: string) => ({ content }));
+    const { rerender } = renderHook(
+      ({ value }) => useMemoryAutosave(options(value, save)),
+      { initialProps: { value: "saved" } },
+    );
+    const unload = () => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(unload()).toBe(false);
+
+    rerender({ value: "draft" });
+    expect(unload()).toBe(true);
+
+    rerender({ value: "saved" });
+    expect(unload()).toBe(false);
+  });
+
   it("allows a failed value to be retried after the draft changes", async () => {
     vi.useFakeTimers();
     const save = vi
@@ -149,5 +172,42 @@ describe("useMemoryAutosave", () => {
 
     expect(save).toHaveBeenCalledTimes(2);
     expect(save).toHaveBeenLastCalledWith("draft");
+  });
+
+  it("saves a draft reverted during an in-flight save when it unmounts", async () => {
+    // Revert to the last saved text while "draft" is still being written,
+    // then leave. Without a final flush the in-flight write lands and the
+    // stored value ends up as "draft", not what the user left on screen.
+    vi.useFakeTimers();
+    let finishFirst: (value: Saved) => void = () => {};
+    const save = vi
+      .fn<(value: string) => Promise<Saved>>()
+      .mockImplementationOnce(
+        () => new Promise<Saved>((resolve) => (finishFirst = resolve)),
+      )
+      .mockImplementation(async (content) => ({ content }));
+    const { rerender, unmount } = renderHook(
+      ({ value }) =>
+        useMemoryAutosave({ ...options(value, save), flushOnUnmount: true }),
+      { initialProps: { value: "saved" } },
+    );
+
+    rerender({ value: "draft" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(save).toHaveBeenCalledWith("draft");
+
+    rerender({ value: "saved" });
+    unmount();
+    await act(async () => {
+      finishFirst({ content: "draft" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenLastCalledWith("saved");
   });
 });

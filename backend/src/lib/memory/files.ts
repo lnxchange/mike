@@ -1,4 +1,7 @@
+import { chunkArray } from "../arrays";
+import { ID_FILTER_BATCH_SIZE } from "../batchedQuery";
 import { createHash } from "node:crypto";
+import { AppError } from "../appError";
 import type { Db } from "../dbq/types";
 
 export const MEMORY_MAX_BYTES = 16 * 1024;
@@ -25,6 +28,11 @@ export type MemoryFileRow = {
   scope: MemoryScope;
   user_id: string | null;
   project_id: string | null;
+  /**
+   * For a person's own file: the organization whose workspace it is their
+   * memory for, or null for Personal. A person has one per workspace.
+   */
+  org_id?: string | null;
   enabled: boolean;
   epoch: number | string;
   revision: number | string;
@@ -41,12 +49,38 @@ export type MemoryFileRow = {
   updated_at: string;
 };
 
-export class MemoryValidationError extends Error {}
-export class MemoryRevisionConflictError extends Error {}
-export class MemoryDisabledError extends Error {}
-export class MemoryJobSupersededError extends Error {}
-export class MemoryEpochSupersededError extends Error {}
-export class MemoryConversationNotQuietError extends Error {}
+// Each class names its failure with a closed-vocabulary `kind` (AppError) so
+// a report carries `error_kind` while the message stays in the process.
+export class MemoryValidationError extends AppError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super("memory.validation", message, options);
+  }
+}
+export class MemoryRevisionConflictError extends AppError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super("memory.revision_conflict", message, options);
+  }
+}
+export class MemoryDisabledError extends AppError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super("memory.disabled", message, options);
+  }
+}
+export class MemoryJobSupersededError extends AppError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super("memory.job_superseded", message, options);
+  }
+}
+export class MemoryEpochSupersededError extends AppError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super("memory.epoch_superseded", message, options);
+  }
+}
+export class MemoryConversationNotQuietError extends AppError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super("memory.conversation_not_quiet", message, options);
+  }
+}
 
 function numberValue(value: number | string): number {
   const parsed = Number(value);
@@ -94,7 +128,78 @@ function memoryHash(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+/** Postgres "undefined column" / PostgREST "no such function": a database
+ * that has not yet run the per-workspace memory migration. */
+function isMissingWorkspaceMemorySchema(error: {
+  code?: string | null;
+}): boolean {
+  return (
+    error.code === "42703" ||
+    error.code === "PGRST204" ||
+    error.code === "PGRST202" ||
+    error.code === "42883"
+  );
+}
+
+/**
+ * A person's own memory file for one workspace: `orgId` names a team
+ * organization, null is Personal. Created on first touch.
+ *
+ * Throws for an organization the person does not belong to: a workspace
+ * memory exists only with the membership.
+ */
+async function ensureUserMemoryFile(
+  db: Db,
+  userId: string,
+  orgId: string | null,
+): Promise<MemoryFileRow> {
+  const lookup = db
+    .from("memory_files")
+    .select("*")
+    .eq("scope", "user")
+    .eq("user_id", userId);
+  const { data: existing, error: readError } = await (
+    orgId ? lookup.eq("org_id", orgId) : lookup.is("org_id", null)
+  ).maybeSingle();
+  if (readError) {
+    // Before the migration there is one file per person and no workspaces.
+    if (!orgId && isMissingWorkspaceMemorySchema(readError))
+      return ensureOwnerMemoryFile(db, "user", userId);
+    throw new Error("Failed to load memory settings");
+  }
+  if (existing) return existing as MemoryFileRow;
+
+  const { data, error } = await db.rpc("ensure_user_memory_file", {
+    p_user_id: userId,
+    p_org_id: orgId,
+  });
+  if (error) {
+    if (!orgId && isMissingWorkspaceMemorySchema(error))
+      return ensureOwnerMemoryFile(db, "user", userId);
+    throw new Error("Failed to create memory settings");
+  }
+  const created = Array.isArray(data) ? data[0] : data;
+  if (!created) throw new Error("Failed to create memory settings");
+  return created as MemoryFileRow;
+}
+
+/**
+ * The memory file for an owner, created on first touch. For a person's own
+ * memory, `orgId` chooses the workspace (null: Personal); a project has one
+ * file wherever it is.
+ */
 export async function ensureMemoryFile(
+  db: Db,
+  scope: MemoryScope,
+  ownerId: string,
+  orgId: string | null = null,
+): Promise<MemoryFileRow> {
+  return scope === "user"
+    ? ensureUserMemoryFile(db, ownerId, orgId)
+    : ensureOwnerMemoryFile(db, scope, ownerId);
+}
+
+async function ensureOwnerMemoryFile(
   db: Db,
   scope: MemoryScope,
   ownerId: string,
@@ -138,9 +243,23 @@ export async function getMemoryCurrent(
   db: Db,
   scope: MemoryScope,
   ownerId: string,
+  orgId: string | null = null,
 ): Promise<{ current: MemoryCurrent; file: MemoryFileRow }> {
-  const file = await ensureMemoryFile(db, scope, ownerId);
+  const file = await ensureMemoryFile(db, scope, ownerId, orgId);
   return { file, current: memoryCurrentFromFile(file) };
+}
+
+/** The same file again, as it is now: same owner, same workspace. */
+export async function getMemoryCurrentForFile(
+  db: Db,
+  file: Pick<MemoryFileRow, "scope" | "user_id" | "project_id" | "org_id">,
+): Promise<{ current: MemoryCurrent; file: MemoryFileRow }> {
+  return getMemoryCurrent(
+    db,
+    file.scope,
+    (file.user_id ?? file.project_id) as string,
+    file.scope === "user" ? (file.org_id ?? null) : null,
+  );
 }
 
 function memoryCurrentFromFile(file: MemoryFileRow): MemoryCurrent {
@@ -179,31 +298,20 @@ export async function writeMemoryFile(args: {
 }): Promise<{ current: MemoryCurrent; applied: boolean }> {
   const content = normalizeMemoryMarkdown(args.content);
   const expectedRevision = numberValue(args.expectedRevision);
-  const fresh = await ensureMemoryFile(
-    args.db,
-    args.file.scope,
-    (args.file.user_id ?? args.file.project_id) as string,
-  );
-  if (!fresh.enabled) throw new MemoryDisabledError("Memory is disabled");
+  // The row lock inside write_memory_file is the only place the enabled,
+  // epoch, revision and unchanged-body decisions are made. A pre-check here
+  // would be a second copy of those rules evaluated outside the lock: it
+  // could only ever disagree with the authoritative answer, and skipping the
+  // RPC for an unchanged body also skipped the job receipt that makes a
+  // retried curator job idempotent.
   const expectedEpoch =
     args.expectedEpoch == null
-      ? numberValue(fresh.epoch)
+      ? numberValue(args.file.epoch)
       : numberValue(args.expectedEpoch);
-  if (numberValue(fresh.epoch) !== expectedEpoch) {
-    throw new MemoryEpochSupersededError("Memory scope was reset");
-  }
-  if (numberValue(fresh.revision) !== expectedRevision) {
-    throw new MemoryRevisionConflictError("Memory revision changed");
-  }
   const hash = memoryHash(content);
-  // An unchanged body is not a write: it would burn a revision and, for the
-  // curator, look like new learning in the audit trail.
-  if (fresh.content_sha256 === hash) {
-    return { applied: false, current: memoryCurrentFromFile(fresh) };
-  }
 
   const { data, error } = await args.db.rpc("write_memory_file", {
-    p_memory_file_id: fresh.id,
+    p_memory_file_id: args.file.id,
     p_expected_revision: expectedRevision,
     p_expected_epoch: expectedEpoch,
     p_content: content,
@@ -251,11 +359,7 @@ export async function writeMemoryFile(args: {
   const applied = result?.applied !== false;
   return {
     applied,
-    current: (await getMemoryCurrent(
-      args.db,
-      fresh.scope,
-      (fresh.user_id ?? fresh.project_id) as string,
-    )).current,
+    current: (await getMemoryCurrentForFile(args.db, args.file)).current,
   };
 }
 
@@ -297,19 +401,46 @@ export async function wipeMemoryFile(args: {
   };
 }
 
+/**
+ * Empty many memory files: the bulk form of wipeMemoryFile for cleanup
+ * paths (organization and account deletion). Ids go 50 per
+ * wipe_memory_files call, which wipes each distinct id under its own row
+ * lock exactly as wipe_memory_file does.
+ *
+ * That RPC is all-or-nothing per call: one bad id (deleted meanwhile, P0002)
+ * rolls back the whole batch, where the old one-id-at-a-time loop had
+ * already kept every wipe before the failure. To keep those partial-progress
+ * semantics, a failed batch is retried id by id, in order, through
+ * wipe_memory_file, and the first id that still fails ends the cleanup with
+ * an error (as it did before). Returns nothing; throws on failure.
+ */
+export async function wipeMemoryFiles(
+  db: Db,
+  ids: string[],
+  options: { enabled: boolean | null; source?: "wipe" | "settings" },
+): Promise<void> {
+  const args = {
+    p_enabled: options.enabled,
+    p_updated_by: null,
+    p_source: options.source ?? "wipe",
+  };
+  for (const batch of chunkArray([...new Set(ids)], ID_FILTER_BATCH_SIZE)) {
+    const { error } = await db.rpc("wipe_memory_files", { p_ids: batch, ...args });
+    if (!error) continue;
+    for (const id of batch) {
+      const single = await db.rpc("wipe_memory_file", { p_memory_file_id: id, ...args });
+      if (single.error) throw new Error("Failed to wipe memory", { cause: single.error });
+    }
+  }
+}
+
 export async function enableMemoryFile(
   db: Db,
   file: MemoryFileRow,
   updatedBy: string,
 ): Promise<MemoryCurrent> {
   if (file.enabled) {
-    return (
-      await getMemoryCurrent(
-        db,
-        file.scope,
-        (file.user_id ?? file.project_id) as string,
-      )
-    ).current;
+    return (await getMemoryCurrentForFile(db, file)).current;
   }
   const { data, error } = await db.rpc("enable_memory_file", {
     p_memory_file_id: file.id,

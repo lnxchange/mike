@@ -1,9 +1,35 @@
 import type { Db } from "./supabase";
+import { selectInBatches } from "./batchedQuery";
 import type { ProjectRole } from "./permissions";
+
+// Declared here rather than imported from ./access, which imports this file.
+type OrgRole = "owner" | "admin" | "member";
+
+function isOrgRole(value: unknown): value is OrgRole {
+    return value === "owner" || value === "admin" || value === "member";
+}
+
+/**
+ * An organization's owners hold Owner implicitly on what is public, and on a
+ * private item only once it has no Owner left among the organization's
+ * members — so that no matter is ever orphaned. On a member's private item
+ * they have no standing they were not given, like everybody else.
+ * (resolveOrgContentRole in ./access is the same rule for one caller.)
+ */
+function hasImplicitOwnerAccess(
+    role: OrgRole,
+    item: { visibility: unknown; ownerless: boolean },
+): boolean {
+    return (
+        role === "owner" &&
+        (item.visibility === "organization" || item.ownerless)
+    );
+}
 
 export type OrgResourceKind =
     | "project"
-    | "workflow";
+    | "workflow"
+    | "playbook";
 
 export type OrgAccessOverrideRole = ProjectRole | "deny";
 export type OrgAssignableRole = ProjectRole | "deny";
@@ -16,6 +42,10 @@ const CONFIG = {
     workflow: {
         table: "workflow_org_access_overrides",
         resourceColumn: "workflow_id",
+    },
+    playbook: {
+        table: "playbook_org_access_overrides",
+        resourceColumn: "playbook_id",
     },
 } as const;
 
@@ -52,66 +82,84 @@ export type OrgAccessPerson = {
     user_id: string;
     email: string;
     display_name: string | null;
+    profile_photo?: string | null;
     role: OrgAssignableRole;
     has_override: boolean;
 };
+
+type OrgMemberLookup =
+    | { ok: true; member: { userId: string; email: string; orgRole: OrgRole } }
+    | { ok: false; kind: "not_found" | "db_error"; detail: string };
+
+const NOT_A_MEMBER = "Only current organization members can be assigned a role";
 
 export async function findOrgMemberByEmail(
     db: Db,
     orgId: string,
     emailValue: string,
-): Promise<
-    | {
-          ok: true;
-          member: { userId: string; email: string; orgRole: "admin" | "member" };
-      }
-    | { ok: false; kind: "not_found" | "db_error"; detail: string }
-> {
-    const email = emailValue.trim().toLowerCase();
-    const { data: profile, error: profileError } = await db
-        .from("user_profiles")
-        .select("user_id, email")
-        .eq("email", email)
-        .maybeSingle();
-    if (profileError)
-        return { ok: false, kind: "db_error", detail: profileError.message };
-    const userId = (profile as { user_id?: string } | null)?.user_id;
-    if (!userId)
-        return {
-            ok: false,
-            kind: "not_found",
-            detail: "Only current organization members can be assigned a role",
-        };
-    const { data: membership, error: membershipError } = await db
-        .from("org_members")
-        .select("user_id, role")
-        .eq("org_id", orgId)
-        .eq("user_id", userId)
-        .maybeSingle();
-    if (membershipError)
-        return {
-            ok: false,
-            kind: "db_error",
-            detail: membershipError.message,
-        };
-    if (!membership)
-        return {
-            ok: false,
-            kind: "not_found",
-            detail: "Only current organization members can be assigned a role",
-        };
-    const orgRole = (membership as { role?: unknown }).role;
-    if (orgRole !== "admin" && orgRole !== "member")
-        return {
-            ok: false,
-            kind: "db_error",
-            detail: "Organization membership has an invalid role",
-        };
-    return { ok: true, member: { userId, email, orgRole } };
+): Promise<OrgMemberLookup> {
+    const [result] = await findOrgMembersByEmail(db, orgId, [emailValue]);
+    return result;
 }
 
-/** A resource creator and an organization admin retain owner access. Keep the
- * target lookup and this rule identical for project and workflow assignments.
+/**
+ * findOrgMemberByEmail for many addresses at once (share dialogs submit up
+ * to 50): one batched user_profiles read by lower-cased email and one
+ * batched org_members read, instead of two sequential lookups per address.
+ * Results come back in input order, one per address.
+ */
+export async function findOrgMembersByEmail(
+    db: Db,
+    orgId: string,
+    emailValues: string[],
+): Promise<OrgMemberLookup[]> {
+    const emails = emailValues.map((value) => value.trim().toLowerCase());
+    const dbError = (detail: string) =>
+        emails.map((): OrgMemberLookup => ({ ok: false, kind: "db_error", detail }));
+    let profiles: { user_id: string; email: string }[];
+    let memberships: { user_id: string; role: unknown }[];
+    try {
+        profiles = await selectInBatches("member profiles by email", emails, (batch) =>
+            db.from("user_profiles").select("user_id, email").in("email", batch),
+        );
+        memberships = await selectInBatches(
+            "organization memberships",
+            profiles.map((profile) => profile.user_id),
+            (batch) =>
+                db
+                    .from("org_members")
+                    .select("user_id, role")
+                    .eq("org_id", orgId)
+                    .in("user_id", batch),
+        );
+    } catch (error) {
+        return dbError(error instanceof Error ? error.message : "Organization member lookup failed");
+    }
+    const userIdByEmail = new Map(
+        profiles.map((profile) => [String(profile.email).toLowerCase(), profile.user_id]),
+    );
+    const roleByUser = new Map(memberships.map((member) => [member.user_id, member.role]));
+    return emails.map((email): OrgMemberLookup => {
+        const userId = userIdByEmail.get(email);
+        if (!userId || !roleByUser.has(userId))
+            return { ok: false, kind: "not_found", detail: NOT_A_MEMBER };
+        const orgRole = roleByUser.get(userId);
+        if (!isOrgRole(orgRole))
+            return {
+                ok: false,
+                kind: "db_error",
+                detail: "Organization membership has an invalid role",
+            };
+        return { ok: true, member: { userId, email, orgRole } };
+    });
+}
+
+/** The creator is always an Owner, and an organization owner always owns a
+ * public item, so neither can be given a role or denied there. Everyone else
+ * in the organization can — and so can an organization owner on a PRIVATE
+ * item, which is not theirs unless it is shared with them. Keep the target
+ * lookup and this rule identical for project and workflow assignments (the
+ * database's validate_org_access_override enforces the same).
  * Callers still authorize the actor's access.manage permission first.
  */
 export async function findAssignableOrgMember(
@@ -119,39 +167,66 @@ export async function findAssignableOrgMember(
     orgId: string,
     email: string,
     creatorId: string | null,
-): Promise<
-    | {
-          ok: true;
-          member: {
-              userId: string;
-              email: string;
-              orgRole: "admin" | "member";
-          };
-      }
-    | { ok: false; kind: "validation"; detail: string }
-    | { ok: false; kind: "db_error"; error: unknown }
-> {
-    const target = await findOrgMemberByEmail(db, orgId, email);
-    if (!target.ok) {
-        if (target.kind === "not_found")
-            return { ok: false, kind: "validation", detail: target.detail };
-        return { ok: false, kind: "db_error", error: target.detail };
-    }
-    if (target.member.userId === creatorId)
-        return {
-            ok: false,
-            kind: "validation",
-            detail: "The creator is always an owner",
-        };
-    if (target.member.orgRole === "admin")
-        return {
-            ok: false,
-            kind: "validation",
-            detail: "Organization admins always have owner access",
-        };
-    return target;
+    /** The item's visibility; anything but "organization" is private. */
+    visibility: unknown,
+): Promise<AssignableMember> {
+    const result = await findAssignableOrgMembers(db, orgId, [email], creatorId, visibility);
+    return result.ok ? { ok: true, member: result.members[0] } : result;
 }
 
+type AssignableMember =
+    | { ok: true; member: { userId: string; email: string; orgRole: OrgRole } }
+    | { ok: false; kind: "validation"; detail: string }
+    | { ok: false; kind: "db_error"; error: unknown };
+
+/**
+ * findAssignableOrgMember for a whole share request: every address is
+ * resolved with the batched lookup above, then the same rules apply to each
+ * in order and the first refusal is the answer — exactly what the callers'
+ * old one-address-at-a-time loops returned, before any override is written.
+ */
+export async function findAssignableOrgMembers(
+    db: Db,
+    orgId: string,
+    emails: string[],
+    creatorId: string | null,
+    visibility: unknown,
+): Promise<
+    | { ok: true; members: { userId: string; email: string; orgRole: OrgRole }[] }
+    | Extract<AssignableMember, { ok: false }>
+> {
+    const members: { userId: string; email: string; orgRole: OrgRole }[] = [];
+    for (const target of await findOrgMembersByEmail(db, orgId, emails)) {
+        if (!target.ok) {
+            if (target.kind === "not_found")
+                return { ok: false, kind: "validation", detail: target.detail };
+            return { ok: false, kind: "db_error", error: target.detail };
+        }
+        if (target.member.userId === creatorId)
+            return {
+                ok: false,
+                kind: "validation",
+                detail: "The creator is always an owner",
+            };
+        if (target.member.orgRole === "owner" && visibility === "organization")
+            return {
+                ok: false,
+                kind: "validation",
+                detail: "Organization owners always own a public item",
+            };
+        members.push(target.member);
+    }
+    return { ok: true, members };
+}
+
+/**
+ * The people an organization's project or workflow concerns: everyone who can
+ * open it, with the role they hold, plus anyone walled off from it (`deny`).
+ *
+ * A member the item has not been shared with is NOT listed. In a private item
+ * that is most of the organization, and listing them at a role they do not
+ * hold is how a roster starts lying about who can read a matter.
+ */
 export async function listOrgAccessPeople(
     db: Db,
     params: {
@@ -159,6 +234,18 @@ export async function listOrgAccessPeople(
         resourceId: string;
         orgId: string;
         creatorId: string | null;
+        /** The item's visibility; anything but "organization" is private. */
+        visibility: unknown;
+        /**
+         * What every member holds on a public item without an override.
+         * Projects and workflows give Editor; playbooks give Viewer.
+         */
+        publicRole?: "editor" | "viewer";
+        /**
+         * Whether the organization's owners take over a private item with no
+         * Owner left. Projects and workflows do; playbooks do not.
+         */
+        ownerlessTakeover?: boolean;
     },
 ): Promise<
     | { ok: true; people: OrgAccessPerson[] }
@@ -178,7 +265,7 @@ export async function listOrgAccessPeople(
 
     const memberRows = (memberships ?? []) as {
         user_id: string;
-        role: "admin" | "member";
+        role: OrgRole;
     }[];
     const userIds = memberRows.map(
         (membership) => membership.user_id,
@@ -186,7 +273,7 @@ export async function listOrgAccessPeople(
     const { data: profiles, error: profilesError } = userIds.length
         ? await db
               .from("user_profiles")
-              .select("user_id, email, display_name")
+              .select("user_id, email, display_name, profile_photo")
               .in("user_id", userIds)
         : { data: [], error: null };
     if (profilesError)
@@ -200,24 +287,45 @@ export async function listOrgAccessPeople(
             user_id: string;
             email: string | null;
             display_name: string | null;
+            profile_photo?: string | null;
         }[]).map((profile) => [profile.user_id, profile]),
     );
+    // No Owner left among the members: the creator is not one of them and
+    // nobody else was made an Owner. Both lists are complete here, so this is
+    // the same answer the database's *_is_ownerless functions give.
+    const ownerless =
+        (params.ownerlessTakeover ?? true) &&
+        !memberRows.some(
+            (membership) => membership.user_id === params.creatorId,
+        ) && !listed.overrides.some((override) => override.role === "owner");
     const people: OrgAccessPerson[] = [];
     for (const membership of memberRows) {
         const userId = membership.user_id;
         const profile = profileByUserId.get(userId);
         if (!profile?.email) continue;
+        const implicitOwner =
+            userId === params.creatorId ||
+            hasImplicitOwnerAccess(membership.role, {
+                visibility: params.visibility,
+                ownerless,
+            });
+        const override = implicitOwner
+            ? undefined
+            : overrideByUserId.get(userId);
+        const role: OrgAssignableRole | null = implicitOwner
+            ? "owner"
+            : (override ??
+              (params.visibility === "organization"
+                  ? (params.publicRole ?? "editor")
+                  : null));
+        if (!role) continue;
         people.push({
             user_id: userId,
             email: profile.email,
             display_name: profile.display_name ?? null,
-            role:
-                userId === params.creatorId || membership.role === "admin"
-                    ? "owner"
-                    : overrideByUserId.get(userId) ??
-                      "editor",
-            has_override:
-                membership.role !== "admin" && overrideByUserId.has(userId),
+            profile_photo: profile.profile_photo ?? null,
+            role,
+            has_override: override !== undefined,
         });
     }
     return { ok: true, people };
@@ -314,6 +422,50 @@ export async function setOrgAccessOverride(
         };
     }
     return { ok: true, override: data as OrgAccessOverride };
+}
+
+/**
+ * Persist a WHOLE BATCH of overrides in one statement.
+ *
+ * A loop of single upserts is not atomic: the org-membership triggers on
+ * these tables can refuse the fourth row after the first three have already
+ * committed, and the caller then answers 500 with access silently changed for
+ * three people. One upsert is one statement, so a trigger refusal on any
+ * target rolls the whole batch back and nothing is written.
+ */
+export async function setOrgAccessOverrides(
+    db: Db,
+    params: {
+        kind: OrgResourceKind;
+        resourceId: string;
+        orgId: string;
+        userIds: string[];
+        role: OrgAssignableRole;
+        assignedBy: string;
+    },
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+    if (params.userIds.length === 0) return { ok: true };
+    const config = CONFIG[params.kind];
+    const updatedAt = new Date().toISOString();
+    const { error } = await db.from(config.table).upsert(
+        params.userIds.map((userId) => ({
+            [config.resourceColumn]: params.resourceId,
+            org_id: params.orgId,
+            user_id: userId,
+            role: params.role,
+            assigned_by: params.assignedBy,
+            updated_at: updatedAt,
+        })),
+        { onConflict: `${config.resourceColumn},user_id` },
+    );
+    if (error)
+        return {
+            ok: false,
+            detail:
+                error.message ??
+                "Failed to save organization access overrides",
+        };
+    return { ok: true };
 }
 
 export async function deleteOrgAccessOverride(

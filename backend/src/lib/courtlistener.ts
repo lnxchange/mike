@@ -1,5 +1,6 @@
-import { downloadFile, listFiles } from "./storage";
+import { downloadFileIfAvailable, listFiles } from "./storage";
 import { devLog } from "./log";
+import { guardedFetch } from "./mcp/client";
 import type { Db } from "./supabase";
 
 const COURTLISTENER_BASE = "https://www.courtlistener.com/api/rest/v4";
@@ -10,17 +11,23 @@ const COURTLISTENER_R2_OPINIONS_PREFIX = "courtlistener/opinions/by-cluster";
 type JsonRecord = Record<string, unknown>;
 type ServerSupabase = Db;
 
-function courtlistenerBulkDataEnabled() {
+/**
+ * The deployment serves citation lookups and opinion text from its own bulk
+ * index, so CourtListener works without an API token.
+ */
+export function courtlistenerBulkDataEnabled() {
     return process.env.COURTLISTENER_BULK_DATA_ENABLED === "true";
 }
 
+/** Repo-authored, safe to show the user as written. */
+export const COURTLISTENER_TOKEN_REQUIRED_MESSAGE =
+    "Add a CourtListener API token in Settings → Connectors to use this CourtListener tool.";
+
+/** The token is the user's or their organization's saved key, never the environment's. */
 function courtlistenerHeaders(apiToken?: string | null): HeadersInit {
-    const token =
-        apiToken?.trim() || process.env.COURTLISTENER_API_TOKEN?.trim();
+    const token = apiToken?.trim();
     if (!token) {
-        throw new Error(
-            "COURTLISTENER_API_TOKEN must be set to use CourtListener tools.",
-        );
+        throw new Error(COURTLISTENER_TOKEN_REQUIRED_MESSAGE);
     }
     return {
         Accept: "application/json",
@@ -56,6 +63,14 @@ function parseCourtlistenerError(status: number, detail: string): string {
     return `CourtListener error (${status}): ${message}`;
 }
 
+function isCourtlistenerApiUrl(url: string): boolean {
+    try {
+        return new URL(url).origin === new URL(COURTLISTENER_BASE).origin;
+    } catch {
+        return false;
+    }
+}
+
 async function courtlistenerFetch<T>(
     pathOrUrl: string,
     init?: RequestInit,
@@ -64,19 +79,34 @@ async function courtlistenerFetch<T>(
     const url = pathOrUrl.startsWith("http")
         ? pathOrUrl
         : `${COURTLISTENER_BASE}${pathOrUrl}`;
+    // Absolute URLs come from CourtListener's own responses (the `next` link
+    // of a paginated list). The request carries the user's API token, so
+    // only ever send it to CourtListener itself: a link to any other host is
+    // refused rather than followed.
+    if (!isCourtlistenerApiUrl(url)) {
+        throw new Error("CourtListener returned a link outside its API.");
+    }
     devLog("[courtlistener/api] request", {
         method: init?.method ?? "GET",
         path: pathOrUrl,
         url,
     });
-    const response = await fetch(url, {
-        ...init,
-        signal: init?.signal ?? AbortSignal.timeout(15_000),
-        headers: {
-            ...courtlistenerHeaders(apiToken),
-            ...(init?.headers ?? {}),
+    // guardedFetch checks the address every connection actually goes to, so
+    // a DNS answer pointing at a private or loopback address is refused, and
+    // it follows redirects itself, re-checking each hop and dropping the
+    // token when a hop leaves CourtListener's origin.
+    const response = await guardedFetch(
+        url,
+        {
+            ...init,
+            signal: init?.signal ?? AbortSignal.timeout(15_000),
+            headers: {
+                ...courtlistenerHeaders(apiToken),
+                ...(init?.headers ?? {}),
+            },
         },
-    });
+        { label: "CourtListener URL" },
+    );
     devLog("[courtlistener/api] response", {
         method: init?.method ?? "GET",
         path: pathOrUrl,
@@ -542,7 +572,7 @@ function citationMatchKey(value: string | null | undefined): string | null {
 }
 
 function courtlistenerApiTokenAvailable(apiToken?: string | null) {
-    return !!(apiToken?.trim() || process.env.COURTLISTENER_API_TOKEN?.trim());
+    return !!apiToken?.trim();
 }
 
 async function getBulkCitationLookup(args: {
@@ -822,7 +852,7 @@ async function getBulkCourtlistenerCaseOpinions(args: {
                     clusterId: args.clusterId,
                     key,
                 });
-                const bytes = await downloadFile(key);
+                const bytes = await downloadFileIfAvailable(key);
                 if (!bytes) {
                     devLog("[courtlistener/r2-opinions] download missing", {
                         clusterId: args.clusterId,

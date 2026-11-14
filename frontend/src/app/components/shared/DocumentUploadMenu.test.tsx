@@ -19,11 +19,11 @@ describe("DocumentUploadMenu", () => {
 
         await user.click(screen.getByRole("button", { name: "Upload" }));
         expect(screen.getAllByRole("menuitem")).toHaveLength(3);
-        await user.click(screen.getByRole("menuitem", { name: "Saved files" }));
+        await user.click(screen.getByRole("menuitem", { name: "Saved Documents" }));
         expect(onSavedFiles).toHaveBeenCalledOnce();
 
         await user.click(screen.getByRole("button", { name: "Upload" }));
-        await user.click(screen.getByRole("menuitem", { name: "Upload files" }));
+        await user.click(screen.getByRole("menuitem", { name: "Upload Documents" }));
         expect(onUploadFiles).toHaveBeenCalledOnce();
 
         await user.click(screen.getByRole("button", { name: "Upload" }));
@@ -43,7 +43,7 @@ describe("DocumentUploadMenu", () => {
         );
 
         await user.click(screen.getByRole("button", { name: "Upload" }));
-        expect(screen.queryByRole("menuitem", { name: "Saved files" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Saved Documents" })).toBeNull();
         expect(screen.getAllByRole("menuitem")).toHaveLength(2);
     });
 
@@ -61,6 +61,23 @@ describe("DocumentUploadMenu", () => {
             screen.queryByRole("menuitem", { name: "Upload folder" }),
         ).toBeNull();
         expect(screen.getAllByRole("menuitem")).toHaveLength(2);
+    });
+
+    it("offers no way in when every source is withheld", () => {
+        // A null action is "you may not do this here". Folder upload has to
+        // answer that the same way files and saved documents do; while it
+        // stayed live for a viewer the menu still opened, the native folder
+        // picker appeared, and the refusal arrived only once the upload
+        // session was under way.
+        render(
+            <DocumentUploadMenu
+                onSavedFiles={null}
+                onUploadFiles={null}
+                onUploadFolder={null}
+            />,
+        );
+
+        expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
     });
 
     it("disables upload while its collection is loading", () => {

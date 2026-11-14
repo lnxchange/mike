@@ -11,22 +11,24 @@ import { createDocumentVersion } from "./documents.lifecycle";
 // direct object-storage upload-session protocol (modules/uploads), and the
 // former multipart endpoints answer 410.
 
+import { AppError } from "../../lib/appError";
+import { reportError } from "../../lib/observability/sentry";
 import {
     downloadFile,
     uploadFile,
     versionStorageKey,
 } from "../../lib/storage";
-import { docxToPdf } from "../../lib/convert";
+import { convertedPdfKey, docxToPdf } from "../../lib/convert";
 import { enqueueConversion } from "../../lib/queue/conversionQueue";
 import { contentSha256, loadActiveVersion } from "../../lib/documentVersions";
 import { creatorScopedAllowed } from "../../lib/access";
-import { can } from "../../lib/permissions";
+import { can, DOCUMENT_EDIT_FORBIDDEN } from "../../lib/permissions";
 import {
     documentSuffix,
     shouldConvertToPdf,
 } from "../../lib/documentTypes";
 import { deleteDocumentAndVersionFiles, type Db } from "./documents.shared";
-import { ensureDocumentAccess } from "./documents.access";
+import { canManageDocument, ensureDocumentAccess } from "./documents.access";
 
 // ---------------------------------------------------------------------------
 // Versions list
@@ -56,7 +58,7 @@ export async function listVersions(
     const { data: rows } = await db
         .from("document_versions")
         .select(
-            "id, version_number, source, created_at, filename, file_type, size_bytes, page_count, deleted_at, deleted_by",
+            "id, version_number, source, created_at, filename, file_type, size_bytes, page_count, textless_page_count, deleted_at, deleted_by",
         )
         .eq("document_id", documentId)
         .order("created_at", { ascending: true });
@@ -87,15 +89,22 @@ export async function createVersionFromDocument(
           ok: false;
           kind:
               | "target_not_found"
+              | "target_forbidden"
               | "source_not_found"
               | "source_not_owner"
               | "source_no_active"
               | "source_bytes"
-              | "storage_write"
-              | "version_insert"
-              | "doc_update"
-              | "source_delete";
+              | "source_bytes";
           detail: string;
+      }
+    // Internal failures carry the cause as an AppError: the route hands it to
+    // sendInternalError, which reports it once with the kind and the code
+    // (a failed RPC's SQLSTATE, a storage SDK's error) on the event.
+    | {
+          ok: false;
+          kind: "storage_write" | "version_insert" | "source_delete";
+          detail: string;
+          error: AppError;
       }
 > {
     const {
@@ -114,11 +123,19 @@ export async function createVersionFromDocument(
     );
     // Adding a version mutates the target, so read access is not enough:
     // a viewer-only workflow share must not be able to write into it.
-    if (!targetAccess.ok || !can(targetAccess.projectRole, "content.edit"))
+    if (!targetAccess.ok)
         return {
             ok: false,
             kind: "target_not_found",
             detail: "Document not found",
+        };
+    // Same split as the version routes: a Viewer who can open the target is
+    // refused with the reason, not told the document vanished.
+    if (!can(targetAccess.projectRole, "content.edit"))
+        return {
+            ok: false,
+            kind: "target_forbidden",
+            detail: DOCUMENT_EDIT_FORBIDDEN,
         };
     const targetDoc = targetAccess.doc;
 
@@ -184,17 +201,24 @@ export async function createVersionFromDocument(
         ({ pdfStoragePath } = await copyDocumentVersionFiles({
             source: { ...active, file_type: suffix },
             storagePath: key,
-            pdfStoragePath: `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`,
+            pdfStoragePath: convertedPdfKey(userId, documentId, versionSlug),
             transport: "download",
             rendition: "optional",
             sourceBytes: bytes,
         }));
     } catch (e) {
-        console.error("[versions/copy] storage write failed", e);
         return {
             ok: false,
             kind: "storage_write",
             detail: "Failed to create new version.",
+            error:
+                e instanceof AppError
+                    ? e
+                    : new AppError(
+                          "storage.copy_failed",
+                          "[versions/copy] storage write failed",
+                          { cause: e },
+                      ),
         };
     }
 
@@ -210,7 +234,7 @@ export async function createVersionFromDocument(
         } else {
             try {
                 const pdfBuf = await docxToPdf(Buffer.from(bytes));
-                const pdfKey = `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`;
+                const pdfKey = convertedPdfKey(userId, documentId, versionSlug);
                 await uploadFile(
                     pdfKey,
                     pdfBuf.buffer.slice(
@@ -221,10 +245,18 @@ export async function createVersionFromDocument(
                 );
                 pdfStoragePath = pdfKey;
             } catch (err) {
+                // Non-fatal: the version keeps its source without a rendition.
+                // docxToPdf throws a conversion.* AppError, so the report
+                // names the kind; the same object is logged so the console
+                // bridge files no second event.
+                reportError(err, {
+                    level: "warning",
+                    tags: { stage: "docx-to-pdf" },
+                    extra: { document_id: documentId },
+                });
                 console.error(
                     "[versions/copy] Office→PDF conversion failed",
-                    { filename },
-                    err,
+                    { error: err },
                 );
             }
         }
@@ -242,15 +274,20 @@ export async function createVersionFromDocument(
             file_type: sourceType || null,
             size_bytes: active.size_bytes ?? bytes.byteLength,
             page_count: active.page_count,
+            textless_page_count: active.textless_page_count,
             content_sha256: contentSha256(bytes),
         },
     );
     if (verErr || !versionRow) {
-        console.error("[versions/copy] insert failed", verErr);
         return {
             ok: false,
             kind: "version_insert",
             detail: "Failed to record new version.",
+            error: new AppError(
+                "db.rpc_failed",
+                "[versions/copy] insert failed",
+                { cause: verErr ?? new Error("version_insert_returned_no_data") },
+            ),
         };
     }
 
@@ -261,7 +298,7 @@ export async function createVersionFromDocument(
             userId,
             storagePath: key,
             fileType: suffix,
-            pdfKey: `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`,
+            pdfKey: convertedPdfKey(userId, documentId, versionSlug),
             finalizeDocumentStatus: false,
         });
     }
@@ -272,14 +309,15 @@ export async function createVersionFromDocument(
             sourceDocumentId,
         );
         if (deleteErr) {
-            console.error(
-                "[versions/copy] source document delete failed",
-                deleteErr,
-            );
             return {
                 ok: false,
                 kind: "source_delete",
                 detail: "Failed to delete source document.",
+                error: new AppError(
+                    "db.query_failed",
+                    "[versions/copy] source document delete failed",
+                    { cause: deleteErr },
+                ),
             };
         }
     }
@@ -316,7 +354,10 @@ export async function renameVersion(
         userEmail: string | undefined;
     },
     db: Db,
-): Promise<{ ok: true; version: unknown } | { ok: false; detail: string }> {
+): Promise<
+    | { ok: true; version: unknown }
+    | { ok: false; detail: string; status?: number }
+> {
     const { documentId, versionId, rawFilename, userId, userEmail } = params;
 
     const access = await ensureDocumentAccess(
@@ -325,10 +366,11 @@ export async function renameVersion(
         userEmail,
         db,
     );
-    // A rename is a write: viewer-only shares are rejected the same way a
-    // missing document is.
-    if (!access.ok || !can(access.projectRole, "content.edit"))
-        return { ok: false, detail: "Document not found" };
+    // A document a Viewer can open has not disappeared — say so, instead of
+    // reporting the read-only tier as a missing row.
+    if (!access.ok) return { ok: false, detail: "Document not found" };
+    if (!can(access.projectRole, "content.edit"))
+        return { ok: false, status: 403, detail: DOCUMENT_EDIT_FORBIDDEN };
 
     const filename =
         typeof rawFilename === "string" && rawFilename.trim()
@@ -342,7 +384,7 @@ export async function renameVersion(
         .eq("document_id", documentId)
         .is("deleted_at", null)
         .select(
-            "id, version_number, source, created_at, filename, file_type, size_bytes, page_count",
+            "id, version_number, source, created_at, filename, file_type, size_bytes, page_count, textless_page_count",
         )
         .single();
     if (error || !updated) {
@@ -365,7 +407,11 @@ export async function deleteVersion(
     | { ok: true; payload: Record<string, unknown> }
     | {
           ok: false;
-          kind: "doc_not_found" | "version_not_found" | "only_version";
+          kind:
+              | "doc_not_found"
+              | "version_not_found"
+              | "only_version"
+              | "version_forbidden";
           detail: string;
       }
     // Every DB failure on this path is an opaque internal error — the route
@@ -382,20 +428,27 @@ export async function deleteVersion(
         },
     );
     // Deleting a version is creator-scoped (with the admin heir once the
-    // creator's account is gone). Workflow documents are the exception: an
-    // editor on the workflow share manages its versions too.
-    if (
-        !access.ok ||
-        (!creatorScopedAllowed(access, access.doc.user_id) &&
-            !(
-                access.doc.workflow_id &&
-                can(access.projectRole, "content.edit")
-            ))
-    )
+    // creator's account is gone) AND needs current content.edit, so a creator
+    // downgraded to Viewer cannot prune history (canManageDocument). Workflow
+    // documents are the exception: an editor on the workflow share manages
+    // its versions too. Versions carry no author column, so the scope is the
+    // document's creator, who manages that document's history.
+    //
+    // Same split as the whole-document DELETE: a caller with no verdict is
+    // told the row does not exist, and a caller who can open the document but
+    // not delete this version is REFUSED by name. Collapsing both into 404
+    // told a Viewer their version had vanished.
+    if (!access.ok)
         return {
             ok: false,
             kind: "doc_not_found",
             detail: "Document not found",
+        };
+    if (!canManageDocument(access, access.doc))
+        return {
+            ok: false,
+            kind: "version_forbidden",
+            detail: "You do not have permission to delete this version.",
         };
     const keys = await captureInlineDocumentCleanup(db, {
         versionIds: [versionId],

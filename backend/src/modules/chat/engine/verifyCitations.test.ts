@@ -10,7 +10,9 @@ vi.mock("../../../lib/storage", () => ({ downloadFile: vi.fn() }));
 
 import {
   locateQuote,
+  createQuoteVerifier,
   verifyQuoteAgainstSource,
+  caseSourceCache,
   verifyCaseCitationAnnotation,
   verifyDocumentCitationAnnotation,
   verifyCitations,
@@ -87,6 +89,74 @@ describe("verifyQuoteAgainstSource", () => {
     expect(SOURCE.slice(v.start_char, v.end_char)).toBe(v.source_excerpt);
   });
 
+  it("word hyphenated at a line end → verified with the exact source excerpt", () => {
+    // PDF text keeps the line break; the model quotes the word joined.
+    const source = "The Supplier shall provide full indem-\nnification to the Customer.";
+    const v = verifyQuoteAgainstSource(source, "full indemnification to the Customer");
+    expect(v.verified).toBe(true);
+    expect(v.needs_correction).toBe(true);
+    expect(v.source_excerpt).toBe("full indem-\nnification to the Customer");
+    expect(source.slice(v.start_char, v.end_char)).toBe(v.source_excerpt);
+  });
+
+  // Ported from #659: compounds, ranges and German syllable breaks, plus each
+  // line-break form and hyphen character a PDF extractor can produce.
+  it.each([
+    ["clause-7.5-\n     transactions below", "clause-7.5-transactions below"],
+    ["under § 12-\n14 of the Act", "under § 12-14 of the Act"],
+    ["from 1998-\r\n2001 inclusive", "from 1998-2001 inclusive"],
+    ["under § 12\u2011\n14 of the Act", "under § 12\u201114 of the Act"],
+    ["die Prüfung vorzuneh-\rmen", "die Prüfung vorzunehmen"],
+    ["an ter\u00ad\nmination notice", "an termination notice"],
+    ["a clause\u2010\r\nbased review", "a clause\u2010based review"],
+    ["full indem\u2011  \n    nification", "full indemnification"],
+    ["the cafe\u0301-\nteria lease", "the cafe\u0301teria lease"],
+    ["данное обяза-\nтельство", "данное обязательство"],
+    ["the notice period-\nextension applies", "the notice, period-extension applies"],
+  ])("line-end hyphenation %j is quoted as %j → verified", (source, quote) => {
+    expect(verifyQuoteAgainstSource(source, quote)).toMatchObject({
+      verified: true,
+      source_excerpt: source,
+    });
+  });
+
+  // A false "verified" is worse than a miss: joining is limited to one line
+  // break inside a word, and a hyphen may only vanish between letters.
+  it.each([
+    ["see pp. 3-\n7 of the report", "see pp. 37 of the report"],
+    ["see pp. 3-\r\n7 of the report", "see pp. 37 of the report"],
+    ["see pp. 3\u00ad\n7 of the report", "see pp. 37 of the report"],
+    ["under § 12\u2011\n14 of the Act", "under § 1214 of the Act"],
+    ["the fee is 3-\n7 percent", "the fee is, 37 percent"],
+    ["Article 5-\nbis applies", "Article 5bis applies"],
+    ["Term ends 2024-\n\nRenewal at option", "Term ends 2024-Renewal at option"],
+    ["full indem-\r\n\r\nnification", "full indemnification"],
+    ["full indem-\n   \n  nification", "full indemnification"],
+    ["full indem-\n\n[Page 2]\nnification", "full indemnification"],
+    ["the term\u2014\nrenewal applies", "the termrenewal applies"],
+    ["the Lease -\nsee clause 4", "the Lease-see clause 4"],
+  ])("%j quoted as %j must NOT verify", (source, quote) => {
+    expect(verifyQuoteAgainstSource(source, quote).verified).toBe(false);
+  });
+
+  it("one shared verifier serves each tier its own cached index", () => {
+    const verify = createQuoteVerifier(
+      "The Tenant shall pay rent.\nfull indem-\nnification applies; see pp. 3-\n" +
+        "7 of the report; the notice period-\nextension applies; § 12-\n14 applies.",
+    );
+    // Order matters: every tier reuses indexes built for the calls before it.
+    expect(
+      [
+        "the tenant shall pay rent",
+        "full indemnification applies",
+        "see pp. 37 of the report",
+        "§ 12-14 applies",
+        "the notice, period-extension applies",
+        "see pp. 3-7 of the report",
+      ].map((quote) => verify(quote).verified),
+    ).toEqual([true, true, false, true, true, true]);
+  });
+
   it("fabricated quote → unverified with no offsets", () => {
     const v = verifyQuoteAgainstSource(SOURCE, "The Tenant waives all rights.");
     expect(v.verified).toBe(false);
@@ -103,6 +173,25 @@ describe("verifyQuoteAgainstSource", () => {
     ).toBe(false);
   });
 
+  // Punctuation tolerance must not turn a range or identifier into another
+  // number: a dash between digits survives, as one canonical hyphen.
+  it.each([
+    ["see pp. 3-7 of the report", "see pp. 37 of the report"],
+    ["see pp. 3\u20137 of the report", "see pp. 37 of the report"],
+    ["Case No. 21-1234 was filed", "Case No. 211234 was filed"],
+    ["dated 2024-01-15 below", "dated 20240115 below"],
+  ])("%j quoted as %j must NOT verify", (source, quote) => {
+    expect(verifyQuoteAgainstSource(source, quote).verified).toBe(false);
+  });
+
+  it("a digit range still matches across dash styles and punctuation drift", () => {
+    const source = "Clause 4 applies, see pp. 3\u20137 of the report.";
+    expect(verifyQuoteAgainstSource(source, "see pp. 3-7, of the report")).toMatchObject({
+      verified: true,
+      source_excerpt: "see pp. 3\u20137 of the report",
+    });
+  });
+
   it("cross-page [[PAGE_BREAK]] quote → each segment verified independently", () => {
     const src = "the first day of each month. The Landlord may terminate";
     const quote =
@@ -115,6 +204,48 @@ describe("verifyQuoteAgainstSource", () => {
   it("cross-page quote with a missing segment → unverified", () => {
     const quote = "the first day of each month[[PAGE_BREAK]]never appears here";
     const v = verifyQuoteAgainstSource(SOURCE, quote);
+    expect(v.verified).toBe(false);
+  });
+
+  it("rejects cross-page segments in reverse document order", () => {
+    const source = "Page one ending. Page two beginning.";
+    const quote = "Page two beginning[[PAGE_BREAK]]Page one ending";
+    const v = verifyQuoteAgainstSource(source, quote);
+    expect(v.verified).toBe(false);
+  });
+
+  it("uses a later occurrence when repeated text satisfies the order", () => {
+    const source = "Repeated text. Page one ending. Repeated text.";
+    const quote = "Page one ending[[PAGE_BREAK]]Repeated text";
+    const v = verifyQuoteAgainstSource(source, quote);
+    expect(v.verified).toBe(true);
+  });
+
+  it("considers normalized and exact occurrences in source order", () => {
+    const source = "PAGE ONE ENDING. Page two beginning. Page one ending.";
+    const quote = "Page one ending[[PAGE_BREAK]]Page two beginning";
+    const v = verifyQuoteAgainstSource(source, quote);
+    expect(v.verified).toBe(true);
+  });
+
+  it("backtracks to a later occurrence that satisfies the gap bound", () => {
+    const source = `Repeated text.${"x".repeat(50_000)}Repeated text. Page two beginning.`;
+    const quote = "Repeated text[[PAGE_BREAK]]Page two beginning";
+    const v = verifyQuoteAgainstSource(source, quote);
+    expect(v.verified).toBe(true);
+  });
+
+  it("rejects cross-page segments separated by an unreasonable distance", () => {
+    const source = `Page one ending.${"x".repeat(50_000)}Page two beginning.`;
+    const quote = "Page one ending[[PAGE_BREAK]]Page two beginning";
+    const v = verifyQuoteAgainstSource(source, quote);
+    expect(v.verified).toBe(false);
+  });
+
+  it("orders the next page after the full preceding ellipsis span", () => {
+    const source = "Opening text. Next page text. Closing text.";
+    const quote = "Opening text...Closing text[[PAGE_BREAK]]Next page text";
+    const v = verifyQuoteAgainstSource(source, quote);
     expect(v.verified).toBe(false);
   });
 
@@ -303,7 +434,7 @@ describe("verifyCaseCitationAnnotation", () => {
 
     const verified = (await verifyCaseCitationAnnotation(
       annotation,
-      opinions,
+      caseSourceCache(opinions),
     )) as Record<string, unknown>;
     expect(verified.verified).toBe(true);
     const quotes = verified.quotes as {
@@ -337,7 +468,7 @@ describe("verifyCaseCitationAnnotation", () => {
           },
         ],
       },
-      opinions,
+      caseSourceCache(opinions),
     )) as Record<string, unknown>;
     expect(verified.verified).toBe(false);
   });
@@ -378,5 +509,74 @@ describe("verifyCitations (batch)", () => {
       async () => [{ opinion_id: 3, text: "Binding case text" }],
     );
     expect(out[0]).toMatchObject({ verified: true });
+  });
+
+  it("applies the line-end hyphen rule to CourtListener opinion text", async () => {
+    const opinion = "The duty of indem-\nnification covers pp. 3-\n7 of the record.";
+    const caseQuote = (ref: number, quote: string) => ({
+      type: "citation_data", kind: "case", ref, cluster_id: 7,
+      quotes: [{ opinionId: 3, quote }],
+    });
+    const out = await verifyCitations(
+      [caseQuote(1, "the duty of indemnification"), caseQuote(2, "covers pp. 37 of the record")],
+      fetcherFor({}),
+      async () => [{ opinion_id: 3, text: opinion }],
+    );
+    expect(out[0]).toMatchObject({
+      verified: true,
+      quotes: [{ quote: "The duty of indem-\nnification" }],
+    });
+    expect(out[1]).toMatchObject({ verified: false });
+  });
+});
+
+describe("shared quote normalization", () => {
+  it("builds no line-end hyphen index when the cheap tiers match", async () => {
+    const operations = await import("./tools/documentOps.js");
+    const normalize = vi.spyOn(operations, "normalizeWithMap");
+    const source = "The Supplier shall provide full indem-\nnification.";
+    try {
+      const out = await verifyCitations(
+        [docAnnotation([{ page: 1, quote: "the SUPPLIER shall provide" }])],
+        async () => source,
+        async () => [],
+      );
+      expect(out[0]).toMatchObject({ verified: true });
+      expect(normalize.mock.calls.filter(([text]) => text === source)).toHaveLength(1);
+    } finally { normalize.mockRestore(); }
+  });
+
+  it("normalizes a source without line-end hyphens at most twice across a citation batch", async () => {
+    const operations = await import("./tools/documentOps.js");
+    const normalize = vi.spyOn(operations, "normalizeWithMap");
+    const source = "A long source without the requested phrase. ".repeat(500);
+    try {
+      const annotations = Array.from({ length: 200 }, (_, ref) => ({ ...docAnnotation([{ page: 1, quote: `missing phrase ${ref}` }]), ref }));
+      const result = await verifyCitations(annotations, async () => source, async () => []);
+      expect(result).toHaveLength(200);
+      expect(normalize.mock.calls.filter(([text]) => text === source)).toHaveLength(2);
+    } finally { normalize.mockRestore(); }
+  });
+
+  it("loads and joins a cited case's opinions once per verification batch", async () => {
+    const getCaseOpinions = vi.fn(async () => [
+      { opinion_id: 1, text: "Majority text." },
+      { opinion_id: 2, text: "Dissent text." },
+    ]);
+    const annotations = Array.from({ length: 20 }, (_, ref) => ({
+      type: "citation_data", kind: "case", ref, cluster_id: 42,
+      quotes: [{ quote: "Majority text. Dissent text." }],
+    }));
+    const result = await verifyCitations(annotations, async () => "", getCaseOpinions);
+    expect(result.every((value) => (value as { verified: boolean }).verified)).toBe(true);
+    expect(getCaseOpinions).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reuse stale normalized text between verification batches", async () => {
+    const annotation = docAnnotation([{ page: 1, quote: "new words" }]);
+    const old = await verifyCitations([annotation], async () => "OLD WORDS", async () => []);
+    const current = await verifyCitations([annotation], async () => "NEW WORDS", async () => []);
+    expect(old[0]).toMatchObject({ verified: false });
+    expect(current[0]).toMatchObject({ verified: true, quote: "NEW WORDS" });
   });
 });

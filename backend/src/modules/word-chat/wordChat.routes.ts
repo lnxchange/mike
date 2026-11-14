@@ -1,5 +1,12 @@
+import { BACKEND_REPORTING_OWNER } from "../../lib/reportedUpstreamCodes";
 import { sendInternalError } from "../../lib/httpError";
-import { openAssistantSse } from "../../lib/assistantSse";
+import {
+  attachAssistantTurnSse,
+  getActiveAssistantTurn,
+  getAssistantTurnRun,
+  startAssistantTurnRun,
+} from "../../lib/assistantTurnRuns";
+import { stopOutcomeFrame } from "../../lib/streamRuns";
 // HTTP layer for the word-chat module — the Word task pane's chat surface.
 //
 // Route handlers parse params/query/body, call the wordChat.service functions,
@@ -10,14 +17,15 @@ import { openAssistantSse } from "../../lib/assistantSse";
 // chat-activity write live in wordChat.service.ts.
 
 import { randomUUID } from "node:crypto";
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { requireAuth } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import {
   AssistantStreamError,
-  ASSISTANT_ERROR_MESSAGE,
-  buildCancelledAssistantMessage,
+  assistantStreamErrorPayload,
+  buildStoppedAssistantEvent,
+  buildStoppedAssistantMessage,
   extractCitations,
   isAbortError,
   parseChatMessages,
@@ -27,13 +35,17 @@ import {
   parseOptionalReasoning,
   createReservedAssistantMessageUpdater,
   createWordClientToolsAdapter,
-
+  isClientToolCallPending,
+  logAssistantMessageFailure,
+  requestIdOf,
   reserveAssistantMessage,
   runLLMStream,
   stripTransientAssistantEvents,
   submitClientToolResult,
+  throwIfTurnStopped,
 } from "../chat/chat.service";
-import { enqueueChatTurnAudit } from "../../lib/audit";
+import { enqueueChatTurnAudit, stoppedTurnAuditStatus } from "../../lib/audit";
+import { setOperation, isReported, reportError } from "../../lib/observability/sentry";
 import {
   persistWordDocumentEdits,
   WORD_EDIT_FORMATS,
@@ -193,6 +205,63 @@ function parseProposedWordEdit(
   };
 }
 
+/**
+ * The run this caller may act on, or undefined.
+ *
+ * Everything a Word turn can be authorised by lives in the run: the user it
+ * belongs to and the embedded document the pane was attached to when it
+ * started. That is deliberate — a local chat has no server row, and a cloud
+ * chat's row says nothing about which run is live — so ownership is checked
+ * here rather than being inferred from the transcript.
+ */
+function wordTurnRunFor(
+  chatId: string,
+  turnId: string,
+  caller: { userId: string; clientDocumentId: string },
+) {
+  const run = getAssistantTurnRun(turnId, "word");
+  if (!run || run.chatId !== chatId) return undefined;
+  if (run.userId !== caller.userId) return undefined;
+  if (run.meta.clientDocumentId !== caller.clientDocumentId) return undefined;
+  return run;
+}
+
+/**
+ * The bridge id of a `client_tool_call` SSE record, or null for anything
+ * else (ordinary frames, and the `: tool-wait` keep-alive comments the
+ * adapter writes between them).
+ *
+ * The route recognises the frame by parsing it back rather than having the
+ * adapter announce it, because the adapter's contract is a plain
+ * `write(line)` — one that knows nothing about runs, replay predicates or
+ * which surface is streaming it.
+ */
+function clientToolCallIdOf(line: string): string | null {
+  if (!line.startsWith("data: ")) return null;
+  const payload = line.slice(6).trim();
+  if (!payload.includes('"client_tool_call"')) return null;
+  try {
+    const frame = JSON.parse(payload) as {
+      type?: unknown;
+      tool_call_id?: unknown;
+    };
+    return frame.type === "client_tool_call" &&
+      typeof frame.tool_call_id === "string"
+      ? frame.tool_call_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One answer for unknown, finished-and-forgotten, and not-yours. */
+function turnNotFound(res: Response): void {
+  res.status(404).json({
+    code: "turn_not_found",
+    detail: "This response is no longer being generated.",
+  });
+}
+
 // GET /word-chat?document_id=<embedded document UUID>&limit=10
 wordChatRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
   const userId = res.locals.userId as string;
@@ -216,7 +285,7 @@ wordChatRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
     offset,
   });
   if (!result.ok) {
-    return void res.status(500).json({ detail: "Failed to load Word chats" });
+    return void sendInternalError(res, result.error);
   }
   res.json(result.chats);
 }));
@@ -241,10 +310,69 @@ wordChatRouter.get("/:chatId", requireAuth, asyncRoute(async (req, res) => {
     if (result.kind === "not_found") {
       return void res.status(404).json({ detail: "Chat not found" });
     }
-    return void res.status(500).json({ detail: "Failed to load Word chat" });
+    return void sendInternalError(res, result.error);
   }
-  res.json({ chat: result.chat, messages: result.messages });
+  res.json({
+    chat: result.chat,
+    messages: result.messages,
+    // A turn still generating into this chat, so a pane that has just
+    // reopened attaches to it instead of showing a transcript whose last
+    // answer is missing. (The reserved, still-null assistant row is filtered
+    // out of `messages`, so there is nothing to double up with.)
+    active_turn: getActiveAssistantTurn(req.params.chatId, "word"),
+  });
 }));
+
+// GET /word-chat/:chatId/turn/:turnId/stream?document_id=<uuid>&from=<seq>
+// Attach to a turn that is (or was, within the retention window) generating
+// into this chat: frames with a sequence number >= `from` are replayed, then
+// the live ones follow until the turn ends.
+//
+// Authorised from the RUN, not from a database row: a `storage: "local"` Word
+// chat is never persisted, so there is no row to check — the run knows whose
+// turn it is and which embedded document it belongs to, and that is exactly
+// the pair the pane presents.
+wordChatRouter.get(
+  "/:chatId/turn/:turnId/stream",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const parsedDocumentId = parseDocumentId(req.query.document_id);
+    if (!parsedDocumentId.ok) {
+      return void res.status(400).json({ detail: parsedDocumentId.detail });
+    }
+    const run = wordTurnRunFor(req.params.chatId, req.params.turnId, {
+      userId: res.locals.userId as string,
+      clientDocumentId: parsedDocumentId.value,
+    });
+    if (!run) return void turnNotFound(res);
+    const rawFrom = Number.parseInt(String(req.query.from ?? "1"), 10);
+    const from = Number.isFinite(rawFrom) && rawFrom > 0 ? rawFrom : 1;
+    attachAssistantTurnSse(res, run, from);
+  }),
+);
+
+// POST /word-chat/:chatId/turn/:turnId/stop?document_id=<uuid>
+// The one way to cut a Word answer short. Closing the SSE socket no longer
+// does it, so the pane's Stop control calls this first and only then drops
+// its own connection.
+wordChatRouter.post(
+  "/:chatId/turn/:turnId/stop",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const parsedDocumentId = parseDocumentId(req.query.document_id);
+    if (!parsedDocumentId.ok) {
+      return void res.status(400).json({ detail: parsedDocumentId.detail });
+    }
+    const run = wordTurnRunFor(req.params.chatId, req.params.turnId, {
+      userId: res.locals.userId as string,
+      clientDocumentId: parsedDocumentId.value,
+    });
+    if (!run) return void turnNotFound(res);
+    if (run.finished) return void res.json({ stopped: false, finished: true });
+    run.stop();
+    res.json({ stopped: true, finished: false });
+  }),
+);
 
 // PATCH /word-chat/:chatId/model?document_id=<embedded document UUID>
 // Selection-time persistence for an existing cloud Word chat.
@@ -281,7 +409,7 @@ wordChatRouter.patch("/:chatId/model", requireAuth, asyncRoute(async (req, res) 
         detail: result.detail,
       });
     }
-    return void res.status(500).json({ detail: "Failed to save chat model" });
+    return void sendInternalError(res, result.error);
   }
   res.json({ id: req.params.chatId, model: result.model });
 }));
@@ -316,7 +444,7 @@ wordChatRouter.patch("/:chatId/reasoning", requireAuth, asyncRoute(async (req, r
     if (result.kind === "not_found") {
       return void res.status(404).json({ detail: "Chat not found" });
     }
-    return void res.status(500).json({ detail: "Failed to save reasoning" });
+    return void sendInternalError(res, result.error);
   }
   res.json({
     id: req.params.chatId,
@@ -360,7 +488,7 @@ wordChatRouter.put(
       if (result.kind === "not_found") {
         return void res.status(404).json({ detail: "Message not found" });
       }
-      return void res.status(500).json({ detail: "Failed to save Word edit" });
+      return void sendInternalError(res, result.error);
     }
     res.json(result.edit);
   }),
@@ -459,9 +587,7 @@ wordChatRouter.patch(
       if (result.kind === "edit_not_found") {
         return void res.status(404).json({ detail: "Edit not found" });
       }
-      return void res
-        .status(500)
-        .json({ detail: "Failed to update Word edit" });
+      return void sendInternalError(res, result.error);
     }
     res.json(result.edit);
   }),
@@ -498,6 +624,8 @@ wordChatRouter.post("/tool-result", requireAuth, (req, res) => {
 
 // POST /word-chat — Word-specific streaming endpoint.
 wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
+  setOperation("word_chat.turn");
+  const requestId = requestIdOf(res);
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const body =
@@ -568,6 +696,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     clientToolsEnabled,
     requestedModel: parsedModel.value,
     requestedReasoning: parsedReasoning.value,
+    requestedTimeZone: req.body?.time_zone,
   });
   if (!prep.ok) {
     if (prep.status === 500 && "error" in prep)
@@ -597,6 +726,28 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
   try {
   const assistantMessageId = randomUUID();
 
+  // The answer is a server-owned run from here on: it survives the pane's
+  // socket (the task pane closing, Word reloading it, a dropped connection)
+  // and only POST /word-chat/:chatId/turn/:turnId/stop aborts it. `chatId`
+  // always exists by now — a cloud row's id, or the UUID local storage was
+  // given — so every Word turn is keyed and resumable, local ones included.
+  const run = startAssistantTurnRun({
+    id: assistantMessageId,
+    chatId,
+    userId,
+    assistantMessageId,
+    surface: "word",
+    // What the resume endpoints authorise against; a local chat has no row.
+    clientDocumentId: parsedDocumentId.value,
+    persistChat,
+  });
+  if (!run) {
+    return void res.status(409).json({
+      code: "turn_in_progress",
+      detail: "A response is already being generated for this chat.",
+    });
+  }
+
   if (persistChat) {
     const error = await reserveAssistantMessage({
       db,
@@ -607,15 +758,35 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         authorUserId: userId,
     });
     if (error) {
-      console.error("[word-chat] failed to reserve assistant message", error);
+      logAssistantMessageFailure({
+        kind: "chat.message_reserve_failed",
+        label: "[word-chat] failed to reserve assistant message",
+        cause: error,
+        component: "word-chat",
+      });
+      run.finish();
       return void res
         .status(500)
         .json({ detail: "Failed to start Word assistant response" });
     }
   }
 
-  const stream = openAssistantSse(res);
+  const stream = attachAssistantTurnSse(res, run);
   const write = stream.write;
+  /**
+   * The adapter's writer, with one extra rule: a `client_tool_call` frame is
+   * replayed to a pane that attaches LATER only while the call is still
+   * pending. A pane closed mid-call reopens, is handed the call again, and
+   * answers the tool loop that has been waiting for it; a call that has been
+   * answered, timed out or cancelled is settled, and replaying it would apply
+   * the same edit twice. (Keep-alive comment lines are neither buffered nor
+   * numbered — see `streamRuns.write`.)
+   */
+  const writeClientToolFrame = (line: string): boolean => {
+    const callId = clientToolCallIdOf(line);
+    if (!callId) return write(line);
+    return run.write(line, { replay: () => isClientToolCallPending(callId) });
+  };
   const updateAssistantMessage = createReservedAssistantMessageUpdater({
     db,
     table: "word_chat_messages",
@@ -649,20 +820,30 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     });
     if (nextTitle) chatTitle = nextTitle;
   };
+  // The answer's events once normalized (its Word edits persisted). A stop
+  // seen after that point reuses them with the stop label instead of
+  // persisting the same edits a second time.
+  let normalizedAnswer: {
+    events: unknown[];
+    citations: unknown[];
+  } | null = null;
 
   try {
     write(
       `data: ${JSON.stringify({
         type: "chat_id",
         chatId,
+        turnId: run.id,
         assistantMessageId,
       })}\n\n`,
     );
-    const { events, citations } = await runLLMStream({
+    const { fullText, events, citations } = await runLLMStream({
+      onActivity: run?.touch,
       apiMessages,
       docStore,
       docIndex,
       userId,
+      userEmail,
       db,
       write,
       workflowStore,
@@ -674,7 +855,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         ? {
             clientTools: createWordClientToolsAdapter({
               userId,
-              write,
+              write: writeClientToolFrame,
               signal: stream.signal,
               nonce,
             }),
@@ -689,31 +870,54 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       reasoning: selectedReasoningLevel,
       apiKeys,
       signal: stream.signal,
+      conversationId: persistChat ? chatId : null,
         includeMemory: true,
         memoryProjectId: null,
       nonce,
       emitDone: false,
     });
+    // A stream that returns after the turn was stopped (citation checks, or a
+    // provider or tool that ignored the abort) must not be saved as a
+    // completed answer: the abort handler below stores the stop outcome.
+    throwIfTurnStopped(stream.signal, { fullText, events });
     const persistedEvents = await normalizeAssistantEvents(
       stripTransientAssistantEvents(events),
     );
+    normalizedAnswer = {
+      events: persistedEvents,
+      citations,
+    };
     const saveError = await updateAssistantMessage(
       persistedEvents.length ? persistedEvents : null,
       citations.length ? citations : null,
     );
     await updateChatActivity();
     if (saveError) {
-      console.error("[word-chat] failed to save assistant response", saveError);
+      logAssistantMessageFailure({
+        kind: "chat.message_save_failed",
+        label: "[word-chat] failed to save assistant response",
+        cause: saveError,
+        component: "word-chat",
+      });
+      // A turn stopped while the save was pending ends as stopped, not as a
+      // save failure (the stop path saves it again).
+      throwIfTurnStopped(stream.signal, { fullText, events });
       write(
         `data: ${JSON.stringify({
           type: "error",
           message:
             "The response was generated but could not be saved. Keep this document open and review its tracked changes in Word.",
+          reporting_owner: BACKEND_REPORTING_OWNER,
+          ...(requestId ? { request_id: requestId } : {}),
         })}\n\n`,
       );
       write("data: [DONE]\n\n");
       return;
     }
+    // The answer is saved, but the turn may have been stopped while it was
+    // being saved. A stop seen here still ends it as stopped: no memory
+    // consolidation, and the stored answer gets the stop label.
+    throwIfTurnStopped(stream.signal, { fullText, events });
       // Local Word chats deliberately have no durable transcript. Only a cloud
       // turn can be curated later, once its reserved assistant row is complete.
       if (
@@ -775,31 +979,57 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
           surface: "word",
           title: chatTitle ?? activeDocumentName ?? null,
           model: selectedModel,
-          status: "cancelled",
+          status: stoppedTurnAuditStatus(run?.stopReason),
         },
         null,
       );
       if (error instanceof AssistantStreamError) {
-        const partial = buildCancelledAssistantMessage({
-          fullText: error.fullText,
-          events: error.events,
-          buildCitations: (fullText) =>
-            extractCitations(fullText, docIndex, docStore),
-        });
-        const partialEvents = await normalizeAssistantEvents(partial.events);
+        // Reuse persisted edit references; normalizing the raw answer again
+        // would write its Word edits a second time.
+        const partial = normalizedAnswer
+          ? {
+              events: [
+                ...normalizedAnswer.events,
+                buildStoppedAssistantEvent(run?.stopReason),
+              ],
+              citations: normalizedAnswer.citations,
+            }
+          : buildStoppedAssistantMessage({
+              stopReason: run?.stopReason,
+              fullText: error.fullText,
+              events: error.events,
+              buildCitations: (fullText) =>
+                extractCitations(fullText, docIndex, docStore),
+            });
+        const partialEvents = normalizedAnswer
+          ? partial.events
+          : await normalizeAssistantEvents(partial.events);
         const saveError = await updateAssistantMessage(
           partialEvents.length ? partialEvents : null,
           partial.citations.length ? partial.citations : null,
         );
         if (saveError) {
-          console.error("[word-chat] failed to save aborted stream", saveError);
+          logAssistantMessageFailure({
+            kind: "chat.message_save_failed",
+            label: "[word-chat] failed to save aborted stream",
+            cause: saveError,
+            component: "word-chat",
+          });
         }
       }
       await updateChatActivity();
+      // Readers still attached (Stop came from another pane, or this one is
+      // only watching) learn the outcome the way a reopen would.
+      write(stopOutcomeFrame(run));
+      write("data: [DONE]\n\n");
       return;
     }
+    if (!isReported(error)) {
+        reportError(error, { tags: { operation: "word_chat.turn", stage: "chat-stream" } });
+    }
     console.error("[word-chat] stream error", error);
-    const message = ASSISTANT_ERROR_MESSAGE;
+    const errorPayload = assistantStreamErrorPayload(error, requestId);
+    const message = errorPayload.message;
     const errorEvents =
       error instanceof AssistantStreamError
         ? stripTransientAssistantEvents(error.events)
@@ -814,13 +1044,25 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         citations.length ? citations : null,
       );
       if (saveError) {
-        console.error("[word-chat] failed to save stream error", saveError);
+        logAssistantMessageFailure({
+          kind: "chat.message_save_failed",
+          label: "[word-chat] failed to save stream error",
+          cause: saveError,
+          component: "word-chat",
+        });
       }
     } catch (saveError) {
-      console.error("[word-chat] failed to persist stream error", saveError);
+      logAssistantMessageFailure({
+        kind: "chat.message_save_failed",
+        label: "[word-chat] failed to persist stream error",
+        cause: saveError,
+        component: "word-chat",
+      });
     }
     try {
-      write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
+      write(
+        `data: ${JSON.stringify({ type: "error", ...errorPayload })}\n\n`,
+      );
       write("data: [DONE]\n\n");
     } catch {
       // The client disconnected while the error was being handled.

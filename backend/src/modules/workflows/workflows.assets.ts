@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { captureInlineDocumentCleanup, completeInlineDocumentCleanup, createDocumentVersion, copyDocumentVersionFiles } from "../documents/documents.service";
 
 // workflows assets — implementation behind the module facade.
@@ -10,9 +11,10 @@ import { captureInlineDocumentCleanup, completeInlineDocumentCleanup, createDocu
 // onto HTTP status codes and response bodies.
 import { randomUUID } from "node:crypto";
 import { type Db } from "../../lib/supabase";
-import { ensureDocAccess } from "../../lib/access";
+import { createDocumentAccessChecker } from "../../lib/access";
+import { findDocumentsOutsideWorkspace } from "../../lib/documentWorkspace";
 import { convertedPdfKey } from "../../lib/convert";
-import { copyFile, storageKey } from "../../lib/storage";
+import { storageKey } from "../../lib/storage";
 import { enqueueStorageCleanup } from "../../lib/dbq/enqueue";
 import { attachActiveVersionPaths, attachLatestVersionNumbers } from "../../lib/documentVersions";
 import { resolveWorkflowAccess, assetsUnsupported } from "./workflows.access";
@@ -32,6 +34,7 @@ export type WorkflowAssetFailure =
   | { ok: false; kind: "tabular_unsupported" }
   | { ok: false; kind: "asset_not_found" }
   | { ok: false; kind: "documents_not_found" }
+  | { ok: false; kind: "documents_workspace_mismatch" }
   | { ok: false; kind: "documents_not_ready" }
   | { ok: false; kind: "db_error"; error: unknown };
 
@@ -108,7 +111,15 @@ export async function copyDocumentsToWorkflowAssets(
 
   const { data: sourceDocuments, error: documentsError } = await db
     .from("documents")
-    .select("id, user_id, project_id, workflow_id, current_version_id")
+    // org_id and workflow_id are part of the VERDICT, not decoration:
+    // ensureDocAccess falls through project -> workflow -> org, so a
+    // document selected without them looks container-less and is refused.
+    // Omitting org_id made every organization-library file unattachable —
+    // "One or more files could not be found" for a file the caller is
+    // looking straight at.
+    .select(
+      "id, user_id, project_id, org_id, workflow_id, current_version_id",
+    )
     .in("id", documentIds);
   if (documentsError) {
     return { ok: false, kind: "db_error", error: documentsError };
@@ -119,13 +130,26 @@ export async function copyDocumentsToWorkflowAssets(
 
   // Edit rights on the workflow never stand in for access to the files being
   // copied: each source document is checked on its own.
-  const accessResults = await Promise.all(
-    sourceDocuments.map((document) =>
-      ensureDocAccess(document, userId, userEmail, db),
-    ),
+  const check = createDocumentAccessChecker(userId, userEmail, db);
+  const accessResults = await mapWithConcurrency(
+    sourceDocuments, 5, document => check(document),
   );
   if (accessResults.some((result) => !result.ok)) {
     return { ok: false, kind: "documents_not_found" };
+  }
+
+  // A workflow's files come from its own workspace.
+  try {
+    const outside = await findDocumentsOutsideWorkspace(
+      db,
+      documentIds,
+      access.workflow.org_id ?? null,
+    );
+    if (outside.length > 0) {
+      return { ok: false, kind: "documents_workspace_mismatch" };
+    }
+  } catch (error) {
+    return { ok: false, kind: "db_error", error };
   }
 
   const versionIds = sourceDocuments.flatMap((document) =>
@@ -137,7 +161,7 @@ export async function copyDocumentsToWorkflowAssets(
   const { data: sourceVersions, error: versionsError } = await db
     .from("document_versions")
     .select(
-      "id, document_id, storage_path, pdf_storage_path, filename, file_type, size_bytes, page_count, content_sha256",
+      "id, document_id, storage_path, pdf_storage_path, filename, file_type, size_bytes, page_count, textless_page_count, content_sha256",
     )
     .in("id", versionIds)
     .is("deleted_at", null);
@@ -226,6 +250,7 @@ export async function copyDocumentsToWorkflowAssets(
           file_type: plan.sourceVersion.file_type,
           size_bytes: plan.sourceVersion.size_bytes,
           page_count: plan.sourceVersion.page_count,
+          textless_page_count: plan.sourceVersion.textless_page_count,
           content_sha256: plan.sourceVersion.content_sha256,
         });
       if (error) throw error;

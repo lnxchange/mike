@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  diagnosticErrorTags,
+  diagnosticEvent,
+} from "../observability/sentryPrivacy";
+import {
   uploadConversionTimeoutMs,
   uploadJobWallClockMs,
   uploadProcessingConfiguration,
+  storagePublicEndpointWarnings,
   uploadSessionRateLimitConfiguration,
   validateRuntimeConfiguration,
 } from "../runtimeConfig";
@@ -31,13 +36,107 @@ describe("runtime authentication configuration", () => {
     ).toThrow(/FRONTEND_URL must use https in production/);
   });
 
+  // MIKE-BACKEND-2: the backend image defaults NODE_ENV=production, so a bare
+  // `docker run` with no public URLs dies here. The message must name the
+  // variables AND the switch a local run actually needs.
+  it("tells a local run of the production image how to proceed", () => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        FRONTEND_URL: undefined,
+        API_PUBLIC_URL: undefined,
+      }),
+    ).toThrow(
+      /FRONTEND_URL is required in production\n- API_PUBLIC_URL is required in production\n\n.*set NODE_ENV=development/s,
+    );
+  });
+
+  it("does not suggest NODE_ENV when only non-production settings are wrong", () => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        SUPABASE_SECRET_KEY: undefined,
+      }),
+    ).toThrow(/^(?![\s\S]*NODE_ENV)[\s\S]*SUPABASE_SECRET_KEY is required$/);
+  });
+
+  it("does not weaken the https rule for production URLs", () => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        FRONTEND_URL: "http://localhost:3000",
+        API_PUBLIC_URL: "http://localhost:3000/api",
+      }),
+    ).toThrow(/FRONTEND_URL must use https in production/);
+  });
+
+  it("accepts local http URLs outside production", () => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        NODE_ENV: "development",
+        FRONTEND_URL: "http://localhost:3000",
+        API_PUBLIC_URL: "http://localhost:3000/api",
+      }),
+    ).not.toThrow();
+  });
+
   it("requires a handoff encryption secret when Word auth is enabled", () => {
     expect(() =>
       validateRuntimeConfiguration({
         ...validProduction,
         WORD_ADDIN_URL: "https://word.example.test",
       }),
-    ).toThrow(/AUTH_HANDOFF_ENCRYPTION_SECRET is required/);
+    ).toThrow(/AUTH_HANDOFF_ENCRYPTION_SECRET/);
+  });
+
+  it("rejects the .env.example placeholder download and key-encryption secrets", () => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        DOWNLOAD_SIGNING_SECRET: "replace-with-a-random-32-byte-hex-string",
+        USER_API_KEYS_ENCRYPTION_SECRET: "your-long-random-secret",
+      }),
+    ).toThrow(/DOWNLOAD_SIGNING_SECRET[\s\S]*USER_API_KEYS_ENCRYPTION_SECRET/s);
+  });
+
+  it("rejects real secrets that are too short to be meaningful", () => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        DOWNLOAD_SIGNING_SECRET: "too-short",
+        USER_API_KEYS_ENCRYPTION_SECRET: "also-short",
+      }),
+    ).toThrow(/DOWNLOAD_SIGNING_SECRET[\s\S]*USER_API_KEYS_ENCRYPTION_SECRET/s);
+  });
+
+  describe.each([
+    "DOWNLOAD_SIGNING_SECRET",
+    "USER_API_KEYS_ENCRYPTION_SECRET",
+  ])("%s", (name) => {
+    it.each([" ", "\t\r\n", " ".repeat(32)])(
+      "rejects a whitespace-only value %j",
+      (value) => {
+        expect(() =>
+          validateRuntimeConfiguration({ ...validProduction, [name]: value }),
+        ).toThrow(`${name} must contain at least 32 characters`);
+      },
+    );
+
+    it.each([undefined, ""])("allows an absent or empty value %j", (value) => {
+      expect(() =>
+        validateRuntimeConfiguration({ ...validProduction, [name]: value }),
+      ).not.toThrow();
+    });
+
+    it("accepts a value at the minimum length", () => {
+      expect(() =>
+        validateRuntimeConfiguration({
+          ...validProduction,
+          [name]: "a".repeat(32),
+        }),
+      ).not.toThrow();
+    });
   });
 
   it("accepts the legacy anon key name for the user-session client", () => {
@@ -151,9 +250,9 @@ describe("upload worker deadlines", () => {
     expect(uploadJobWallClockMs({ UPLOAD_JOB_WALL_CLOCK_MS: "1" })).toBe(
       60_000,
     );
-    expect(uploadJobWallClockMs({ UPLOAD_JOB_WALL_CLOCK_MS: "9999999999" })).toBe(
-      3_600_000,
-    );
+    expect(
+      uploadJobWallClockMs({ UPLOAD_JOB_WALL_CLOCK_MS: "9999999999" }),
+    ).toBe(3_600_000);
   });
 
   it("falls back to the defaults for unparseable values", () => {
@@ -163,5 +262,56 @@ describe("upload worker deadlines", () => {
     expect(uploadJobWallClockMs({ UPLOAD_JOB_WALL_CLOCK_MS: "-5" })).toBe(
       900_000,
     );
+  });
+});
+
+it("identifies invalid configuration fields without sending their values", () => {
+  let failure: unknown;
+  try {
+    validateRuntimeConfiguration({
+      NODE_ENV: "production",
+      SUPABASE_URL: "PRIVATE_URL",
+      SUPABASE_SECRET_KEY: "PRIVATE_KEY",
+    });
+  } catch (error) {
+    failure = error;
+  }
+  const event = diagnosticEvent({ tags: diagnosticErrorTags(failure) });
+  expect(event.tags).toEqual({
+    failure_code: "configuration_invalid",
+    configuration_fields:
+      "API_PUBLIC_URL,FRONTEND_URL,SUPABASE_PUBLISHABLE_KEY,SUPABASE_URL",
+  });
+  expect(JSON.stringify(event)).not.toContain("PRIVATE");
+});
+
+// MIKE-FRONTEND-28/3D/2Z: the compose default R2_PUBLIC_ENDPOINT_URL
+// (http://localhost:9000) on an install opened from a real host made every
+// browser upload fail with "Failed to fetch" and nothing at boot said why.
+describe("storagePublicEndpointWarnings", () => {
+  const at = (frontend: string, publicEndpoint: string, internal = "http://storage:9000") =>
+    storagePublicEndpointWarnings({
+      FRONTEND_URL: frontend,
+      R2_PUBLIC_ENDPOINT_URL: publicEndpoint,
+      R2_ENDPOINT_URL: internal,
+    } as NodeJS.ProcessEnv);
+
+  it.each([
+    ["https://mike.firm.example", "http://localhost:9000", /loopback/],
+    ["http://192.168.1.20:3000", "http://127.0.0.1:9000", /loopback/],
+    ["https://mike.firm.example", "", /internal service name/],
+    ["https://mike.firm.example", "http://storage.firm.example:9000", /mixed content/],
+  ])("warns for FRONTEND_URL %s with public storage %s", (frontend, endpoint, reason) => {
+    const warnings = at(frontend, endpoint);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(reason);
+  });
+
+  it.each([
+    ["http://localhost:3000", "http://localhost:9000"],
+    ["https://mike.firm.example", "https://storage.firm.example"],
+    ["https://mike.firm.example", "https://mike.firm.example"],
+  ])("is quiet for FRONTEND_URL %s with public storage %s", (frontend, endpoint) => {
+    expect(at(frontend, endpoint)).toEqual([]);
   });
 });

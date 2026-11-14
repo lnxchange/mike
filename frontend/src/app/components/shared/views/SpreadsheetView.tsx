@@ -6,15 +6,45 @@ import LuckyExcel, { type LuckyExcelSheet } from "luckyexcel";
 import type { WorkbookInstance } from "@fortune-sheet/react";
 import type { Cell, Sheet } from "@fortune-sheet/core";
 import "@fortune-sheet/react/dist/index.css";
-import { useFetchSingleDoc } from "@/app/hooks/useFetchSingleDoc";
+import { useFetchDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { normalizeSpreadsheetImages } from "@/app/lib/spreadsheetImages";
 import {
     SpreadsheetWorkbook,
     type SpreadsheetSession,
 } from "./SpreadsheetWorkbook";
+import { viewRoundingClass, type ViewRounding } from "./viewRounding";
 
 type HighlightRange = { row: [number, number]; column: [number, number] };
 type WorkbookComponent = typeof import("@fortune-sheet/react").Workbook;
+
+const PREVIEW_TIMEOUT_MS = 30_000;
+// BIFF8 .xls and encrypted OOXML use an OLE container, not the ZIP package
+// LuckyExcel understands. Renaming the File to .xlsx cannot convert its bytes.
+const OLE_SIGNATURE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+// Every .xlsx/.xlsm is a ZIP package whose first record is a local file
+// header ("PK\x03\x04"). Anything else (an HTML or CSV table renamed .xls, an
+// empty or truncated file, an empty ZIP) cannot be a workbook LuckyExcel reads.
+const ZIP_LOCAL_FILE_SIGNATURE = [0x50, 0x4b, 0x03, 0x04];
+
+type PreviewFailure = "unsupported-ole" | "unreadable";
+// `advice` names a download or upload; it is shown only when the host
+// renders those controls (see the `fileActions` prop).
+const PREVIEW_FAILURE_COPY: Record<PreviewFailure, { reason: string; advice: string }> = {
+    "unsupported-ole": {
+        reason: "Legacy or encrypted Excel files cannot be previewed here.",
+        advice: "For preview, save an unencrypted .xlsx copy and upload it.",
+    },
+    unreadable: {
+        reason: "This spreadsheet could not be displayed.",
+        advice: "Download the original, or try saving a new .xlsx copy.",
+    },
+};
+
+function startsWith(bytes: ArrayBuffer, signature: readonly number[]): boolean {
+    if (bytes.byteLength < signature.length) return false;
+    const header = new Uint8Array(bytes, 0, signature.length);
+    return signature.every((value, index) => header[index] === value);
+}
 
 /** A cell locator to highlight, e.g. { sheet: "Q3 Budget", cell: "B7" }. */
 export type HighlightCell = { sheet?: string; cell?: string };
@@ -26,8 +56,14 @@ interface Props {
     refetchKey?: number | string;
     /** Cell(s) to select/scroll to (from a spreadsheet citation). */
     highlightCells?: HighlightCell[];
-    rounded?: boolean;
+    rounded?: ViewRounding;
     active?: boolean;
+    /**
+     * Whether the surrounding UI lets the user download or re-upload this
+     * file. When false, a failed preview states the reason without advising
+     * a download or upload the host cannot offer.
+     */
+    fileActions?: boolean;
 }
 
 /** "B" -> 1, "AA" -> 26 (0-based column index). */
@@ -235,15 +271,29 @@ function tintHeaderCell(
 
 /**
  * Renders an Excel workbook as a read-only grid using Fortune-sheet. It fetches
- * the document's raw `.xlsx`/`.xlsm`/`.xls` bytes itself (via /display) and
- * converts them to Fortune-sheet data with Luckyexcel, preserving the original
- * styling (fills, fonts, borders, merges).
+ * the document's raw bytes itself (via /file) and converts OOXML workbooks to
+ * Fortune-sheet data with Luckyexcel, preserving styling (fills, fonts,
+ * borders, merges). Legacy/encrypted OLE workbooks remain downloadable but
+ * cannot be previewed by this parser.
  *
  * Spreadsheet citations are highlighted by cell: `highlightCells` activates the
  * cited sheet tab and scrolls the A1 address/range into view, where a canvas
  * hook paints the highlight.
  */
-export function SpreadsheetView({
+export function SpreadsheetView(props: Props) {
+    // The byte-fetch hook retains its previous bytes while a replacement
+    // loads. A new source must start with fresh fetch/parser/session state,
+    // rather than display or settle the old source under a new version label.
+    const sourceKey = JSON.stringify([
+        props.documentId,
+        props.versionId ?? null,
+        props.displayUrl ?? null,
+        props.refetchKey ?? null,
+    ]);
+    return <SpreadsheetSourceView key={sourceKey} {...props} />;
+}
+
+function SpreadsheetSourceView({
     documentId,
     versionId,
     displayUrl,
@@ -251,6 +301,7 @@ export function SpreadsheetView({
     highlightCells,
     rounded = true,
     active = true,
+    fileActions = true,
 }: Props) {
     const workbookRef = useRef<WorkbookInstance>(null);
     const [session, setSession] = useState<SpreadsheetSession | null>(null);
@@ -264,15 +315,16 @@ export function SpreadsheetView({
     const [workbookGeneration, setWorkbookGeneration] = useState(0);
     const [WorkbookComponent, setWorkbookComponent] =
         useState<WorkbookComponent | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<PreviewFailure | null>(null);
 
-    // Fetch the raw workbook bytes. For spreadsheets, /display returns the
-    // original .xlsx/.xlsm/.xls bytes rather than a PDF rendition.
-    const { result, error: fetchError } = useFetchSingleDoc(
+    // Fetch the raw workbook bytes from /file, or from the caller's source
+    // URL (workflow add-on assets). Uncached: a replaced version must reload.
+    const { bytes, error: fetchError } = useFetchDocxBytes(
         documentId,
         versionId,
-        displayUrl,
         refetchKey,
+        displayUrl,
+        false,
     );
 
     // Fortune-sheet touches browser-only APIs while loading, so keep the import
@@ -300,40 +352,65 @@ export function SpreadsheetView({
     // Fortune-sheet data while preserving styling (fills, fonts, borders,
     // alignment, column widths).
     useEffect(() => {
-        if (!result) return;
-        if (result.type !== "spreadsheet") {
-            setError("This spreadsheet could not be displayed.");
-            return;
-        }
+        if (!bytes) return;
         let cancelled = false;
+        let settled = false;
         setSheets(null);
         setError(null);
 
+        if (startsWith(bytes, OLE_SIGNATURE)) {
+            setError("unsupported-ole");
+            return;
+        }
+        // LuckyExcel swallows a non-ZIP input's error without calling back,
+        // so without this check the user would wait out the whole deadline.
+        if (!startsWith(bytes, ZIP_LOCAL_FILE_SIGNATURE)) {
+            setError("unreadable");
+            return;
+        }
+
+        // LuckyExcel 1.0.1 logs some asynchronous ZIP errors without invoking
+        // its callback or returning a promise. Bound the pending UI and ignore
+        // any result arriving after timeout or source replacement.
+        const timer = window.setTimeout(fail, PREVIEW_TIMEOUT_MS);
+        function fail() {
+            if (cancelled || settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            setError("unreadable");
+        }
+
         try {
-            const file = new File([result.buffer], "spreadsheet.xlsx");
+            const file = new File([bytes], "spreadsheet.xlsx");
             LuckyExcel.transformExcelToLucky(file, (exportJson) => {
-                if (cancelled) return;
-                if (exportJson?.sheets?.length) {
+                if (cancelled || settled) return;
+                try {
+                    if (!Array.isArray(exportJson?.sheets) || !exportJson.sheets.length) {
+                        fail();
+                        return;
+                    }
                     applyMergeCells(exportJson.sheets);
                     applyExcelTextOverflow(exportJson.sheets);
                     for (const sheet of exportJson.sheets) {
                         sheet.images = normalizeSpreadsheetImages(sheet.images);
                     }
+                    settled = true;
+                    window.clearTimeout(timer);
                     setSheets(exportJson.sheets as unknown as Sheet[]);
                     setWorkbookGeneration((generation) => generation + 1);
-                } else {
-                    setError("This spreadsheet could not be displayed.");
+                } catch {
+                    fail();
                 }
             });
         } catch {
-            if (!cancelled)
-                setError("This spreadsheet could not be displayed.");
+            fail();
         }
 
         return () => {
             cancelled = true;
+            window.clearTimeout(timer);
         };
-    }, [result]);
+    }, [bytes]);
 
     // Draw the citation highlight on the canvas. Stable identity so the Workbook
     // settings never change; it reads the live target from `highlightRef`. We use
@@ -475,7 +552,7 @@ export function SpreadsheetView({
                 const curLeft = sbX.scrollLeft;
                 const curTop = sbY.scrollTop;
                 const viewW = sbX.clientWidth;
-                const viewH = sbY.clientHeight;
+                const viewH = Math.max(24, sbY.clientHeight);
                 const visible =
                     rect.x >= curLeft &&
                     rect.x + rect.w <= curLeft + viewW &&
@@ -505,14 +582,20 @@ export function SpreadsheetView({
         return () => window.clearTimeout(timer);
     }, [active, sheets, highlightCells, highlightKey]);
 
-    const frameClass = `fortune-sheet-viewer relative flex flex-col flex-1 min-h-0 overflow-hidden ${rounded ? "rounded-lg" : ""}`;
+    const frameClass = `fortune-sheet-viewer relative flex flex-col flex-1 min-h-0 overflow-hidden ${viewRoundingClass(rounded)}`;
 
-    const message =
-        error ?? (fetchError ? "Failed to load spreadsheet." : null);
+    const failureCopy = error ? PREVIEW_FAILURE_COPY[error] : null;
+    const message = failureCopy
+        ? fileActions
+            ? `${failureCopy.reason} ${failureCopy.advice}`
+            : failureCopy.reason
+        : fetchError
+          ? "Failed to load spreadsheet."
+          : null;
     if (message) {
         return (
             <div className={frameClass}>
-                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
+                <div role="alert" className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
                     {message}
                 </div>
             </div>
@@ -566,5 +649,3 @@ export function SpreadsheetView({
         </div>
     );
 }
-
-export default SpreadsheetView;

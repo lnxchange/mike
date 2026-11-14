@@ -4,26 +4,23 @@ import {
   nearestReasoningLevelForModel,
   reasoningLevelsForModel,
   type ReasoningLevel,
-} from "@mike/model-toggle-ui";
+} from "@mike/ui";
 import { getOllamaModels, type ApiKeyStatus } from "../../api/mikeApi";
 import {
-  isModelAvailable,
+  MODELS,
+  allRouterModelOptions,
   modelDisplayName,
-  openCodeGoModelOptions,
-  openRouterModelOptions,
-  vercelModelOptions,
-  STATIC_MODELS,
   type ModelOption,
-} from "../../lib/modelCatalog";
+  type RouterSelections,
+} from "@mike/client";
+import { isModelAvailable } from "../../lib/modelCatalog";
 
 export function ModelToggle({
   value,
   onChange,
   keyStatus,
   keyStatusLoading = false,
-  openRouterModels,
-  vercelModels,
-  openCodeGoModels,
+  routerSelections,
   compact = false,
   onNoModelsClick,
   reasoningLevel,
@@ -35,9 +32,8 @@ export function ModelToggle({
   /** True while the key-status preflight is in flight: render a neutral
    *  disabled trigger instead of flashing "No Models". */
   keyStatusLoading?: boolean;
-  openRouterModels: string[];
-  vercelModels: string[];
-  openCodeGoModels: string[];
+  /** Each router's saved Model Selections; null before the profile loads. */
+  routerSelections: RouterSelections | null;
   compact?: boolean;
   onNoModelsClick?: () => void;
   reasoningLevel?: ReasoningLevel;
@@ -51,6 +47,9 @@ export function ModelToggle({
       .then((models) => {
         if (!cancelled) setOllamaModels(models);
       })
+      // Local (Ollama) models are an optional extra: when the host is not
+      // running there is simply no "Local" group, and nothing the user asked
+      // for has failed.
       .catch(() => {});
     return () => {
       cancelled = true;
@@ -58,31 +57,21 @@ export function ModelToggle({
   }, []);
 
   const models = useMemo(() => {
-    const openRouterOptions = openRouterModelOptions(openRouterModels);
-    const vercelOptions = vercelModelOptions(vercelModels);
-    const openCodeGoOptions = openCodeGoModelOptions(openCodeGoModels);
+    const routerOptions = allRouterModelOptions(routerSelections ?? {});
     const localOptions = ollamaModels.map((model) => ({
       ...model,
       label: modelDisplayName(model.id),
       source: "Local",
     }));
     return [
-      ...STATIC_MODELS,
-      ...openRouterOptions,
-      ...vercelOptions,
-      ...openCodeGoOptions,
+      ...MODELS,
+      ...routerOptions,
       ...localOptions,
     ].filter(
       (model) =>
         model.group === "Local" || isModelAvailable(model.id, keyStatus),
     );
-  }, [
-    keyStatus,
-    ollamaModels,
-    openRouterModels,
-    vercelModels,
-    openCodeGoModels,
-  ]);
+  }, [keyStatus, ollamaModels, routerSelections]);
   const selected = models.find((model) => model.id === value);
   const supportedReasoningLevels = reasoningLevelsForModel(value);
   const normalizedReasoningLevel = reasoningLevel

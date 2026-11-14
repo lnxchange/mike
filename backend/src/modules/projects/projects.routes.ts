@@ -9,8 +9,16 @@ import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import { sendInternalError } from "../../lib/httpError";
+import {
+  DOCUMENT_WORKSPACE_MISMATCH_CODE,
+  DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+} from "../../lib/documentWorkspace";
 import { parsePaginationQuery } from "../../lib/pagination";
 import { normalizeSearchTerm } from "../../lib/search";
+import {
+  resolveWorkspaceFilter,
+  sendWorkspaceFailure,
+} from "../../lib/workspace";
 import { parseProjectSort } from "../../lib/sort";
 import { parseProjectScope } from "./projects.overview";
 import {
@@ -49,14 +57,15 @@ export const projectsRouter = Router();
 // same response. The directory pickers (useDirectoryData) previously fanned
 // out one GET /projects/:id per project to obtain those documents; with N
 // projects that burst — auth check plus several DB queries per request —
-// could overwhelm the Supabase gateway. Batching keeps it at one request
-// and a fixed number of queries regardless of project count.
+// could overwhelm the Supabase gateway. Child and metadata queries remain
+// bounded internally, including for legacy callers requesting the full list.
 //
 // Pagination is opt-in via query params (limit/offset/search/sort_key or
 // key/scope). ProjectsOverview.tsx sends them. Legacy tabular-review project
 // pickers call this with no query params and must keep getting the full,
 // unpaginated list, so the branch below must never default
-// to paginating a request that didn't ask for it.
+// to paginating a request that didn't ask for it. `include=documents` selects
+// response fields, not pagination; older clients do not fetch another page.
 const PROJECT_PAGINATION_QUERY_KEYS = [
   "limit",
   "offset",
@@ -68,6 +77,7 @@ const PROJECT_PAGINATION_QUERY_KEYS = [
   "scope",
   "practice",
   "owner_user_id",
+  "workspace",
 ];
 
 projectsRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
@@ -82,34 +92,61 @@ projectsRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
   if (req.query.view === "directory-search") {
     const searchTerm = normalizeSearchTerm(req.query.search);
     if (!searchTerm) return void res.json([]);
+    const workspace = await resolveWorkspaceFilter(
+      db,
+      userId,
+      req.query.workspace,
+    );
+    if (!workspace.ok) return void sendWorkspaceFailure(res, workspace);
     const result = await searchProjectDirectory(db, {
       userId,
       userEmail,
       searchTerm,
       pagination: parsePaginationQuery(req.query as Record<string, unknown>),
+      workspace: workspace.workspace,
     });
     if (!result.ok) return void sendInternalError(res, result.error);
     return void res.json(result.data);
   }
 
   if (req.query.view === "summary") {
+    const workspace = await resolveWorkspaceFilter(
+      db,
+      userId,
+      req.query.workspace,
+    );
+    if (!workspace.ok) return void sendWorkspaceFailure(res, workspace);
     const result = await getProjectSummaries(db, {
       userId,
       userEmail,
       pagination: parsePaginationQuery(req.query as Record<string, unknown>),
+      workspace: workspace.workspace,
     });
     if (!result.ok) return void sendInternalError(res, result.error);
     return void res.json(result.data);
   }
 
+  const participatingOnly = req.query.participating === "true";
+  // The IDE picker has no pagination UI. Workspace alone must not truncate
+  // its list before the participation filter is applied.
   const hasPaginationParams = PROJECT_PAGINATION_QUERY_KEYS.some(
-    (key) => req.query[key] !== undefined,
+    (key) => req.query[key] !== undefined && !(participatingOnly && key === "workspace"),
   );
+  const workspace = await resolveWorkspaceFilter(
+    db,
+    userId,
+    req.query.workspace,
+  );
+  if (!workspace.ok) return void sendWorkspaceFailure(res, workspace);
 
   const result = await getProjectsOverview(db, {
     userId,
     userEmail,
     includeDocuments,
+    // The IDE picker lists participation; organization administration and
+    // audited private access do not make someone a project participant.
+    participatingOnly,
+    workspace: workspace.workspace,
     filters: hasPaginationParams
       ? {
           scope: parseProjectScope(req.query.scope),
@@ -120,6 +157,7 @@ projectsRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
           sort: parseProjectSort(req.query as Record<string, unknown>),
           practice: normalizeSearchTerm(req.query.practice),
           ownerUserId: normalizeSearchTerm(req.query.owner_user_id),
+          workspace: workspace.workspace,
         }
       : undefined,
   });
@@ -139,13 +177,15 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       detail:
         "shared_with is no longer supported; use the project access endpoints.",
     });
-  const { name, cm_number, practice, org_id, memory_enabled } = req.body as {
-    name: string;
-    cm_number?: string;
-    practice?: string;
-    org_id?: string | null;
-    memory_enabled?: boolean;
-  };
+  const { name, cm_number, practice, org_id, visibility, memory_enabled } =
+    req.body as {
+      name: string;
+      cm_number?: string;
+      practice?: string;
+      org_id?: string | null;
+      visibility?: unknown;
+      memory_enabled?: boolean;
+    };
   const db = createServerSupabase();
 
   const result = await createProject(db, {
@@ -154,6 +194,7 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     cm_number,
     practice,
     org_id,
+    visibility,
     memory_enabled,
   });
   if (!result.ok) {
@@ -193,8 +234,18 @@ projectsRouter.get("/filter-options", requireAuth, asyncRoute(async (req, res) =
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const db = createServerSupabase();
+  const workspace = await resolveWorkspaceFilter(
+    db,
+    userId,
+    req.query.workspace,
+  );
+  if (!workspace.ok) return void sendWorkspaceFailure(res, workspace);
 
-  const result = await getProjectFilterOptions(db, { userId, userEmail });
+  const result = await getProjectFilterOptions(db, {
+    userId,
+    userEmail,
+    workspace: workspace.workspace,
+  });
   if (!result.ok) return void sendInternalError(res, result.error);
   res.json(result.body);
 }));
@@ -207,6 +258,12 @@ projectsRouter.get("/ids", requireAuth, asyncRoute(async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const db = createServerSupabase();
+  const workspace = await resolveWorkspaceFilter(
+    db,
+    userId,
+    req.query.workspace,
+  );
+  if (!workspace.ok) return void sendWorkspaceFailure(res, workspace);
 
   const result = await listProjectIds(db, {
     userId,
@@ -215,6 +272,7 @@ projectsRouter.get("/ids", requireAuth, asyncRoute(async (req, res) => {
     searchTerm: normalizeSearchTerm(req.query.search),
     practice: normalizeSearchTerm(req.query.practice),
     ownerUserId: normalizeSearchTerm(req.query.owner_user_id),
+    workspace: workspace.workspace,
   });
   if (!result.ok) return void sendInternalError(res, result.error);
   res.json(result.ids);
@@ -356,6 +414,8 @@ projectsRouter.patch("/:projectId", requireAuth, asyncRoute(async (req, res) => 
   if (!result.ok) {
     if (result.kind === "forbidden")
       return void res.status(403).json({ detail: result.detail });
+    if (result.kind === "validation")
+      return void res.status(400).json({ detail: result.detail });
     if (result.kind === "db_error")
       return void sendInternalError(res, result.error);
     return void res.status(404).json({ detail: "Project not found" });
@@ -455,8 +515,17 @@ projectsRouter.post(
       switch (result.kind) {
         case "forbidden":
           return void res.status(404).json({ detail: "Project not found" });
+        // Seeing the project but not being allowed to organize it is a
+        // refusal, not a missing matter.
+        case "role_forbidden":
+          return void res.status(403).json({ detail: result.detail });
         case "doc_not_found":
           return void res.status(404).json({ detail: "Document not found" });
+        case "workspace_mismatch":
+          return void res.status(400).json({
+            code: DOCUMENT_WORKSPACE_MISMATCH_CODE,
+            detail: DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+          });
         case "no_active_version":
           return void res
             .status(404)
@@ -466,6 +535,7 @@ projectsRouter.post(
             .status(500)
             .json({ detail: "Failed to update document" });
         case "read_failed":
+          if (result.error) return void sendInternalError(res, result.error);
           return void res
             .status(500)
             .json({ detail: "Failed to read source document bytes" });
@@ -496,6 +566,8 @@ projectsRouter.patch("/:projectId/documents/:documentId", requireAuth, asyncRout
     filename: req.body?.filename,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "doc_not_found")
@@ -553,6 +625,8 @@ projectsRouter.post(
     if (!result.ok) {
       if (result.kind === "invalid_path")
         return void res.status(400).json({ detail: "Invalid folder path" });
+      if (result.kind === "role_forbidden")
+        return void res.status(403).json({ detail: result.detail });
       if (result.kind === "forbidden")
         return void res.status(404).json({ detail: "Project not found" });
       if (result.kind === "parent_not_found")
@@ -571,7 +645,7 @@ projectsRouter.post("/:projectId/folders", requireAuth, asyncRoute(async (req, r
   const userEmail = res.locals.userEmail as string | undefined;
   const { projectId } = req.params;
   const { name, parent_folder_id } = req.body as { name: string; parent_folder_id?: string | null };
-  if (!name?.trim()) return void res.status(400).json({ detail: "name is required" });
+  if (typeof name !== "string" || !name.trim()) return void res.status(400).json({ detail: "name is required" });
 
   const db = createServerSupabase();
   const result = await createProjectFolder(db, {
@@ -582,6 +656,10 @@ projectsRouter.post("/:projectId/folders", requireAuth, asyncRoute(async (req, r
     parent_folder_id,
   });
   if (!result.ok) {
+    if (result.kind === "validation")
+      return void res.status(400).json({ detail: result.detail });
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "parent_not_found")
@@ -607,6 +685,10 @@ projectsRouter.patch("/:projectId/folders/:folderId", requireAuth, asyncRoute(as
     body,
   });
   if (!result.ok) {
+    if (result.kind === "validation")
+      return void res.status(400).json({ detail: result.detail });
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "parent_not_found")
@@ -634,6 +716,8 @@ projectsRouter.delete("/:projectId/folders/:folderId", requireAuth, asyncRoute(a
     userEmail,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "not_found")
@@ -659,6 +743,8 @@ projectsRouter.patch("/:projectId/documents/:documentId/folder", requireAuth, as
     folder_id,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "folder_not_found")

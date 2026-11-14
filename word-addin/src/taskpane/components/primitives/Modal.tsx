@@ -1,10 +1,6 @@
 import React, { type ReactNode } from "react";
-import { ModalUI } from "@mike/modal-ui";
+import { ModalUI, PillButtonUI as PillButton, type PillButtonUITone } from "@mike/ui";
 import { cn } from "../../../shared/lib/utils";
-import {
-  PillButtonUI as PillButton,
-  type PillButtonUITone,
-} from "@mike/pill-button-ui";
 
 interface ModalProps {
   open: boolean;
@@ -73,9 +69,7 @@ export function Modal({
         ) : undefined
       }
     >
-      <div className="flex min-h-0 flex-1 flex-col [&_.overflow-y-auto]:-mx-2 [&_.overflow-y-auto]:px-2">
-        {children}
-      </div>
+      {children}
     </ModalUI>
   );
 }

@@ -12,42 +12,39 @@ import path from "path";
 /** The one-page PDF every upload flow attaches. */
 export const PDF_FIXTURE = path.join(__dirname, "fixtures/test.pdf");
 
-/**
- * The model `selectClaudeModel` picks — the cheapest Anthropic entry in
- * ModelToggle.MODELS.
- */
-export const CLAUDE_MODEL_LABEL = "Claude Sonnet 4.6";
+/** Anthropic model available through the CI provider fixture or a local live key. */
+export const CLAUDE_MODEL_LABEL = "Claude Sonnet 5.5";
 
 /**
- * Select a Claude model in the chat input's ModelToggle.
- *
- * The specs that call this run only when ANTHROPIC_API_KEY is set in the
- * Playwright environment (test.skip(!hasLlmKey, ...) — e2e/llm.ts). The CI stack
- * exports the same secret to the backend, whose key resolution (modules/user/user.apiKeyStore.ts
- * envApiKey()) falls back to the ANTHROPIC_API_KEY env var, so the "claude"
- * provider reports as configured and ModelToggle shows the Anthropic models as
- * available. The default model, however, is "gemini-3-flash-preview"
- * (ModelToggle.DEFAULT_MODEL_ID), for which no key is configured in CI;
- * ChatInput.handleSubmit then refuses to send. So every LLM spec has to switch
- * the model first.
- *
- * ModelToggle renders a Radix DropdownMenu: the trigger is a button whose title
- * is "Choose model" (current model available) or "API key missing for selected
- * model" (current model not available — the default-Gemini case).
+ * Select a Claude model in the chat input's ModelToggle. ModelToggle exposes a
+ * stable "Choose model" accessible name; its tooltip includes the selection even
+ * in compact, icon-only project composers.
  */
 export async function selectClaudeModel(page: Page) {
-    const trigger = page
-        .locator(
-            'button[title="Choose model"], button[title="API key missing for selected model"]',
-        )
-        .first();
-    await expect(trigger).toBeVisible({ timeout: 10_000 });
+    const trigger = page.getByRole("button", { name: "Choose model", exact: true });
+    // Cold hydration under the 4x CPU stress profile can outlast 10 seconds
+    // before the authenticated composer mounts, even after route warmup.
+    await expect(trigger).toBeVisible({
+        timeout: process.env.REACT_STRESS === "1" ? 30_000 : 10_000,
+    });
     await trigger.click();
     await page.getByRole("menuitem", { name: CLAUDE_MODEL_LABEL }).click();
-    // After selection the trigger label reflects the chosen model.
-    await expect(
-        page.getByRole("button", { name: CLAUDE_MODEL_LABEL }),
-    ).toBeVisible({ timeout: 5_000 });
+    await expect(trigger).toHaveAttribute("title", `Choose model — ${CLAUDE_MODEL_LABEL}`, {
+        timeout: 5_000,
+    });
+}
+
+/** Check the completed answer, then fetch it again through a fresh page load. */
+export async function expectSavedAnswer(page: Page, expectedText: string) {
+    const answer = page.locator("div.prose.font-serif.text-gray-900").first();
+    await expect(answer).toContainText(expectedText, { timeout: 60_000 });
+    // Completion occurs after the backend saves the turn and settles its title.
+    await expect(page.getByRole("button", { name: "Stop response", exact: true })).toBeHidden({
+        timeout: 60_000,
+    });
+    const completedText = await answer.innerText();
+    await page.reload();
+    await expect(answer).toHaveText(completedText, { timeout: 20_000 });
 }
 
 /**
@@ -61,11 +58,23 @@ export async function createProject(
     projectName: string,
     filePath?: string,
 ) {
-    /* Creation is a navigation + modal wizard + (optionally) a file upload; the
-       per-test `{ timeout }` option passed to test() is silently ignored by
-       Playwright (that object only accepts tag/annotation), so raise the budget
-       here, where the slow work happens, for every caller. */
-    test.setTimeout(60_000);
+    /* Creation is a navigation + a three-step wizard + (optionally) a file
+       upload; the per-test `{ timeout }` option passed to test() is silently
+       ignored by Playwright (that object only accepts tag/annotation), so
+       raise the budget here, where the slow work happens.
+
+       Only ever raise it: callers such as critical-path already set a larger
+       budget for a flow that continues into a live LLM turn, and lowering it
+       here would cut that flow short. `timeout: 0` means "no timeout" and is
+       left alone. `test.info()` throws outside a running test, and this
+       helper's whole point is being callable from anywhere. */
+    const budget = filePath ? 90_000 : 60_000;
+    try {
+        const current = test.info().timeout;
+        if (current !== 0 && current < budget) test.setTimeout(budget);
+    } catch {
+        // Not inside a test: the caller owns its own timeout.
+    }
 
     await page.goto("/projects");
     await expect(page).toHaveURL(/\/projects/, { timeout: 10_000 });

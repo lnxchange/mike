@@ -1,11 +1,10 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import type { ReactNode } from "react";
+import { useEffect, useId, type ReactNode } from "react";
 import { Trash2 } from "lucide-react";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI, CloseButton, LIQUID_GLASS_FLOAT_CLASS } from "@mike/ui";
 import { cn } from "@/app/lib/utils";
-import { LIQUID_GLASS_FLOAT_CLASS } from "@/shared/ui/LiquidGlassUI";
 
 type ConfirmStatus = "idle" | "loading" | "complete";
 
@@ -36,6 +35,38 @@ export function ConfirmPopup({
   confirmDisabled = false,
   className,
 }: ConfirmPopupProps) {
+  const titleId = useId();
+
+  /**
+   * Escape cancels.
+   *
+   * This popup asks a question and takes the keyboard's attention while it is
+   * up, but it answered only to the mouse: there was no way to decline it
+   * without finding and clicking Cancel, which is the one thing every other
+   * dismissable surface in the app does with Escape. It is also announced as
+   * a dialog now — a bare `div` gave screen readers a heading and two buttons
+   * that appeared from nowhere, with nothing saying they belong together or
+   * that an answer is being asked for.
+   *
+   * The key is claimed in the capture phase and stopped there. This popup is
+   * routinely opened over a `ModalUI`, which closes itself on Escape from a
+   * `window` listener in the bubble phase; without stopping propagation one
+   * press answered both, so declining a delete confirmation also threw away
+   * the settings modal underneath it along with any unsaved rename. The
+   * topmost layer consumes the key, and the next press reaches the modal.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      onCancel();
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [open, onCancel]);
+
   if (!open) return null;
   const confirmBusy = confirmStatus === "loading";
   const resolvedConfirmDisabled = confirmDisabled || confirmStatus !== "idle";
@@ -54,16 +85,27 @@ export function ConfirmPopup({
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-5 z-[230] flex justify-center px-4">
       <div
+        role="dialog"
+        aria-labelledby={title ? titleId : undefined}
+        aria-label={title ? undefined : "Confirm action"}
         className={cn(
-          `pointer-events-auto w-[min(92vw,520px)] rounded-2xl px-4 py-3 text-sm ${LIQUID_GLASS_FLOAT_CLASS} backdrop-blur-2xl`,
+          `pointer-events-auto relative w-[min(92vw,520px)] rounded-2xl p-2.5 pl-3 text-sm ${LIQUID_GLASS_FLOAT_CLASS}`,
           className,
         )}
       >
+        <CloseButton
+          onClick={onCancel}
+          label="Close confirmation"
+          size="sm"
+          className="absolute right-2.5 top-2.5"
+        />
         {title && (
-          <div className="text-sm font-medium text-gray-950 mb-3">{title}</div>
+          <div id={titleId} className="pr-4 text-sm font-medium text-gray-950 mb-3">
+            {title}
+          </div>
         )}
         {message && (
-          <div className={cn("text-xs text-gray-700", title && "mt-1")}>
+          <div className={cn("pr-4 text-xs text-gray-700", title && "mt-1")}>
             {message}
           </div>
         )}

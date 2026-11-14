@@ -1,18 +1,20 @@
 import { createRef } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import {
-    uploadProjectDocument,
     uploadProjectDocuments,
     uploadStandaloneDocuments,
 } from "@/app/lib/mikeApi";
+import type { Document } from "@/app/components/shared/types";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
+import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import { AddDocumentsModal } from "../modals/AddDocumentsModal";
+import { PlaybookPickerModal } from "../playbooks/PlaybookPickerModal";
 
 vi.mock("@/app/lib/mikeApi", () => ({
     listWorkflows: vi.fn(async () => []),
-    uploadProjectDocument: vi.fn(),
     uploadStandaloneDocument: vi.fn(),
     uploadProjectDocuments: vi.fn(),
     uploadStandaloneDocuments: vi.fn(),
@@ -35,16 +37,16 @@ vi.mock("./ModelToggle", async (importOriginal) => ({
     ModelToggle: () => null,
 }));
 
-vi.mock("./AddDocButton", () => ({
-    AddDocButton: () => <button aria-label="Add documents" />,
-}));
 vi.mock("./UploadOverlay", () => ({ UploadOverlay: () => null }));
 vi.mock("../shared/FileTypeIcon", () => ({ FileTypeIcon: () => null }));
 vi.mock("../modals/AddDocumentsModal", () => ({
     AddDocumentsModal: vi.fn(() => null),
 }));
 vi.mock("./AssistantWorkflowModal", () => ({
-    AssistantWorkflowModal: () => null,
+    AssistantWorkflowModal: vi.fn(() => null),
+}));
+vi.mock("../playbooks/PlaybookPickerModal", () => ({
+    PlaybookPickerModal: vi.fn(() => null),
 }));
 vi.mock("../popups/ApiKeyMissingPopup", () => ({
     ApiKeyMissingPopup: () => null,
@@ -53,6 +55,7 @@ vi.mock("../popups/ApiKeyMissingPopup", () => ({
 class ResizeObserverMock {
     observe() {}
     disconnect() {}
+    unobserve() {}
 }
 
 function mockProfile() {
@@ -68,7 +71,7 @@ function mockProfile() {
     } as unknown as ReturnType<typeof useUserProfile>);
 }
 
-function renderInput(canSend: boolean, onSubmit = vi.fn()) {
+function renderInput(canSend: boolean | null, onSubmit = vi.fn()) {
     render(
         <ChatInput
             onSubmit={onSubmit}
@@ -89,6 +92,87 @@ describe("ChatInput canSend gating", () => {
         mockProfile();
     });
 
+    it("opens documents, workflows, and playbooks from the add menu", async () => {
+        const user = userEvent.setup();
+        renderInput(true);
+        await user.click(screen.getByRole("button", { name: "Add to message" }));
+        expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Upload Documents", "Saved Documents", "Workflows", "Playbooks"]);
+        expect(vi.mocked(AddDocumentsModal).mock.calls.at(-1)?.[0].open).toBe(false);
+        await user.click(screen.getByRole("menuitem", { name: "Saved Documents" }));
+        expect(vi.mocked(AddDocumentsModal).mock.calls.at(-1)?.[0]).toMatchObject({ open: true, initialTab: "files" });
+        expect(screen.queryByRole("menu")).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Add to message" }));
+        await user.click(screen.getByRole("menuitem", { name: "Workflows" }));
+        expect(vi.mocked(AssistantWorkflowModal).mock.calls.at(-1)?.[0].open).toBe(true);
+        await user.click(screen.getByRole("button", { name: "Add to message" }));
+        await user.click(screen.getByRole("menuitem", { name: "Playbooks" }));
+        expect(vi.mocked(PlaybookPickerModal).mock.calls.at(-1)?.[0].open).toBe(true);
+    });
+
+    it.each([false, true])("uploads files using the existing project setting (%s)", async (dropUploadsToProject) => {
+        const user = userEvent.setup();
+        const upload = dropUploadsToProject ? uploadProjectDocuments : uploadStandaloneDocuments;
+        vi.mocked(upload).mockResolvedValue([]);
+        render(<ChatInput onSubmit={vi.fn()} onCancel={vi.fn()} isLoading={false} projectId="p1" dropUploadsToProject={dropUploadsToProject} />);
+        const input = screen.getByLabelText("Upload Documents");
+        const click = vi.spyOn(input, "click");
+        await user.click(screen.getByRole("button", { name: "Add to message" }));
+        await user.click(screen.getByRole("menuitem", { name: "Upload Documents" }));
+        expect(click).toHaveBeenCalledOnce();
+        expect(vi.mocked(AddDocumentsModal).mock.calls.at(-1)?.[0].open).toBe(false);
+        const file = new File(["example"], "example.pdf", { type: "application/pdf" });
+        await user.upload(input, file);
+        await waitFor(() => expect(upload).toHaveBeenCalledOnce());
+        const inputs = vi.mocked(upload).mock.calls[0][dropUploadsToProject ? 1 : 0];
+        expect(inputs).toEqual([expect.objectContaining({ file })]);
+        expect(input).toHaveValue("");
+    });
+
+    it("omits workflows and playbooks when workflow selection is hidden", async () => {
+        const user = userEvent.setup();
+        render(<ChatInput onSubmit={vi.fn()} onCancel={vi.fn()} isLoading={false} hideWorkflowButton />);
+        await user.click(screen.getByRole("button", { name: "Add to message" }));
+        expect(screen.queryByRole("menuitem", { name: "Workflows" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Playbooks" })).toBeNull();
+    });
+
+    it.each(["", "  \n\t", "Replace this draft"])(
+        "trims pasted message edges while preserving internal formatting (draft: %j)",
+        async (draft) => {
+            const user = userEvent.setup();
+            renderInput(true);
+            const input = screen.getByRole("combobox") as HTMLTextAreaElement;
+            fireEvent.change(input, { target: { value: draft } });
+            await user.click(input);
+            input.setSelectionRange(0, draft.length);
+            await user.paste(" \n\tFirst paragraph\n\n    Indented line\nLast paragraph\n  ");
+            expect(input).toHaveValue("First paragraph\n\n    Indented line\nLast paragraph");
+            expect(input.selectionStart).toBe(input.value.length);
+            expect(input.selectionEnd).toBe(input.value.length);
+        },
+    );
+
+    it("preserves pasted spacing when inserting into an existing message", async () => {
+        const user = userEvent.setup();
+        renderInput(true);
+        const input = screen.getByRole("combobox") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "Reviewclause" } });
+        await user.click(input);
+        input.setSelectionRange(6, 6);
+        await user.paste(" this ");
+        expect(input).toHaveValue("Review this clause");
+    });
+
+    it("ignores whitespace-only pasted messages and leaves Send disabled", async () => {
+        const user = userEvent.setup();
+        renderInput(true);
+        const input = screen.getByRole("combobox");
+        await user.click(input);
+        await user.paste(" \n\t ");
+        expect(input).toHaveValue("");
+        expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    });
+
     it("renders a read-only composer when canSend is false", () => {
         renderInput(false);
 
@@ -100,11 +184,102 @@ describe("ChatInput canSend gating", () => {
             screen.getByRole("button", { name: "Send message" }),
         ).toBeDisabled();
         expect(
-            screen.queryByRole("button", { name: "Add documents" }),
+            screen.queryByRole("button", { name: "Add to message" }),
         ).toBeNull();
         expect(
-            screen.queryByRole("button", { name: "Open workflows" }),
+            screen.queryByRole("menu"),
         ).toBeNull();
+    });
+
+    it("can stop a pending response while history is still loading", () => {
+        const onCancel = vi.fn();
+        render(<ChatInput onSubmit={vi.fn()} onCancel={onCancel} isLoading canSend={false} />);
+        const stop = screen.getByRole("button", { name: "Stop response" });
+        expect(stop).toBeEnabled();
+        fireEvent.click(stop);
+        expect(onCancel).toHaveBeenCalledOnce();
+    });
+
+    it("says a response is still arriving rather than blaming permissions", () => {
+        // Returning to a thread whose answer is still streaming, while its
+        // history is on its way, closes the composer, but the reader may
+        // write here — only the history is missing. Blaming edit access would
+        // be a lie (see #486).
+        render(
+            <ChatInput
+                onSubmit={vi.fn()}
+                onCancel={vi.fn()}
+                isLoading
+                canSend
+                chatLoading
+            />,
+        );
+
+        expect(
+            screen.getByPlaceholderText("A response is still arriving\u2026"),
+        ).toBeDisabled();
+        expect(
+            screen.queryByPlaceholderText(
+                "Viewing only \u2014 sending needs edit access",
+            ),
+        ).toBeNull();
+        // The turn is stoppable from here even though sending is closed.
+        expect(
+            screen.getByRole("button", { name: "Stop response" }),
+        ).toBeEnabled();
+    });
+
+    it("says the chat is loading when no response is running", () => {
+        render(
+            <ChatInput
+                onSubmit={vi.fn()}
+                onCancel={vi.fn()}
+                isLoading={false}
+                canSend
+                chatLoading
+            />,
+        );
+
+        expect(
+            screen.getByPlaceholderText("Loading this chat\u2026"),
+        ).toBeDisabled();
+    });
+
+    it("keeps the permission copy when the reader may not write", () => {
+        render(
+            <ChatInput
+                onSubmit={vi.fn()}
+                onCancel={vi.fn()}
+                isLoading
+                canSend={false}
+                chatLoading
+            />,
+        );
+
+        expect(
+            screen.getByPlaceholderText(
+                "Viewing only \u2014 sending needs edit access",
+            ),
+        ).toBeDisabled();
+    });
+
+    it("does not submit on Enter while the chat is still loading", () => {
+        const onSubmit = vi.fn();
+        render(
+            <ChatInput
+                onSubmit={onSubmit}
+                onCancel={vi.fn()}
+                isLoading={false}
+                canSend
+                chatLoading
+            />,
+        );
+
+        const textarea = screen.getByRole("combobox");
+        expect(textarea).toBeDisabled();
+        fireEvent.change(textarea, { target: { value: "second question" } });
+        fireEvent.keyDown(textarea, { key: "Enter" });
+        expect(onSubmit).not.toHaveBeenCalled();
     });
 
     it("does not submit on Enter when canSend is false", () => {
@@ -127,7 +302,61 @@ describe("ChatInput canSend gating", () => {
         } as unknown as DataTransfer;
         fireEvent.drop(window, { dataTransfer });
 
-        expect(uploadProjectDocument).not.toHaveBeenCalled();
+        expect(uploadProjectDocuments).not.toHaveBeenCalled();
+    });
+
+    it("ignores file drops while chat history is loading", () => {
+        const ref = createRef<ChatInputHandle>();
+        render(
+            <ChatInput
+                ref={ref}
+                onSubmit={vi.fn()}
+                onCancel={vi.fn()}
+                isLoading={false}
+                canSend
+                chatLoading
+                projectId="p1"
+            />,
+        );
+
+        const file = new File(["x"], "dropped.pdf", {
+            type: "application/pdf",
+        });
+        const dataTransfer = {
+            types: ["Files"],
+            files: [file],
+        } as unknown as DataTransfer;
+        fireEvent.drop(window, { dataTransfer });
+        ref.current?.addFiles([file]);
+
+        expect(uploadProjectDocuments).not.toHaveBeenCalled();
+    });
+
+    it("stays neutral while the caller's standing is unknown", () => {
+        // null is "not known yet", not "not allowed". The composer is closed
+        // the same way, but accusing an owner of viewer status for the length
+        // of a fetch — which is what every cold load did — is a wrong
+        // statement, not a loading state.
+        renderInput(null);
+
+        const textarea = screen.getByPlaceholderText("Loading…");
+        expect(textarea).toBeDisabled();
+        expect(
+            screen.queryByPlaceholderText(
+                "Viewing only — sending needs edit access",
+            ),
+        ).toBeNull();
+        expect(
+            screen.getByRole("button", { name: "Send message" }),
+        ).toBeDisabled();
+    });
+
+    it("does not submit on Enter while the standing is unknown", () => {
+        const onSubmit = renderInput(null);
+        const textarea = screen.getByRole("combobox");
+
+        fireEvent.keyDown(textarea, { key: "Enter" });
+        expect(onSubmit).not.toHaveBeenCalled();
     });
 
     it("keeps the default composer when canSend is omitted", () => {
@@ -144,7 +373,7 @@ describe("ChatInput canSend gating", () => {
             screen.getByPlaceholderText("How can I help?"),
         ).not.toBeDisabled();
         expect(
-            screen.getByRole("button", { name: "Add documents" }),
+            screen.getByRole("button", { name: "Add to message" }),
         ).toBeInTheDocument();
     });
 
@@ -177,6 +406,135 @@ describe("ChatInput canSend gating", () => {
             expect(uploadStandaloneDocuments).toHaveBeenCalledOnce(),
         );
         expect(uploadProjectDocuments).not.toHaveBeenCalled();
+    });
+
+    it("shows uploads as loading document pills side by side, and keeps the + menu ready", async () => {
+        const finish: Array<() => void> = [];
+        vi.mocked(uploadStandaloneDocuments).mockImplementation(
+            () => new Promise((resolve) => finish.push(() => resolve([]))),
+        );
+        const ref = createRef<ChatInputHandle>();
+        render(
+            <ChatInput
+                ref={ref}
+                onSubmit={vi.fn()}
+                onCancel={vi.fn()}
+                isLoading={false}
+                enableGlobalFileDrop={false}
+            />,
+        );
+        const pdf = (name: string) => new File(["x"], name, { type: "application/pdf" });
+
+        act(() => ref.current?.addFiles([pdf("first.pdf")]));
+        act(() => ref.current?.addFiles([pdf("second.pdf")]));
+
+        const first = await screen.findByTitle("first.pdf · Uploading");
+        const second = screen.getByTitle("second.pdf · Uploading");
+        // One row with the attachments, not a stack of rows.
+        expect(first.parentElement).toBe(second.parentElement);
+        expect(first.parentElement).toHaveClass("flex-wrap");
+        // The + keeps its icon and stays usable, and the picker stays enabled.
+        const add = screen.getByRole("button", { name: "Add to message" });
+        expect(add).toBeEnabled();
+        expect(add.querySelector(".animate-spin")).toBeNull();
+        expect(screen.getByLabelText("Upload Documents")).toBeEnabled();
+
+        // The first batch finishing clears only its own pill.
+        await act(async () => finish[0]());
+        expect(screen.queryByTitle("first.pdf · Uploading")).toBeNull();
+        expect(screen.getByTitle("second.pdf · Uploading")).toBeInTheDocument();
+        await act(async () => finish[1]());
+        expect(screen.queryByTitle("second.pdf · Uploading")).toBeNull();
+    });
+
+    it("discards an upload that finishes after switching chats", async () => {
+        let finishUpload!: (
+            outcomes: Awaited<ReturnType<typeof uploadStandaloneDocuments>>,
+        ) => void;
+        vi.mocked(uploadStandaloneDocuments).mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    finishUpload = resolve;
+                }),
+        );
+        const ref = createRef<ChatInputHandle>();
+        const view = (chatKey: string) => (
+            <ChatInput
+                ref={ref}
+                chatKey={chatKey}
+                onSubmit={vi.fn()}
+                onCancel={vi.fn()}
+                isLoading={false}
+                enableGlobalFileDrop={false}
+                dropUploadsToProject={false}
+            />
+        );
+        const { rerender } = render(view("chat-a"));
+        const file = new File(["x"], "old-chat.pdf", {
+            type: "application/pdf",
+        });
+
+        ref.current?.addFiles([file]);
+        await waitFor(() =>
+            expect(uploadStandaloneDocuments).toHaveBeenCalledOnce(),
+        );
+        rerender(view("chat-b"));
+        await act(async () => {
+            finishUpload([
+                {
+                    clientId: "upload-1",
+                    filename: "old-chat.pdf",
+                    status: "completed",
+                    result: {
+                        id: "old-document",
+                        filename: "old-chat.pdf",
+                    } as Document,
+                    errorCode: null,
+                },
+            ]);
+        });
+
+        expect(screen.queryByText("old-chat.pdf")).toBeNull();
+        expect(
+            vi.mocked(AddDocumentsModal).mock.calls.at(-1)?.[0]
+                .externalUploadedDocuments,
+        ).toEqual([]);
+    });
+
+    it("discards an upload failure after switching chats", async () => {
+        let failUpload!: (error: Error) => void;
+        vi.mocked(uploadStandaloneDocuments).mockImplementationOnce(
+            () =>
+                new Promise((_resolve, reject) => {
+                    failUpload = reject;
+                }),
+        );
+        const ref = createRef<ChatInputHandle>();
+        const view = (chatKey: string) => (
+            <ChatInput
+                ref={ref}
+                chatKey={chatKey}
+                onSubmit={vi.fn()}
+                onCancel={vi.fn()}
+                isLoading={false}
+                enableGlobalFileDrop={false}
+                dropUploadsToProject={false}
+            />
+        );
+        const { rerender } = render(view("chat-a"));
+
+        ref.current?.addFiles(
+            [new File(["x"], "old-chat.pdf", { type: "application/pdf" })],
+        );
+        await waitFor(() =>
+            expect(uploadStandaloneDocuments).toHaveBeenCalledOnce(),
+        );
+        rerender(view("chat-b"));
+        await act(async () => {
+            failUpload(new Error("old chat upload failed"));
+        });
+
+        expect(screen.queryByText(/could not be uploaded/i)).toBeNull();
     });
 
     it("keeps picker attachments separate from the project just like dropped files", () => {
