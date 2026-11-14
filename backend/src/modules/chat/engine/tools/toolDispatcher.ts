@@ -1,5 +1,6 @@
 import type { ConnectorApprovalItem, DocumentSearchEvent } from "@mike/contracts";
 import { textCardEvent } from "./textCard";
+import { renderTableCells } from "./tableCells";
 import { internalFailure } from "../../../../lib/serviceResult";
 import { canUseWorkflowInWorkspace } from "../../../../lib/workflowWorkspace";
 import { AppError } from "../../../../lib/appError";
@@ -275,8 +276,7 @@ async function loadFiledInternetMessageId(
     (data as { email_internet_message_id?: string | null } | null)
       ?.email_internet_message_id,
   );
-
-import { renderTableCells } from "./tableCells";
+}
 
 /**
  * Report a server-side tool's failure and return what to log for it. The
