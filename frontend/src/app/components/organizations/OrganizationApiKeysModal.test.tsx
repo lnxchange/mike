@@ -4,14 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OrganizationApiKeysModal } from "./OrganizationApiKeysModal";
 
 const mocks = vi.hoisted(() => ({
-  getOrgApiKeyStatus: vi.fn(),
+  getOrgApiKeys: vi.fn(),
   getApiKeyStatus: vi.fn(),
   saveOrgApiKey: vi.fn(),
 }));
 
 vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/app/lib/mikeApi")>()),
-  getOrgApiKeyStatus: mocks.getOrgApiKeyStatus,
+  getOrgApiKeys: mocks.getOrgApiKeys,
   getApiKeyStatus: mocks.getApiKeyStatus,
   saveOrgApiKey: mocks.saveOrgApiKey,
 }));
@@ -34,15 +34,17 @@ const emptyStatus = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.getOrgApiKeyStatus.mockResolvedValue({ ...emptyStatus });
+  mocks.getOrgApiKeys.mockResolvedValue({ keys: { ...emptyStatus } });
   mocks.getApiKeyStatus.mockResolvedValue({
     ...emptyStatus,
     claude: true,
     sources: { claude: "user" },
   });
   mocks.saveOrgApiKey.mockResolvedValue({
-    ...emptyStatus,
-    claude: true,
+    keys: {
+      ...emptyStatus,
+      claude: true,
+    },
   });
 });
 
@@ -74,9 +76,11 @@ describe("OrganizationApiKeysModal", () => {
   });
 
   it("does not offer a copy when the organisation already has the key", async () => {
-    mocks.getOrgApiKeyStatus.mockResolvedValue({
-      ...emptyStatus,
-      claude: true,
+    mocks.getOrgApiKeys.mockResolvedValue({
+      keys: {
+        ...emptyStatus,
+        claude: true,
+      },
     });
     render(
       <OrganizationApiKeysModal

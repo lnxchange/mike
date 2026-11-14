@@ -7,8 +7,7 @@ import {
     startMicrosoftOAuth,
 } from "@/app/lib/authApi";
 import { useAuth } from "@/app/contexts/AuthContext";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { MicrosoftIconUI } from "@/shared/ui/MicrosoftIconUI";
+import { MicrosoftIconUI, PillButtonUI } from "@mike/ui";
 import { SettingsCard } from "@/app/components/settings/SettingsCard";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";

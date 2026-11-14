@@ -290,7 +290,16 @@ export function DocumentSidePanel({
             return;
         }
         if (hasExtensionChange(selectedFilename, trimmed)) {
-            setExtensionWarningOpen(true);
+            const extension = filenameExtension(selectedFilename);
+            notifyError(
+                new UserVisibleError(
+                    extension
+                        ? `File extensions cannot be changed here. Keep ${extension} at the end of the name.`
+                        : "File extensions cannot be changed here.",
+                    { kind: "validation" },
+                ),
+                { action: "save this draft to SharePoint" },
+            );
             return;
         }
         setSavingDraft(true);

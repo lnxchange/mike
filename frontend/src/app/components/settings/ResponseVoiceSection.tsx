@@ -53,6 +53,7 @@ const EMPTY_STYLE: ResponseStyle = {
     verbosity: "balanced",
     formatting: "balanced",
     tone: "balanced",
+    language: "auto",
 };
 
 export function ResponseVoiceSection() {

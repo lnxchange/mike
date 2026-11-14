@@ -495,7 +495,7 @@ function AssistantMessageImpl({
         if (event.type === "delegation") {
             return (
                 <p key={globalIdx} className="text-sm text-gray-600">
-                    {event.status === "finished" ? "Finished" : "Working on"}:{" "}
+                    {event.status === "completed" ? "Finished" : "Working on"}:{" "}
                     {event.title}
                 </p>
             );

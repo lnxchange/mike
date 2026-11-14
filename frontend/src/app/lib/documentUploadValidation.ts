@@ -2,7 +2,7 @@ import {
     SUPPORTED_UPLOAD_ACCEPT,
     UNSUPPORTED_UPLOAD_MESSAGE,
     isSupportedUploadFilename,
-} from "@/shared/api/uploadSessionClient";
+} from "@mike/client";
 
 export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_UPLOAD_ACCEPT;
 export const UNSUPPORTED_DOCUMENT_WARNING_MESSAGE = UNSUPPORTED_UPLOAD_MESSAGE;

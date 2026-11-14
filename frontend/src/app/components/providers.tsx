@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
-import { useSuspendBackdropWhileSelecting } from "@/shared/ui/suspendBackdropWhileSelecting";
+import { useSuspendBackdropWhileSelecting } from "@mike/ui";
 import { AuthProvider } from "@/app/contexts/AuthContext";
 import { UserProfileProvider } from "@/app/contexts/UserProfileContext";
 import { MfaLoginGate } from "@/app/components/shared/MfaLoginGate";

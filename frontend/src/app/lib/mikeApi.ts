@@ -1368,6 +1368,10 @@ export function getOpenCodeGoModels(
  * Save, replace or remove a key. Keys that are saved with a setting (a region,
  * endpoint, location or base URL) also send it; a setting with a null key changes the saved key's setting only.
  */
+export async function getApiKeyStatus(): Promise<ApiKeyStatus> {
+    return apiRequest<ApiKeyStatus>("settings.keys", "/user/api-keys");
+}
+
 export async function saveApiKey(
     provider: ApiKeyProvider,
     apiKey: string | null,

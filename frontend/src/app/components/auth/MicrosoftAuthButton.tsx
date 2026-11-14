@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { MicrosoftIconUI } from "@/shared/ui/MicrosoftIconUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { MicrosoftIconUI, PillButtonUI } from "@mike/ui";
 import { getAuthConfig, startMicrosoftOAuth } from "@/app/lib/authApi";
 
 interface MicrosoftAuthButtonProps {

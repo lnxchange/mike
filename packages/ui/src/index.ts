@@ -17,6 +17,7 @@ export * from "./PillButtonUI";
 export * from "./TextButtonUI.styles";
 export * from "./TextButtonUI";
 export * from "./TabPillButtonUI";
+export * from "./TabPillButtonUI.styles";
 export * from "./GlassIconButtonUI";
 export * from "./HeaderButtonsUI";
 export * from "./CloseButton";
@@ -48,8 +49,10 @@ export * from "./ExcerptModalUI";
 export * from "./ResponseSelectionMenuUI";
 export * from "./PlaybookPillUI";
 export * from "./useReasoningDisclosure";
+export * from "./suspendBackdropWhileSelecting";
 
 // Brand and auth
 export * from "./MikeIconUI";
 export * from "./GoogleIconUI";
+export * from "./MicrosoftIconUI";
 export * from "./AuthDividerUI";

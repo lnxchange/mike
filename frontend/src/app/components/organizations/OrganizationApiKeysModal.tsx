@@ -5,10 +5,10 @@ import { Loader2 } from "lucide-react";
 import { Modal } from "@/app/components/modals/Modal";
 import { ApiKeyField } from "@/app/components/settings/ApiKeyField";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI } from "@mike/ui";
 import {
   getApiKeyStatus,
-  getOrgApiKeyStatus,
+  getOrgApiKeys,
   saveOrgApiKey,
   type ApiKeyProvider,
   type ApiKeyStatus,
@@ -78,10 +78,10 @@ export function OrganizationApiKeysModal({
     setError(null);
     try {
       const [nextOrg, nextPersonal] = await Promise.all([
-        getOrgApiKeyStatus(orgId),
+        getOrgApiKeys(orgId),
         getApiKeyStatus(),
       ]);
-      setOrgStatus(nextOrg);
+      setOrgStatus(nextOrg.keys);
       setPersonalStatus(nextPersonal);
     } catch (err) {
       setError(
@@ -99,13 +99,13 @@ export function OrganizationApiKeysModal({
 
   async function saveProvider(provider: ApiKeyProvider, value: string) {
     const status = await saveOrgApiKey(orgId, provider, value.trim() || null);
-    setOrgStatus(status);
+    setOrgStatus(status.keys);
     return true;
   }
 
   async function removeProvider(provider: ApiKeyProvider) {
     const status = await saveOrgApiKey(orgId, provider, null);
-    setOrgStatus(status);
+    setOrgStatus(status.keys);
     return true;
   }
 
@@ -116,7 +116,7 @@ export function OrganizationApiKeysModal({
       const status = await saveOrgApiKey(orgId, provider, null, {
         usePersonal: true,
       });
-      setOrgStatus(status);
+      setOrgStatus(status.keys);
     } catch (err) {
       setError(
         userFacingApiError(err, "Could not copy your personal API key."),
@@ -156,7 +156,7 @@ export function OrganizationApiKeysModal({
                 <div key={field.provider} className="space-y-2">
                   <ApiKeyField
                     label={field.label}
-                    placeholder={field.placeholder}
+                    variant="modal"
                     hasSavedKey={orgHasKey}
                     onSave={(value) => saveProvider(field.provider, value)}
                     onRemove={() => removeProvider(field.provider)}

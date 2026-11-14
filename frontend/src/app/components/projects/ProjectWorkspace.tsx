@@ -37,7 +37,7 @@ import {
     type MatterSyncFile,
     zohoMatterUrl,
 } from "@/app/lib/matterSync";
-import { tabPillButtonUIClassName } from "@/shared/ui/TabPillButtonUI.styles";
+import { tabPillButtonUIClassName } from "@mike/ui";
 import {
     useMatterDeltaCheck,
     useMatterSyncStatus,

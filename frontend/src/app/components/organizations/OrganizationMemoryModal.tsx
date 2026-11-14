@@ -13,10 +13,8 @@ import { Modal } from "@/app/components/modals/Modal";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { FieldLabel } from "@/app/components/ui/form-field";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
+import { GlassCardUI, PillButtonUI, ToggleSwitchUI } from "@mike/ui";
 import { MarkdownEditor } from "@/app/components/ui/markdown-editor";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
 import {
     getOrgMemory,
     setOrgMemoryEnabled,
@@ -70,7 +68,7 @@ export function OrganizationMemoryModal({
         changeDraft,
         setError,
         setAutosaveError,
-        useLatestConflict,
+        reloadLatest,
         keepDraftAfterConflict,
     } = useMemoryFileController({
         active: open,
@@ -87,6 +85,8 @@ export function OrganizationMemoryModal({
             "Organization memory changed while you were editing. Reopen memory before saving again.",
         saveError:
             "Organization memory could not be saved. Your draft has been kept.",
+        disabledError:
+            "Organization memory is turned off, so this draft cannot be saved.",
     });
 
     useEffect(() => {
@@ -276,7 +276,7 @@ export function OrganizationMemoryModal({
                                 {conflict ? (
                                     <MemoryConflictNotice
                                         project
-                                        onReload={useLatestConflict}
+                                        onReload={reloadLatest}
                                         onKeepDraft={keepDraftAfterConflict}
                                     />
                                 ) : null}

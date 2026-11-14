@@ -1,3 +1,5 @@
+"use client";
+
 import { useEffect } from "react";
 
 const TEXT_SELECTED_ATTRIBUTE = "data-text-selected";

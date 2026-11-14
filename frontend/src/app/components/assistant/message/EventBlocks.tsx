@@ -7,6 +7,7 @@ import {
     DocEditBlockUI,
     DocFindBlockUI,
     DocReadBlockUI,
+    GLASS_CARD_SURFACE_CLASS,
     PillButtonUI,
     pillButtonUIClassName,
     useReasoningDisclosure,
@@ -24,7 +25,6 @@ import { authenticatedFetch } from "@/app/lib/authEvents";
 import type { AssistantEvent } from "../../shared/types";
 import { FileTypeIcon } from "../../shared/FileTypeIcon";
 import { RESPONSE_GLASS_SURFACE, withoutMarkdownNode } from "./messageStyles";
-import { GLASS_CARD_SURFACE_CLASS } from "@/shared/ui/GlassCardUI";
 
 const THINKING_PHRASES = [
     "Thinking...",

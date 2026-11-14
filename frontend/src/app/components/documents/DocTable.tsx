@@ -83,7 +83,7 @@ import {
     partitionSupportedDocumentFiles,
     SUPPORTED_DOCUMENT_ACCEPT,
 } from "@/app/lib/documentUploadValidation";
-import { isExpandableUploadFilename } from "@/shared/api/uploadSessionClient";
+import { isExpandableUploadFilename } from "@mike/client";
 import {
     collectDroppedDocumentUploadEntries,
     dataTransferHasDirectory,
@@ -208,6 +208,11 @@ export interface DocTableQuery {
     fileType: string | null;
     sort: DocumentSort | null;
 }
+
+const SORT_OPTIONS: TableFilterOption<TableSortDirection>[] = [
+    { value: "asc", label: "Ascending" },
+    { value: "desc", label: "Descending" },
+];
 
 const SORT_KEY_LABELS: Record<DocumentSortKey, string> = {
     name: "Name",
