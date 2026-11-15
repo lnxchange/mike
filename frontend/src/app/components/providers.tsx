@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
+import { useSuspendBackdropWhileSelecting } from "@mike/ui";
 import { AuthProvider } from "@/app/contexts/AuthContext";
 import { UserProfileProvider } from "@/app/contexts/UserProfileContext";
 import { MfaLoginGate } from "@/app/components/shared/MfaLoginGate";
@@ -10,6 +11,7 @@ import { useInputModality } from "@/app/hooks/useInputModality";
 import { AppToasts } from "@/app/components/ui/toast";
 
 export function Providers({ children }: { children: React.ReactNode }) {
+    useSuspendBackdropWhileSelecting();
     useInputModality();
     return (
         <AuthProvider>

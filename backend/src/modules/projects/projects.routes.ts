@@ -177,15 +177,29 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       detail:
         "shared_with is no longer supported; use the project access endpoints.",
     });
-  const { name, cm_number, practice, org_id, visibility, memory_enabled } =
-    req.body as {
-      name: string;
-      cm_number?: string;
-      practice?: string;
-      org_id?: string | null;
-      visibility?: unknown;
-      memory_enabled?: boolean;
-    };
+  const {
+    name,
+    cm_number,
+    practice,
+    org_id,
+    visibility,
+    memory_enabled,
+    client_name,
+    description,
+    zoho_deal_id,
+    sharepoint_folder_url,
+  } = req.body as {
+    name: string;
+    cm_number?: string;
+    practice?: string;
+    org_id?: string | null;
+    visibility?: unknown;
+    memory_enabled?: boolean;
+    client_name?: string;
+    description?: string;
+    zoho_deal_id?: string;
+    sharepoint_folder_url?: string;
+  };
   const db = createServerSupabase();
 
   const result = await createProject(db, {
@@ -196,6 +210,10 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     org_id,
     visibility,
     memory_enabled,
+    client_name,
+    description,
+    zoho_deal_id,
+    sharepoint_folder_url,
   });
   if (!result.ok) {
     if (result.kind === "db_error")
@@ -452,6 +470,7 @@ projectsRouter.get("/:projectId/documents", requireAuth, asyncRoute(async (req, 
     projectId,
     userId,
     userEmail,
+    lite: req.query.for === "sync",
   });
   if (!result.ok)
     return void res.status(404).json({ detail: "Project not found" });

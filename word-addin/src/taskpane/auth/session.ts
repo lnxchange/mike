@@ -231,12 +231,24 @@ function createOAuthRequestId(): string {
   );
 }
 
+export async function signInWithMicrosoft(): Promise<void> {
+  return signInWithOAuthProvider("azure", "Microsoft");
+}
+
 export async function signInWithGoogle(): Promise<void> {
+  return signInWithOAuthProvider("google", "Google");
+}
+
+async function signInWithOAuthProvider(
+  provider: "google" | "azure",
+  label: "Google" | "Microsoft",
+): Promise<void> {
   const generation = ++_sessionGeneration;
   const requestId = createOAuthRequestId();
   const expectedOrigin = window.location.origin;
   const dialogUrl = new URL("/oauth-dialog.html", expectedOrigin);
   dialogUrl.searchParams.set("requestId", requestId);
+  dialogUrl.searchParams.set("provider", provider);
   _loading = true;
   _error = null;
   broadcast();
@@ -259,7 +271,7 @@ export async function signInWithGoogle(): Promise<void> {
         { height: 60, width: 45, displayInIframe: false },
         (result) => {
           if (result.status !== Office.AsyncResultStatus.Succeeded) {
-            fail(result.error?.message ?? "Unable to open Google sign-in.");
+            fail(result.error?.message ?? `Unable to open ${label} sign-in.`);
             return;
           }
           const dialog = result.value;
@@ -277,13 +289,13 @@ export async function signInWithGoogle(): Promise<void> {
               if (settled || !("message" in event)) return;
               if (event.origin && event.origin !== expectedOrigin) {
                 close();
-                fail("Google sign-in returned from an unexpected origin.");
+                fail(`${label} sign-in returned from an unexpected origin.`);
                 return;
               }
               const message = parseGoogleOAuthDialogMessage(event.message);
               if (!message || message.requestId !== requestId) {
                 close();
-                fail("Google sign-in returned an invalid response.");
+                fail(`${label} sign-in returned an invalid response.`);
                 return;
               }
               if (message.status === "error") {
@@ -305,8 +317,8 @@ export async function signInWithGoogle(): Promise<void> {
                 .catch((error: unknown) => {
                   if (generation === _sessionGeneration) {
                     _error = reportFault(error, {
-                      action: "complete Google sign-in",
-                      fallback: "Mike couldn't complete Google sign-in.",
+                      action: `complete ${label} sign-in`,
+                      fallback: `Couldn't complete ${label} sign-in.`,
                       operation: "word.session",
                     }).message;
                   }
@@ -325,8 +337,8 @@ export async function signInWithGoogle(): Promise<void> {
               if (!("error" in event)) return;
               fail(
                 event.error === 12006
-                  ? "Google sign-in was cancelled."
-                  : `Google sign-in closed unexpectedly (Office error ${event.error}).`,
+                  ? `${label} sign-in was cancelled.`
+                  : `${label} sign-in closed unexpectedly (Office error ${event.error}).`,
               );
             },
           );
@@ -337,7 +349,7 @@ export async function signInWithGoogle(): Promise<void> {
       // to a URL..."), which means nothing to a user.
       fail(
         reportFault(error, {
-          fallback: "Mike couldn't open Google sign-in. Try again.",
+          fallback: `Couldn't open ${label} sign-in. Try again.`,
           operation: "word.session",
         }).message,
       );

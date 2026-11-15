@@ -89,10 +89,10 @@ test("review mode: accepting a full-item deletion removes the paragraph and renu
 
   // The item is gone and Word's numbering closed the gap — no empty "2.".
   const context = await nextDocumentContext(addin, page);
-  expect(context).toContain("1. Foo goes first.");
-  expect(context).toContain("2. Baz goes third.");
+  expect(context).toContain("«1.» Foo goes first.");
+  expect(context).toContain("«2.» Baz goes third.");
   expect(context).not.toContain("Bar goes second.");
-  expect(context).not.toContain("3.");
+  expect(context).not.toContain("«3.»");
 });
 
 test("edit mode: the item is applied immediately as a tracked change", async ({
@@ -118,8 +118,8 @@ test("edit mode: the item is applied immediately as a tracked change", async ({
   await accept.click();
 
   const context = await nextDocumentContext(addin, page);
-  expect(context).toContain("1. Foo goes first.");
-  expect(context).toContain("2. Baz goes third.");
+  expect(context).toContain("«1.» Foo goes first.");
+  expect(context).toContain("«2.» Baz goes third.");
   expect(context).not.toContain("Bar goes second.");
 });
 
@@ -141,9 +141,9 @@ test("rejecting the deletion restores the item with its original number", async 
   await expect(page.getByText("Rejected.", { exact: true })).toBeVisible();
 
   const context = await nextDocumentContext(addin, page);
-  expect(context).toContain("1. Foo goes first.");
-  expect(context).toContain("2. Bar goes second.");
-  expect(context).toContain("3. Baz goes third.");
+  expect(context).toContain("«1.» Foo goes first.");
+  expect(context).toContain("«2.» Bar goes second.");
+  expect(context).toContain("«3.» Baz goes third.");
 });
 
 test("a partial deletion inside an item never escalates to the paragraph", async ({
@@ -180,7 +180,7 @@ test("a partial deletion inside an item never escalates to the paragraph", async
   await expect(page.getByText("Accepted.", { exact: true })).toBeVisible();
 
   const context = await nextDocumentContext(addin, page);
-  expect(context).toContain("2. Bar");
+  expect(context).toContain("«2.» Bar");
 });
 
 test("an original quoting the renderer's list marker still deletes the paragraph", async ({
@@ -189,7 +189,9 @@ test("an original quoting the renderer's list marker still deletes the paragraph
 }) => {
   await addin.mockChatStream([
     "Removing point 2.\n\n",
-    wordEdits(replacementEdit("2. Bar goes second.", "", "Requested removal.")),
+    wordEdits(
+      replacementEdit("«2.» Bar goes second.", "", "Requested removal."),
+    ),
   ]);
   await addin.gotoTaskpane(NUMBERED_DOC);
   await addin.expectAuthedShell();
@@ -198,8 +200,8 @@ test("an original quoting the renderer's list marker still deletes the paragraph
   await page.getByRole("button", { name: "Send" }).click();
   await applyReviewProposal(page);
 
-  // "2. " is a renderer annotation. The stripped-marker retry adopts the
-  // bare text FIRST, so the whole-paragraph equality check still fires.
+  // "«2.» " is the renderer's list label. The stripped-marker retry adopts
+  // the bare text first, so the whole-paragraph equality check still fires.
   await expect
     .poll(async () => (await addin.wordCalls()).trackedChanges)
     .toEqual([

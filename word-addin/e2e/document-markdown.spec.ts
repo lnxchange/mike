@@ -27,13 +27,20 @@ test("document_context carries heading, list, and table structure", async ({
   await addin.mockChatStream(["ok"]);
   await addin.gotoTaskpane({
     documentText:
-      "Definitions\nTerms have the meanings below.\nAffiliate means a controlled entity.",
+      "Definitions\nTerms have the meanings below.\nAffiliate means a controlled entity.\n2 Liability",
     documentBlocks: [
       { text: "Definitions", styleBuiltIn: "Heading1" },
       { text: "Terms have the meanings below." },
       {
         text: "Affiliate means a controlled entity.",
         listString: "a.",
+        listLevel: 0,
+      },
+      {
+        text: "2 Liability",
+        style: "Heading 2",
+        styleBuiltIn: "Heading2",
+        listString: "1.",
         listLevel: 0,
       },
       {
@@ -51,11 +58,20 @@ test("document_context carries heading, list, and table structure", async ({
   await page.getByRole("button", { name: "Send" }).click();
   const body = (await requestPromise).postDataJSON();
 
+  expect(body.document_context).toContain("NUMBERED STYLES");
+  expect(body.document_context).toContain("- Heading 2, level 0, 1.");
+  expect(body.document_context).toContain("DEFINITIONS");
+  expect(body.document_context).toContain(
+    "- Affiliate: a controlled entity.",
+  );
   expect(body.document_context).toContain("# Definitions");
   expect(body.document_context).toContain("Terms have the meanings below.");
   expect(body.document_context).toContain(
-    "a. Affiliate means a controlled entity.",
+    "«a.» Affiliate means a controlled entity.",
   );
+  // The heading style's own "1." is marked as style numbering, beside the
+  // typed "2", and the heading mark is kept.
+  expect(body.document_context).toContain("## «style:1.» 2 Liability");
   expect(body.document_context).toContain("| Term | Meaning |");
   expect(body.document_context).toContain("| --- | --- |");
   expect(body.document_context).toContain("| Fee | See Exhibit B |");

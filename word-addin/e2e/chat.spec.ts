@@ -87,6 +87,28 @@ test("shows frontend-style quick actions before any message is sent", async ({
   // No bubbles yet: the message list isn't rendered.
 });
 
+test("a filename prompt fills the composer without starting a review", async ({
+  addin,
+  page,
+}) => {
+  await addin.gotoTaskpane();
+  await addin.expectAuthedShell();
+
+  await page.getByRole("button", { name: "Suggest a filename" }).click();
+  await expect(
+    page.getByRole("button", { name: "Remove workflow Saved prompt" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove workflow Proofread" }),
+  ).toHaveCount(0);
+  await expect(page.getByPlaceholder("How can I help?")).toHaveValue(
+    /YYMMDD - Descriptive name\.docx/,
+  );
+  await expect(page.getByPlaceholder("How can I help?")).toHaveValue(
+    /Do not edit the document/,
+  );
+});
+
 test("uses a floating icon header with no logo, tabs, or visible sign-out button", async ({
   addin,
   page,

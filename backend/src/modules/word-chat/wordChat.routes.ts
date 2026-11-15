@@ -40,6 +40,7 @@ import {
   requestIdOf,
   reserveAssistantMessage,
   runLLMStream,
+  wordChatAllowedToolNames,
   stripTransientAssistantEvents,
   submitClientToolResult,
   throwIfTurnStopped,
@@ -48,7 +49,7 @@ import { enqueueChatTurnAudit, stoppedTurnAuditStatus } from "../../lib/audit";
 import { setOperation, isReported, reportError } from "../../lib/observability/sentry";
 import {
   persistWordDocumentEdits,
-  WORD_EDIT_FORMATS,
+  isAllowedWordEditFormat,
   type WordEditApplyMode,
 } from "../chat/chat.service";
 import {
@@ -174,7 +175,7 @@ function parseProposedWordEdit(
   const formats = Array.isArray(body.formats)
     ? body.formats.filter(
         (entry): entry is string =>
-          typeof entry === "string" && WORD_EDIT_FORMATS.has(entry),
+          typeof entry === "string" && isAllowedWordEditFormat(entry),
       )
     : [];
   if (Array.isArray(body.formats) && formats.length !== body.formats.length) {
@@ -678,6 +679,13 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
   // answer client_tool_call frames; older panes keep the streamed <EDITS>
   // protocol so they are never handed tool calls they would ignore.
   const clientToolsEnabled = body.client_tools === true;
+  // Which Office client the pane runs in. The same task pane serves Word and
+  // Outlook; Outlook's "active document" is the email being composed and it
+  // has no tracked-change edit channel.
+  if (body.host !== undefined && body.host !== "word" && body.host !== "outlook") {
+    return void res.status(400).json({ detail: "host must be word or outlook" });
+  }
+  const officeHost: "word" | "outlook" = body.host === "outlook" ? "outlook" : "word";
 
   const activeDocumentName = parsedDocumentName.value;
   const persistChat = parsedStorage.value === "cloud";
@@ -694,6 +702,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     documentContext: parsedDocumentContext.documentContext,
     persistChat,
     clientToolsEnabled,
+    officeHost,
     requestedModel: parsedModel.value,
     requestedReasoning: parsedReasoning.value,
     requestedTimeZone: req.body?.time_zone,
@@ -720,6 +729,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     selectedModel,
     selectedReasoningLevel,
     nonce,
+    legalResearch,
   } = prep.prepared;
   let chatTitle = prep.prepared.chatTitle;
   let memoryTurnScheduled = false;
@@ -847,14 +857,18 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       db,
       write,
       workflowStore,
-      // CourtListener is intentionally unavailable in document-scoped Word
-      // chats. Legal research remains a web-assistant capability.
-      includeResearchTools: false,
+      includeUsResearchTools: legalResearch.us === true,
+      includeResearchTools: legalResearch.us === true,
+      includeAuResearchTools: legalResearch.au === true,
+      includeAuEnergyResearchTools: legalResearch.energy === true,
+      includeAuVicResearchTools: legalResearch.vic === true,
+      includeAuCasesResearchTools: legalResearch.cases === true,
       includeAskInputs: false,
       ...(clientToolsEnabled
         ? {
             clientTools: createWordClientToolsAdapter({
               userId,
+              host: officeHost,
               write: writeClientToolFrame,
               signal: stream.signal,
               nonce,
@@ -868,6 +882,10 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         : {}),
       model: selectedModel,
       reasoning: selectedReasoningLevel,
+      // The task pane cannot show a plan or continue a paused turn. The open
+      // document would otherwise force every question into plan-and-stop.
+      plans: false,
+      allowedToolNames: wordChatAllowedToolNames(legalResearch),
       apiKeys,
       signal: stream.signal,
       conversationId: persistChat ? chatId : null,
@@ -924,7 +942,9 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         persistChat &&
         !persistedEvents.some((event) =>
           typeof event === "object" && event !== null && "type" in event
-            ? event.type === "error" || event.type === "ask_inputs"
+            ? event.type === "error" ||
+              event.type === "ask_inputs" ||
+              event.type === "plan"
             : false,
         )
       ) {

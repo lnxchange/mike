@@ -10,6 +10,7 @@ export function PreResponseWrapper({
     shouldMinimize,
     isStreaming,
     forceOpen = false,
+    incomplete = false,
 }: {
     children: ReactNode;
     stepCount: number;
@@ -17,6 +18,7 @@ export function PreResponseWrapper({
     shouldMinimize: boolean;
     isStreaming: boolean;
     forceOpen?: boolean;
+    incomplete?: boolean;
 }) {
     return (
         <PreResponseWrapperUI
@@ -25,6 +27,7 @@ export function PreResponseWrapper({
             shouldMinimize={shouldMinimize}
             isStreaming={isStreaming}
             forceOpen={forceOpen}
+            incomplete={incomplete}
         >
             {children}
         </PreResponseWrapperUI>

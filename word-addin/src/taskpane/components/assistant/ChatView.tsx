@@ -23,6 +23,7 @@ import type {
 } from "../../lib/wordChatTypes";
 import type { WordEditApplyMode } from "../../lib/wordChatSettings";
 import { selectDocumentText } from "../../hooks/useWordDoc";
+import { elementContainsTextSelection } from "../../../../../packages/ui/src/suspendBackdropWhileSelecting";
 import { UserVisibleError, notifyError } from "../../lib/notify";
 
 const CHAT_MESSAGE_TOP_GAP = 12;
@@ -363,6 +364,17 @@ export function ChatView({
         // window before its scroll events land — so any other scroll event is
         // engine-initiated and gets snapped back to the owned position.
         const correctEngineScroll = (): void => {
+            // A text selection makes WKWebView nudge the scroller to keep
+            // the highlight in view. Snapping that nudge back starts a
+            // scroll fight that flashes the transcript until the selection
+            // is cleared, so a selection inside the transcript owns scroll.
+            if (
+                elementContainsTextSelection(container, window.getSelection())
+            ) {
+                desiredScrollTopRef.current = container.scrollTop;
+                updateScrollButton();
+                return;
+            }
             if (anchorActiveRef.current) {
                 const desired = desiredScrollTopRef.current;
                 if (Math.abs(container.scrollTop - desired) > 1) {

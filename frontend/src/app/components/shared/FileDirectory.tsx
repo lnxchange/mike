@@ -30,6 +30,9 @@ import {
     LIQUID_GLASS_MODAL_ROW_HOVER_CLASS,
     LIQUID_GLASS_MODAL_ROW_SELECTED_CLASS,
 } from "@/app/components/ui/liquid-surface";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 type DirectoryFolder = Pick<
     LibraryFolder,
@@ -44,7 +47,7 @@ const DIRECTORY_ROW_ACTION_CLASS =
 const DIRECTORY_TABS: { value: DirectoryTab; label: string }[] = [
     { value: "files", label: "Documents" },
     { value: "templates", label: "Templates" },
-    { value: "projects", label: "Projects" },
+    { value: "projects", label: t.projects },
 ];
 const ALL_DIRECTORY_TAB_VALUES = DIRECTORY_TABS.map((tab) => tab.value);
 
@@ -1169,7 +1172,7 @@ function WorkspaceFileDirectory({
                         {loadingProjectLevels.has(`${project.id}:root`) ? (
                           <p className="flex items-center gap-2 pl-7 py-2 text-xs text-gray-400">
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            Loading project files
+                            Loading {t.projectLower} files
                           </p>
                         ) : docs.length === 0 && projectFolders.length === 0 ? (
                                                 <p className="pl-7 py-1 text-xs text-gray-400">
@@ -1222,7 +1225,7 @@ function WorkspaceFileDirectory({
                         !q &&
                         visibleDirectoryProjects.length === 0 && (
                             <p className="text-center text-sm text-gray-400 py-8">
-                                No projects yet
+                                No {t.projectsLower} yet
                             </p>
                         )}
             {activeTab === "projects" && !q && (

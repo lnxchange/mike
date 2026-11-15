@@ -21,6 +21,16 @@ const DEFAULT_QUICK_ACTION_PROMPT =
   "Execute this workflow on the selected documents.";
 const DEFAULT_WORD_QUICK_ACTION_PROMPT =
   "Execute this workflow on this Word document.";
+
+/** Seeded Word prompt. Users edit the installed quick action; sync does not overwrite it. */
+export const SUGGEST_FILENAME_PROMPT =
+  "Suggest one filename for this document. Do not edit the document. Use the pattern YYMMDD - Descriptive name.docx, with today's date and a short plain-English description of the document. Reply with the filename only.";
+
+const SAVED_PROMPT_SKILL = `# Saved prompt
+
+Follow the user's message. Do that task only. Do not expand it into a document review. Do not edit the document unless the message asks for an edit.
+`;
+
 const DEFAULT_WORKFLOWS = [
   { key: "proofread", quickAction: true, wordQuickAction: true },
   { key: "compare-documents", quickAction: true, wordQuickAction: false },
@@ -31,6 +41,15 @@ const DEFAULT_WORKFLOWS = [
     quickAction: false,
     wordQuickAction: false,
   },
+  {
+    key: "saved-prompt",
+    quickAction: true,
+    wordQuickAction: true,
+    quickActionName: "Suggest a filename",
+    appPrompt: SUGGEST_FILENAME_PROMPT,
+    wordPrompt: SUGGEST_FILENAME_PROMPT,
+    documentUpload: false,
+  },
 ] as const;
 const DEFAULT_WORKFLOW_BY_KEY = new Map<
   string,
@@ -38,6 +57,10 @@ const DEFAULT_WORKFLOW_BY_KEY = new Map<
     key: string;
     quickAction: boolean;
     wordQuickAction: boolean;
+    quickActionName?: string;
+    appPrompt?: string;
+    wordPrompt?: string;
+    documentUpload?: boolean;
     sortOrder: number;
   }
 >(
@@ -46,6 +69,46 @@ const DEFAULT_WORKFLOW_BY_KEY = new Map<
     { ...workflow, sortOrder },
   ]),
 );
+
+function builtinSavedPromptWorkflow(): WorkflowCatalogSourceWorkflow {
+  const config = DEFAULT_WORKFLOW_BY_KEY.get("saved-prompt");
+  const payload = {
+    workflow_key: "saved-prompt",
+    distribution: "default" as const,
+    version: "1.0.0",
+    title: "Saved prompt",
+    description: "Follow a saved instruction on the open document.",
+    type: "assistant" as const,
+    prompt_md: SAVED_PROMPT_SKILL,
+    columns_config: null,
+    contributors: [
+      {
+        name: "Attune Legal",
+        organisation: null,
+        role: null,
+        linkedin: null,
+      },
+    ],
+    language: "English",
+    practice: "General Transactions",
+    jurisdictions: ["General"],
+    pack_key: null,
+    pack_title: null,
+    pack_description: null,
+    pack_version: null,
+    default_sort_order: config?.sortOrder ?? null,
+    quick_action_name: config?.quickActionName ?? "Suggest a filename",
+    quick_action_prompt: config?.appPrompt ?? SUGGEST_FILENAME_PROMPT,
+    document_upload: false,
+    word_quick_action: true,
+    word_quick_action_prompt: config?.wordPrompt ?? SUGGEST_FILENAME_PROMPT,
+    assets: [] as WorkflowCatalogAssetSource[],
+  };
+  return {
+    ...payload,
+    content_hash: sha256(JSON.stringify({ ...payload, assets: [] })),
+  };
+}
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -609,14 +672,17 @@ async function parseArchive(
       pack_description: pack?.description ?? null,
       pack_version: pack?.version ?? null,
       default_sort_order: defaultConfig?.sortOrder ?? null,
-      quick_action_name: defaultConfig?.quickAction ? title : null,
-      quick_action_prompt: defaultConfig?.quickAction
-        ? DEFAULT_QUICK_ACTION_PROMPT
+      quick_action_name: defaultConfig?.quickAction
+        ? (defaultConfig.quickActionName ?? title)
         : null,
-      document_upload: defaultConfig?.quickAction === true,
+      quick_action_prompt: defaultConfig?.quickAction
+        ? (defaultConfig.appPrompt ?? DEFAULT_QUICK_ACTION_PROMPT)
+        : null,
+      document_upload:
+        defaultConfig?.documentUpload ?? defaultConfig?.quickAction === true,
       word_quick_action: defaultConfig?.wordQuickAction === true,
       word_quick_action_prompt: defaultConfig?.wordQuickAction
-        ? DEFAULT_WORD_QUICK_ACTION_PROMPT
+        ? (defaultConfig.wordPrompt ?? DEFAULT_WORD_QUICK_ACTION_PROMPT)
         : null,
       assets,
     };
@@ -631,11 +697,17 @@ async function parseArchive(
   }
 
   for (const workflow of DEFAULT_WORKFLOWS) {
-    if (!seenKeys.has(workflow.key)) {
-      throw new Error(
-        `Workflow archive is missing required default '${workflow.key}'`,
-      );
+    if (seenKeys.has(workflow.key)) continue;
+    // saved-prompt is shipped with this app so a filename prompt can be
+    // installed before the external catalog archive contains the skill.
+    if (workflow.key === "saved-prompt") {
+      workflows.push(builtinSavedPromptWorkflow());
+      seenKeys.add(workflow.key);
+      continue;
     }
+    throw new Error(
+      `Workflow archive is missing required default '${workflow.key}'`,
+    );
   }
 
   for (const [packPath, pack] of packCache) {

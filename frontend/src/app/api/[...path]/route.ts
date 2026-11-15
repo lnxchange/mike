@@ -13,6 +13,7 @@ import {
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 function backendOrigin() {
     const configuredUrl = process.env.API_BASE_URL?.trim();
@@ -40,6 +41,14 @@ async function proxy(request: NextRequest, context: RouteContext) {
         upstreamUrl.search = request.nextUrl.search;
 
         const headers = forwardableHeaders(request.headers);
+        // Authenticated document bytes must not be revalidated as 304.
+        // Express attaches ETags; a replayed If-None-Match returns an empty
+        // body that the viewer treats as a failed load.
+        headers.delete("if-none-match");
+        headers.delete("if-modified-since");
+        headers.delete("if-match");
+        headers.delete("if-unmodified-since");
+        headers.delete("if-range");
         // Mint correlation here rather than trusting a caller-supplied ID.
         // The backend logs the same ID even if its response never arrives.
         headers.set("x-request-id", requestId);
@@ -55,7 +64,9 @@ async function proxy(request: NextRequest, context: RouteContext) {
             cache: "no-store",
             redirect: "manual",
             // A client that goes away aborts the backend request too, instead
-            // of leaving it to run until undici's body timeout.
+            // of leaving it to run until undici's body timeout. Chat turns
+            // are not cancelled by that disconnect; Express only stops
+            // writing frames nobody is reading.
             signal: request.signal,
         };
         if (request.method !== "GET" && request.method !== "HEAD") {
@@ -77,17 +88,29 @@ async function proxy(request: NextRequest, context: RouteContext) {
         // Fetch implementations may transparently decompress the response.
         responseHeaders.delete("content-encoding");
         responseHeaders.delete("content-length");
+        responseHeaders.delete("etag");
+        responseHeaders.delete("last-modified");
+        responseHeaders.set("cache-control", "private, no-store");
+        // Copying upstream headers can fold several Set-Cookie lines into one.
+        // The browser then drops the Microsoft login proof, and the callback
+        // reports the confirmation link as invalid.
+        const setCookies = upstream.headers.getSetCookie();
+        responseHeaders.delete("set-cookie");
 
         const body = upstream.body
             ? guardUpstreamBody(upstream.body, (error) =>
                   reportStreamFailure(error, request, requestPath, requestId, upstream.status),
               )
             : null;
-        return new Response(body, {
+        const response = new Response(body, {
             status: upstream.status,
             statusText: upstream.statusText,
             headers: responseHeaders,
         });
+        for (const cookie of setCookies) {
+            response.headers.append("set-cookie", cookie);
+        }
+        return response;
     } catch (error) {
         // The client went away before the backend answered; the forwarded
         // signal aborted the backend request. Nobody is waiting for a

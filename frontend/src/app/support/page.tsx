@@ -12,6 +12,7 @@ import {
     supportMailtoFor,
     type UserFacingError,
 } from "@/app/lib/userFacingError";
+import { appConfig } from "@/config";
 
 type FeedbackType = "bug" | "feature" | "question" | "other";
 
@@ -50,7 +51,7 @@ export default function SupportPage() {
         {
             value: "question",
             label: "Question",
-            description: "Ask a question about using Mike",
+            description: `Ask a question about using ${appConfig.branding.appName}`,
         },
         {
             value: "other",
@@ -105,8 +106,7 @@ export default function SupportPage() {
             setError(
                 describeError(err, {
                     action: "send your message",
-                    fallback:
-                        "Mike couldn't send your message. Try again, or email us directly.",
+                    fallback: `${appConfig.branding.appName} couldn't send your message. Try again, or email us directly.`,
                 }),
             );
         } finally {

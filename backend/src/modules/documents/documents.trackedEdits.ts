@@ -73,6 +73,7 @@ export async function applyTrackedEditsToDocument(params: {
       version_number: number;
       storage_path: string;
       download_url: string;
+      author: string;
       annotations: EditAnnotation[];
       errors: { index: number; reason: string }[];
     }
@@ -303,6 +304,7 @@ export async function applyTrackedEditsToDocument(params: {
     version_number: nextVersionNumber,
     storage_path: newPath,
     download_url: permalink,
+    author,
     annotations,
     errors,
   };

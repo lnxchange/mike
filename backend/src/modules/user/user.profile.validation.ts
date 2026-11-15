@@ -17,10 +17,13 @@ const PRACTICE_SETTINGS = new Set([
 ]);
 
 const PROFESSIONAL_TITLES = new Set([
+    "Principal",
     "Partner",
+    "Special Counsel",
     "Senior Associate",
     "Associate",
     "Law Clerk",
+    "Paralegal",
     "Counsel",
     "General Counsel",
     "Legal Counsel",
@@ -158,6 +161,10 @@ export function validateProfilePayload(body: unknown):
               subagent_reasoning?: string | null;
               last_selected_chat_model?: string | null;
               last_selected_reasoning_level?: string | null;
+              legal_research_au?: boolean;
+              legal_research_au_energy?: boolean;
+              legal_research_au_vic?: boolean;
+              legal_research_au_cases?: boolean;
               quick_actions_visible?: boolean;
               response_details_visible?: boolean;
               updated_at: string;
@@ -184,6 +191,10 @@ export function validateProfilePayload(body: unknown):
         "subagentReasoning",
         "lastSelectedChatModel",
         "lastSelectedReasoningLevel",
+        "legalResearchAu",
+        "legalResearchAuEnergy",
+        "legalResearchAuVic",
+        "legalResearchAuCases",
         "quickActionsVisible",
         "responseDetailsVisible",
         "darkMode",
@@ -214,6 +225,10 @@ export function validateProfilePayload(body: unknown):
         subagent_reasoning?: string | null;
         last_selected_chat_model?: string | null;
         last_selected_reasoning_level?: string | null;
+        legal_research_au?: boolean;
+        legal_research_au_energy?: boolean;
+        legal_research_au_vic?: boolean;
+        legal_research_au_cases?: boolean;
         quick_actions_visible?: boolean;
         response_details_visible?: boolean;
         dark_mode?: boolean;
@@ -411,6 +426,47 @@ export function validateProfilePayload(body: unknown):
             };
         }
         routerModels[slug] = models;
+    }
+
+
+    if ("legalResearchAu" in raw) {
+        if (typeof raw.legalResearchAu !== "boolean") {
+            return {
+                ok: false,
+                detail: "legalResearchAu must be a boolean",
+            };
+        }
+        update.legal_research_au = raw.legalResearchAu;
+    }
+
+    if ("legalResearchAuEnergy" in raw) {
+        if (typeof raw.legalResearchAuEnergy !== "boolean") {
+            return {
+                ok: false,
+                detail: "legalResearchAuEnergy must be a boolean",
+            };
+        }
+        update.legal_research_au_energy = raw.legalResearchAuEnergy;
+    }
+
+    if ("legalResearchAuVic" in raw) {
+        if (typeof raw.legalResearchAuVic !== "boolean") {
+            return {
+                ok: false,
+                detail: "legalResearchAuVic must be a boolean",
+            };
+        }
+        update.legal_research_au_vic = raw.legalResearchAuVic;
+    }
+
+    if ("legalResearchAuCases" in raw) {
+        if (typeof raw.legalResearchAuCases !== "boolean") {
+            return {
+                ok: false,
+                detail: "legalResearchAuCases must be a boolean",
+            };
+        }
+        update.legal_research_au_cases = raw.legalResearchAuCases;
     }
 
     if ("quickActionsVisible" in raw) {

@@ -26,6 +26,10 @@ export type AccessibleChat = {
     model: string | null;
     reasoning_level: string | null;
     org_id?: string | null;
+    active_turn_id?: string | null;
+    active_turn_message_id?: string | null;
+    active_turn_started_at?: string | null;
+    active_turn_heartbeat_at?: string | null;
 } & Record<string, unknown>;
 
 export async function validateAccessibleProjectId(

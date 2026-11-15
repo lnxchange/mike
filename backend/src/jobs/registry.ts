@@ -3,11 +3,12 @@ import { handleChatTurnAudit } from "../modules/audit/audit.service";
 import { handleAccountDelete } from "../application/jobs/accountDelete";
 import { handleExportBuild } from "../application/jobs/exportBuild";
 import { handleMcpRefreshToken } from "../modules/user/user.service";
-import { handleDocumentCleanup, handleDocumentExtractText, markDocumentTextFailed, handleDocumentPrecomputeText, handleConversionConvert, markConversionFailed } from "../modules/documents/documents.service";
+import { handleDocumentCleanup, handleDocumentExtractText, markDocumentTextFailed, handleDocumentEmbedText, markDocumentEmbeddingsFailed, handleDocumentPrecomputeText, handleConversionConvert, markConversionFailed } from "../modules/documents/documents.service";
 import { handleExtractionExtract, markExtractionJobFailed } from "../modules/tabular/tabular.service";
-import { handleMemoryConsolidation, markMemoryConsolidationFailed } from "../modules/memory/memory.service";
+import { handleMemoryConsolidation, handleMemoryMatterBrief, markMemoryConsolidationFailed } from "../modules/memory/memory.service";
 import { handlePlaybookImport, handlePlaybookReview, markPlaybookImportJobFailed, markPlaybookReviewJobFailed } from "../modules/playbooks/playbooks.service";
 import { handleStorageCleanup } from "../lib/dbq/storageCleanup";
+import { handleLegalShelfRefresh } from "../lib/legalSourceShelf";
 import { type DbJobHandlers } from "../lib/dbq/types";
 import { type DbJobFailureHook } from "../lib/dbq/runner";
 
@@ -15,6 +16,7 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
   "audit.chat_turn": handleChatTurnAudit,
   "account.delete": handleAccountDelete,
   "storage.cleanup": handleStorageCleanup,
+  "legal.shelf.refresh": handleLegalShelfRefresh,
   "document.cleanup": handleDocumentCleanup,
   "export.build": handleExportBuild,
   "conversion.convert": handleConversionConvert,
@@ -22,13 +24,16 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
   "mcp.refresh_token": handleMcpRefreshToken,
   "document.precompute_text": handleDocumentPrecomputeText,
   "document.extract_text": handleDocumentExtractText,
+  "document.embed_text": (db, job) => handleDocumentEmbedText(db, job),
   "memory.consolidate": handleMemoryConsolidation,
+  "memory.matter_brief": handleMemoryMatterBrief,
   "playbook.review": handlePlaybookReview,
   "playbook.import": handlePlaybookImport,
 };
 export const DB_JOB_FAILURE_HOOKS: Record<string, DbJobFailureHook> = {
   "conversion.convert": markConversionFailed,
   "document.extract_text": markDocumentTextFailed,
+  "document.embed_text": (db, job) => markDocumentEmbeddingsFailed(db, job),
   "extraction.extract": markExtractionJobFailed,
   "memory.consolidate": markMemoryConsolidationFailed,
   "playbook.review": markPlaybookReviewJobFailed,
@@ -41,6 +46,7 @@ export {
   handleMcpRefreshToken,
   handleDocumentPrecomputeText,
   handleStorageCleanup,
+  handleLegalShelfRefresh,
 };
 export { MAX_ZIP_EXPORT_DOCUMENTS } from "../application/exports/exportContracts";
 export { MCP_TOKEN_REFRESH_WINDOW_MS } from "../modules/user/user.service";

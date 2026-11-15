@@ -10,8 +10,14 @@ activation reuses that version's text. Renames and PDF-rendition updates do not 
 The worker uses the existing PDF, accepted-view DOCX, spreadsheet, and presentation
 readers. Legacy DOC/PPT use LibreOffice. Text is complete, with existing page,
 slide, and spreadsheet markers. PostgreSQL cannot store NUL, so those characters
-are removed. Scanned pages are reported as incomplete OCR coverage; this feature
-does not add OCR. Extraction failures are distinct from successful empty text.
+are removed. When an OCR provider is configured on the backend (`OCR_API_KEY`, `OCR_API_URL` /
+`OCR_BASE_URL`, `OCR_PROVIDER=ollama`, or `MISTRAL_API_KEY`, with `OCR_DISABLED` not
+`true`), `document.extract_text` sends only the textless PDF pages to the configured
+OCR endpoint (`POST /v1/ocr` for `mistral-ocr` or `POST /v1/chat/completions` for
+`openai-chat` providers such as Ollama, vLLM, LiteLLM, OpenAI, and OpenRouter) and
+merges the recognized Markdown into the page sections before publishing. When OCR is
+not configured or an OCR request fails, scanned pages remain reported as incomplete
+OCR coverage. Extraction failures are distinct from successful empty text.
 
 Each source mutation changes `document_versions.text_revision`. Publication locks
 and compares that revision, so late jobs cannot overwrite an edit, repopulate a

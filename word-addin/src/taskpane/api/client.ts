@@ -380,7 +380,6 @@ export async function updateLastSelectedReasoningLevel(
   });
 }
 
-
 export async function getApiKeyStatus(): Promise<ApiKeyStatus> {
   return apiRequest<ApiKeyStatus>("settings.keys", "/user/api-keys");
 }
@@ -494,6 +493,8 @@ export async function streamWordChat(payload: {
   edit_apply_mode: "direct" | "approval";
   /** Declares that this pane executes client_tool_call frames. */
   client_tools?: boolean;
+  /** Office client of the pane; the backend picks prompt and tools by it. */
+  host?: "word" | "outlook";
   signal?: AbortSignal;
 }): Promise<Response> {
   const { signal, ...body } = payload;

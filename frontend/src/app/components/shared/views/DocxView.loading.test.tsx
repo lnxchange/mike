@@ -425,3 +425,23 @@ it("blocks both editing controls and saves when document permission is denied", 
     expect(exportDocx).not.toHaveBeenCalled();
     expect(replaceVersion).not.toHaveBeenCalled();
 });
+
+it("shows a failure instead of spinning when docx-preview cannot render", async () => {
+    const { renderAsync } = await import("docx-preview");
+    vi.mocked(renderAsync).mockRejectedValueOnce(new Error("broken xml"));
+    vi.mocked(authenticatedFetch).mockImplementation(async (url) => {
+        if (String(url).includes("tracked-change-ids")) {
+            return Response.json({ ids: [] });
+        }
+        return new Response(new Uint8Array([1]));
+    });
+    render(
+        <DocxView documentId="doc" cacheBytes={false} refetchKey={9} />,
+    );
+    expect(
+        await screen.findByText(
+            "This document could not be loaded. Please try again.",
+        ),
+    ).toBeVisible();
+    expect(screen.queryByLabelText("Loading document")).toBeNull();
+});

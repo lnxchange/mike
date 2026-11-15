@@ -35,6 +35,7 @@ import { selectAllByKey, selectInBatches } from "./batchedQuery";
 import { INTERNAL_ERROR_MESSAGE } from "./httpError";
 import { safeError } from "./safeError";
 import { recordAudit } from "./audit";
+import { logError } from "./log";
 import {
     canManageOrgRole,
     getOrgRole,
@@ -338,7 +339,7 @@ export async function listOrgResources(
                 pageBy<Row & Record<string, unknown>>("org projects", "id", () =>
                       db
                         .from("projects")
-                        .select("id, user_id, org_id, visibility, name, cm_number, practice, created_at, updated_at")
+                        .select("id, user_id, org_id, visibility, name, cm_number, client_name, description, practice, created_at, updated_at")
                         .eq("org_id", params.orgId)
                         .is("archived_at", null),
                 ),
@@ -897,6 +898,97 @@ function invitationExpiry(): string {
     ).toISOString();
 }
 
+/**
+ * What happened to the signup email Supabase Auth sends for this invitation.
+ *
+ * `sent` means Auth accepted an invite for someone without a confirmed
+ * account (creating one if needed) and handed it to the mailer.
+ * `existing_account` means they already have a Libris login, so Auth will
+ * not send a second signup invite; the in-app invitation is how they join.
+ * `failed` means the row was saved and the email did not go out.
+ */
+export type OrgInviteEmailDelivery = "sent" | "existing_account" | "failed";
+
+function inviteRedirectUrl(): string {
+    const origin = (process.env.FRONTEND_URL || "http://localhost:3000").replace(
+        /\/+$/,
+        "",
+    );
+    return `${origin}/auth/callback`;
+}
+
+function isAlreadyRegistered(error: { message?: string; code?: string }): boolean {
+    if (error.code === "email_exists") return true;
+    const message = (error.message ?? "").toLowerCase();
+    return (
+        message.includes("already been registered") ||
+        message.includes("already registered")
+    );
+}
+
+async function organizationName(db: Db, orgId: string): Promise<string> {
+    const { data } = await db
+        .from("organizations")
+        .select("name")
+        .eq("id", orgId)
+        .maybeSingle();
+    const name = (data as { name?: string } | null)?.name?.trim();
+    return name || "Libris";
+}
+
+/**
+ * Ask Supabase Auth to email a signup invite. Auth's invite template is the
+ * mailer; this does not send through a separate provider. A confirmed
+ * account is not an error: Auth refuses a second signup invite, and the
+ * organization invitation is already waiting for them in the app.
+ */
+async function deliverSignupInvite(
+    db: Db,
+    email: string,
+    orgName: string,
+): Promise<OrgInviteEmailDelivery> {
+    const invite = db.auth?.admin?.inviteUserByEmail?.bind(db.auth.admin);
+    if (!invite) {
+        logError("orgs", new Error("Auth admin invite is unavailable"), {
+            action: "org.invite.email",
+        });
+        return "failed";
+    }
+    try {
+        const { error } = await invite(email, {
+            redirectTo: inviteRedirectUrl(),
+            data: { organization_name: orgName },
+        });
+        if (!error) return "sent";
+        if (isAlreadyRegistered(error)) return "existing_account";
+        logError("orgs", error, { action: "org.invite.email" });
+        return "failed";
+    } catch (error) {
+        logError("orgs", error, { action: "org.invite.email" });
+        return "failed";
+    }
+}
+
+async function finishInvitation(
+    db: Db,
+    orgId: string,
+    email: string,
+    invitation: InvitationRow,
+): Promise<OrgResult<{ invitation: Record<string, unknown> }>> {
+    const emailDelivery = await deliverSignupInvite(
+        db,
+        email,
+        await organizationName(db, orgId),
+    );
+    return {
+        ok: true,
+        invitation: {
+            ...presentInvitation(invitation),
+            email_delivery: emailDelivery,
+        },
+    };
+}
+
 export async function createInvitation(
     db: Db,
     params: {
@@ -1013,10 +1105,7 @@ export async function createInvitation(
             title: email,
             detail: { org_id: params.orgId, role, invitation_id: live.id },
         });
-        return {
-            ok: true,
-            invitation: presentInvitation(refreshed as InvitationRow),
-        };
+        return finishInvitation(db, params.orgId, email, refreshed as InvitationRow);
     }
 
     const { data: invitation, error } = await db
@@ -1055,10 +1144,12 @@ export async function createInvitation(
             invitation_id: (invitation as { id: string }).id,
         },
     });
-    return {
-        ok: true,
-        invitation: presentInvitation(invitation as InvitationRow),
-    };
+    return finishInvitation(
+        db,
+        params.orgId,
+        email,
+        invitation as InvitationRow,
+    );
 }
 
 export async function listInvitations(
@@ -1207,10 +1298,12 @@ export async function resendInvitation(
         title: row.email,
         detail: { org_id: params.orgId, invitation_id: row.id },
     });
-    return {
-        ok: true,
-        invitation: presentInvitation(refreshed as InvitationRow),
-    };
+    return finishInvitation(
+        db,
+        params.orgId,
+        row.email,
+        refreshed as InvitationRow,
+    );
 }
 
 /**

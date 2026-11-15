@@ -24,6 +24,9 @@ import {
     LIQUID_GLASS_HOVER_CLASS,
     LIQUID_GLASS_MODAL_ROW_HOVER_CLASS,
 } from "@mike/ui";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 export type AccessScope = "direct" | "project";
 
@@ -463,7 +466,7 @@ export function OrganizationAccessEditor({
     members,
     assignments,
     organizationName,
-    ownerLabel = "Project owners",
+    ownerLabel = `${t.project} owners`,
     resourceNoun: resourceNounProp,
     loading = false,
     disabled = false,
@@ -590,7 +593,7 @@ export function OrganizationAccessEditor({
         resourceNounProp ??
         (ownerLabel.toLowerCase().startsWith("workflow")
             ? "workflow"
-            : "project");
+            : t.projectLower);
     const organizationLabel = organizationName || "the organisation";
     const peopleDescription = isPublic
         ? `Everyone in ${organizationLabel} can already open and run this ${resourceNoun}. Add members who should edit or own it; they are added as Editors, and you can change a person's role in the list below.`
@@ -860,8 +863,8 @@ export function AccessEditor({
             <section className="flex min-h-0 flex-1 flex-col">
                 {scope === "project" ? (
                     <p className="mb-3 text-xs text-gray-500">
-                        Access is inherited from the project and must be changed
-                        from the project&apos;s Access panel.
+                        Access is inherited from the {t.projectLower} and must be
+                        changed from the {t.projectLower}&apos;s Access panel.
                     </p>
                 ) : null}
 

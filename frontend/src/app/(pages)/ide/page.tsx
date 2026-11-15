@@ -4,6 +4,7 @@ import { useState } from "react";
 import { SvgAssetIcon } from "@/app/components/ui/svg-asset-icon";
 import ide from "../../../../public/icons/features/ide-new.svg";
 import { useRouter } from "next/navigation";
+import { FolderOpen, Plus } from "lucide-react";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { PillButtonUI } from "@mike/ui";
 import { ProjectPickerModal } from "@/app/components/modals/ProjectPickerModal";
@@ -12,6 +13,9 @@ import type { Project } from "@/app/components/shared/types";
 import { useProjectPicker } from "@/app/hooks/useProjectPicker";
 import { LIQUID_GLASS_FLAT_CLASS } from "@/app/components/ui/liquid-surface";
 import { cn } from "@/app/lib/utils";
+import { appConfig } from "@/config";
+
+const t = appConfig.terminology;
 
 export default function IdePage() {
     const router = useRouter();
@@ -47,7 +51,7 @@ export default function IdePage() {
                     title="Integrated Drafting Environment"
                     description={
                         projectPicker.error ??
-                        "Open a Project to start drafting and reviewing with the help of the Project Assistant."
+                        `Open a ${t.project} to start drafting and reviewing with the help of the ${t.project} Assistant.`
                     }
                     tone={projectPicker.error ? "error" : "default"}
                     action={
@@ -58,14 +62,16 @@ export default function IdePage() {
                                 onClick={() => void projectPicker.openPicker()}
                                 loading={projectPicker.loading}
                             >
-                                Open project
+                                <FolderOpen className="h-3.5 w-3.5" />
+                                Open {t.projectLower}
                             </PillButtonUI>
                             <PillButtonUI
                                 tone="white"
                                 size="sm"
                                 onClick={() => setNewProjectOpen(true)}
                             >
-                                New project
+                                <Plus className="h-3.5 w-3.5" />
+                                New {t.projectLower}
                             </PillButtonUI>
                         </div>
                     }
@@ -79,9 +85,9 @@ export default function IdePage() {
                 loading={projectPicker.loading}
                 selectedId={projectPicker.selectedId}
                 onSelect={projectPicker.setSelectedId}
-                breadcrumbs={["IDE", "Open project"]}
+                breadcrumbs={["IDE", `Open ${t.projectLower}`]}
                 primaryAction={{
-                    label: "Open",
+                    label: `Open ${t.projectLower}`,
                     variant: "blue",
                     type: "button",
                     onClick: openSelectedProject,

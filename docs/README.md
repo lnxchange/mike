@@ -17,7 +17,8 @@
 - [MCP connectors](connectors.md) — hosted presets, custom servers, OAuth,
   redirect URIs, and Slack/Google deployment setup
 - [Scoped memory](memory.md) — app and project Markdown memory, permissions,
-  asynchronous learning, deletion, and operations
+  correspondence-derived matter status, asynchronous learning, deletion, and
+  operations
 - [Google Workspace](google-workspace.md) — Drive, Gmail, and Calendar
   connectors: setup, permissions, approvals, limits, and acceptance tests
 - [CourtListener integration](courtlistener.md) — live US case-law tools and
@@ -26,12 +27,23 @@
   reading, keys, and safety
 - [Subagents](subagents.md) — delegated tasks, what they may do, approvals,
   and limits
+- [Australian Commonwealth legislation](au-legislation.md) — live Federal
+  Register of Legislation tools
+- [Australian energy law](au-energy.md) — ESC instruments, national energy
+  Laws and adoption Acts, AEMC rules, AER guidelines, and AEMO procedures
+- [Victorian legislation](au-vic-legislation.md) — live
+  legislation.vic.gov.au authorised compilations
+- [Australian case law](au-case-law.md) — High Court, Federal Court, NSW
+  Caselaw, and recent VSC PDFs (no AustLII)
 - [Microsoft Word add-in](../word-addin/README.md) — concise setup and command
   reference
 - [Word add-in development and deployment](word-addin-development.md) — manual
   setup, sideloading, builds, storage behavior, testing, and troubleshooting
 - [Tamper-evident exports](tamper-evident-exports.md) — document hashes and
   optional signed manifests
+- [Microsoft login and Outlook draft staging](integrations/microsoft-outlook-drafts.md)
+  — approved design for Microsoft OAuth login and review-only Outlook drafts
+  (not implemented yet)
 
 ## Backend
 

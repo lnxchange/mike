@@ -49,6 +49,7 @@ describe("collection document cleanup", () => {
       const filters = [
         ["eq", "user_id", "actor"],
         ["is", "project_id", null],
+        ["is", "org_id", null],
         libraryKind === "file"
           ? ["or", "library_kind.eq.file,library_kind.is.null"]
           : ["eq", "library_kind", "template"],
@@ -57,13 +58,48 @@ describe("collection document cleanup", () => {
         ...filters,
         ["in", "id", ["owned", "foreign"]],
       ]);
-      expect(fake.calls[1].filters).toEqual([
-        ...filters,
-        ["in", "id", ["owned"]],
-      ]);
+      expect(fake.calls[1].filters).toEqual([["in", "id", ["owned"]]]);
       fake.done();
     },
   );
+
+  it("also deletes writable organization library documents", async () => {
+    const fake = scriptedDb([
+      { table: "documents", data: [{ id: "personal" }] },
+      { table: "documents", data: [{ id: "firm" }] },
+      { table: "documents", op: "delete" },
+    ]);
+    expect(
+      await deleteCollectionDocuments(
+        fake.db,
+        {
+          kind: "library",
+          userId: "actor",
+          libraryKind: "file",
+          writableOrgIds: ["org-1"],
+        },
+        ["personal", "firm", "foreign"],
+      ),
+    ).toMatchObject({
+      ok: true,
+      data: { deletedIds: ["personal", "firm"] },
+    });
+    expect(fake.calls[0].filters).toEqual(
+      expect.arrayContaining([
+        ["eq", "user_id", "actor"],
+        ["is", "org_id", null],
+        ["in", "id", ["personal", "firm", "foreign"]],
+      ]),
+    );
+    expect(fake.calls[1].filters).toEqual(
+      expect.arrayContaining([
+        ["in", "org_id", ["org-1"]],
+        ["in", "id", ["personal", "firm", "foreign"]],
+      ]),
+    );
+    expect(fake.calls[2].filters).toEqual([["in", "id", ["personal", "firm"]]]);
+    fake.done();
+  });
 
   it("does nothing for an empty collection", async () => {
     const fake = scriptedDb([]);

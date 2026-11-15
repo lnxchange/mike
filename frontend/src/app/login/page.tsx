@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AuthApiError, login, signup } from "@/app/lib/authApi";
 import { completeUserOnboarding, getUserProfile } from "@/app/lib/mikeApi";
 import {
@@ -18,6 +18,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { cn } from "@/app/lib/utils";
 import { SsoAuthButton } from "@/app/components/auth/SsoAuthButton";
 import { GoogleAuthButton } from "@/app/components/auth/GoogleAuthButton";
+import { MicrosoftAuthButton } from "@/app/components/auth/MicrosoftAuthButton";
 import { FieldLabel } from "@/app/components/ui/form-field";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import {
@@ -30,6 +31,7 @@ import {
     TOO_MANY_ATTEMPTS_MESSAGE,
     authMessages,
 } from "@/app/lib/authMessages";
+import { authCallbackPathFromSearch } from "@/app/lib/authRedirects";
 
 /**
  * The shared auth table (`@/app/lib/authMessages`) with this screen's
@@ -82,6 +84,7 @@ declare global {
 
 export default function LoginPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const {
         isAuthenticated,
         authLoading,
@@ -109,10 +112,15 @@ export default function LoginPage() {
     const [guest, setGuest] = useState<GuestCredentials | null>(null);
 
     useEffect(() => {
+        const handoff = authCallbackPathFromSearch(searchParams);
+        if (handoff) {
+            router.replace(handoff);
+            return;
+        }
         if (!authLoading && isAuthenticated) {
             router.replace("/onboarding/profile");
         }
-    }, [authLoading, isAuthenticated, router]);
+    }, [authLoading, isAuthenticated, router, searchParams]);
 
     useEffect(() => {
         let cancelled = false;
@@ -341,6 +349,27 @@ export default function LoginPage() {
                                         onError={(nextError) => {
                                             setLoginMode(null);
                                             setError(nextError);
+                                        }}
+                                        disabled={loading}
+                                        onLoadingChange={setLoading}
+                                    />
+                                    <MicrosoftAuthButton
+                                        onError={(message) => {
+                                            setLoginMode(null);
+                                            setError(
+                                                message
+                                                    ? reportFault(
+                                                          new Error(message),
+                                                          {
+                                                              action: "continue with Microsoft",
+                                                              fallback:
+                                                                  "Unable to continue with Microsoft. Try again, or log in with your email and password.",
+                                                              operation:
+                                                                  "auth.signin",
+                                                          },
+                                                      )
+                                                    : null,
+                                            );
                                         }}
                                         disabled={loading}
                                         onLoadingChange={setLoading}

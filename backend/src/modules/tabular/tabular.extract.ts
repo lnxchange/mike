@@ -2,6 +2,8 @@
 // and document (PDF/DOCX/Office) text extraction.
 
 import { cachedTextForModel } from "../../lib/documentTextCache";
+import { isEmailDocumentType } from "../../lib/documentTypes";
+import { extractEmailText } from "../../lib/emailMessage";
 import { runIsolatedExtraction } from "../../lib/extraction/isolated";
 import {
     completeText,
@@ -262,6 +264,12 @@ export async function extractDocumentMarkdown(
     loadSource: () => Promise<ArrayBuffer | null>,
     fileType: string | null | undefined,
 ): Promise<string> {
+    const normalizedType = (fileType ?? "").toLowerCase();
+    if (isEmailDocumentType(normalizedType)) {
+        const source = await loadSource();
+        if (!source) return "";
+        return extractEmailText(Buffer.from(source), normalizedType);
+    }
     const extracted = await runIsolatedExtraction("documentText", loadSource, {
         fileType: fileType ?? "",
     });

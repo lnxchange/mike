@@ -67,6 +67,13 @@ export {
     type UserModelSettings,
 } from "./user.settings";
 
+// Credential storage lives in lib/providerCredentials. These names stay on
+// the facade because already-merged callers still import them from here.
+export {
+    getUserApiKeys,
+    saveUserApiKey,
+} from "../../lib/providerCredentials/store";
+
 export { resolveUserChatSelection } from "./user.chatSelection";
 
 export { handleMcpRefreshToken, MCP_TOKEN_REFRESH_WINDOW_MS } from "./user.mcpJobs";

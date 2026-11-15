@@ -24,9 +24,9 @@ describe("EmptyState", () => {
     it("applies the shared display heading classes", () => {
         render(<EmptyState title="Workflows" />);
         expect(screen.getByText("Workflows")).toHaveClass(
-            "font-serif",
+            "font-display",
             "text-2xl",
-            "font-medium",
+            "font-semibold",
             "text-gray-900",
         );
     });

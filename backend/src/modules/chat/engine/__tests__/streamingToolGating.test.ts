@@ -18,18 +18,30 @@ const { streamChatWithTools, runToolCalls } = vi.hoisted(() => ({
     docsFound: [],
     docsCreated: [],
     docsReplicated: [],
+    docsFinalized: [],
     workflowsApplied: [],
     docsEdited: [],
     askInputsEvents: [],
+    planEvents: [],
     courtlistenerEvents: [],
     caseCitationEvents: [],
+    auLegislationEvents: [],
+    auEnergyEvents: [],
+    auVicLegislationEvents: [],
+    auCaseLawEvents: [],
+    legislationCitationEvents: [],
     mcpEvents: [],
+    outlookEvents: [],
   })),
 }));
 
 vi.mock("../../../../lib/llm", async () => ({
-  ...(await vi.importActual<Record<string, unknown>>("../../../../lib/llm/models")),
+  ...(await vi.importActual<Record<string, unknown>>(
+    "../../../../lib/llm/models",
+  )),
+  DEFAULT_STREAM_MAX_ITERATIONS: 16,
   streamChatWithTools: (params: StreamChatCall) => streamChatWithTools(params),
+  completeText: vi.fn(),
 }));
 
 vi.mock("../../../../lib/mcpConnectors", () => ({
@@ -49,12 +61,28 @@ vi.mock("../tools/toolDispatcher", () => ({
     runToolCalls(calls),
 }));
 
+vi.mock("../../../../lib/memory/prompt", () => ({
+  buildMemoryTurn: async (args: { systemPrompt: string }) => ({
+    message: null,
+    systemPrompt: args.systemPrompt,
+  }),
+}));
+
+import { runLLMStream, sanitizeAssistantSseChunk } from "../streaming";
+import {
+  DOCUMENT_MUTATING_TOOL_NAMES,
+  PROJECT_EXTRA_TOOLS,
+} from "../tools/toolSchemas";
+import { PLAN_COMPLETE_SUMMARY } from "../../../../lib/llm/aiSdk";
+import {
+  CREATE_PLAN_REQUIRED_ERROR,
+  PLAN_PAUSE_CONTENT,
+  PLAN_SLICE_MAX_ITERATIONS,
+} from "../tools/planTools";
 import { scriptedDb } from "../../../../__tests__/helpers/scriptedDb";
 import { buildUserMcpTools } from "../../../../lib/mcpConnectors";
 import { buildGoogleDriveTools } from "../../../../lib/integrations/googleDrive";
 import { buildGoogleWorkspaceTools } from "../../../../lib/integrations/googleWorkspace";
-import { runLLMStream, sanitizeAssistantSseChunk } from "../streaming";
-import { PROJECT_EXTRA_TOOLS } from "../tools/toolSchemas";
 
 type RunToolsFn = (
   calls: { id: string; name: string; input: Record<string, unknown> }[],
@@ -97,7 +125,9 @@ function advertisedToolNames(): string[] {
 
 const WRITERS = [
   "edit_document",
+  "comment_document",
   "replicate_document",
+  "finalize_document",
   "generate_docx",
   "generate_excel",
   "generate_ppt",
@@ -109,6 +139,23 @@ beforeEach(() => {
 });
 
 describe("runLLMStream document-mutation gating", () => {
+  it("offers delegate only after a plan is active", async () => {
+    await runLLMStream({ ...baseParams() });
+    expect(advertisedToolNames()).not.toContain("delegate");
+
+    streamChatWithTools.mockClear();
+    await runLLMStream({
+      ...baseParams(),
+      apiMessages: [
+        {
+          role: "user",
+          content: "Continue\n[Active plan]\n- pending: Read the lease",
+        },
+      ],
+    });
+    expect(advertisedToolNames()).toContain("delegate");
+  });
+
   it("treats an SDK-wrapped ask-input pause as a successful turn", async () => {
     const askInputsEvent = {
       type: "ask_inputs" as const,
@@ -129,12 +176,20 @@ describe("runLLMStream document-mutation gating", () => {
       docsFound: [],
       docsCreated: [],
       docsReplicated: [],
+      docsFinalized: [],
       workflowsApplied: [],
       docsEdited: [],
       askInputsEvents: [askInputsEvent],
+      planEvents: [],
       courtlistenerEvents: [],
       caseCitationEvents: [],
+      auLegislationEvents: [],
+      auEnergyEvents: [],
+      auVicLegislationEvents: [],
+      auCaseLawEvents: [],
+      legislationCitationEvents: [],
       mcpEvents: [],
+      outlookEvents: [],
     } as never);
     streamChatWithTools.mockImplementationOnce(
       async (params: { runTools?: RunToolsFn }) => {
@@ -173,6 +228,100 @@ describe("runLLMStream document-mutation gating", () => {
     for (const writer of WRITERS) expect(names).not.toContain(writer);
   });
 
+  it("does not plan-and-stop a Word turn that has an open document", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      plans: false,
+      docStore: new Map([["active-word-document", { id: "active-word-document" }]]),
+      apiMessages: [
+        {
+          role: "user",
+          content:
+            "Can you please identify all the latest edits from Vin in this agreement?",
+        },
+      ],
+    });
+    const params = streamChatWithTools.mock.calls[0]?.[0] as {
+      requirePlan?: boolean;
+      tools: { function: { name: string } }[];
+    };
+    expect(params.requirePlan).toBe(false);
+    const names = params.tools.map((tool) => tool.function.name);
+    expect(names).not.toContain("create_plan");
+    expect(names).not.toContain("update_plan");
+    expect(names).toContain("read_document");
+  });
+
+  it("offers a Word turn only the tools the task pane can finish", async () => {
+    const { WORD_CHAT_TOOL_NAMES } = await import("../wordPrompt");
+    let toolResults: { tool_use_id: string; content: string }[] | undefined;
+    streamChatWithTools.mockImplementation(
+      async (params: { runTools?: RunToolsFn }) => {
+        toolResults = await params.runTools?.([
+          { id: "call-excel", name: "generate_excel", input: { title: "CP list" } },
+          { id: "call-read", name: "read_document", input: { doc_id: "active-word-document" } },
+        ]);
+        return { fullText: "" };
+      },
+    );
+
+    await runLLMStream({
+      ...baseParams(),
+      plans: false,
+      allowedToolNames: WORD_CHAT_TOOL_NAMES,
+      extraTools: [],
+    });
+
+    const names = advertisedToolNames();
+    for (const name of [
+      "read_document",
+      "find_in_document",
+      "find_documents",
+      "search_library",
+      "list_workflows",
+      "read_workflow",
+    ]) {
+      expect(names).toContain(name);
+    }
+    for (const name of [
+      "generate_excel",
+      "generate_ppt",
+      "generate_docx",
+      "edit_document",
+      "finalize_document",
+      "replicate_document",
+      "create_outlook_draft",
+      "create_plan",
+    ]) {
+      expect(names).not.toContain(name);
+    }
+    expect(runToolCalls).toHaveBeenCalledTimes(1);
+    const dispatched = runToolCalls.mock.calls[0]?.[0] as {
+      function: { name: string };
+    }[];
+    expect(dispatched.map((call) => call.function.name)).toEqual([
+      "read_document",
+    ]);
+    expect(toolResults?.[0]?.content).toContain("not available");
+  });
+
+  it("adds Australian legislation tools to a Word turn when that research is on", async () => {
+    const { wordChatAllowedToolNames } = await import("../wordPrompt");
+    await runLLMStream({
+      ...baseParams(),
+      plans: false,
+      includeResearchTools: false,
+      includeAuResearchTools: true,
+      allowedToolNames: wordChatAllowedToolNames({ au: true }),
+      extraTools: [],
+    });
+    const names = advertisedToolNames();
+    expect(names).toContain("au_search_legislation");
+    expect(names).toContain("au_get_legislation");
+    expect(names).not.toContain("au_search_case_law");
+    expect(names).not.toContain("generate_docx");
+  });
+
   it("keeps the whole reading surface for a read-only caller", async () => {
     await runLLMStream({ ...baseParams(), allowDocumentMutation: false });
     const names = advertisedToolNames();
@@ -185,9 +334,14 @@ describe("runLLMStream document-mutation gating", () => {
       "list_documents",
       "fetch_documents",
       "list_workflows",
+      "search_library",
+      "find_documents",
+      "create_plan",
+      "update_plan",
     ]) {
       expect(names).toContain(reader);
     }
+    expect(DOCUMENT_MUTATING_TOOL_NAMES.has("search_library")).toBe(false);
   });
 
   it("refuses a writing call the model asks for anyway, and never dispatches it", async () => {
@@ -234,6 +388,404 @@ describe("runLLMStream document-mutation gating", () => {
       (call) => call.function.name,
     );
     expect(dispatched).toEqual(["edit_document"]);
+  });
+});
+
+describe("runLLMStream research-tool gating", () => {
+  it("advertises US tools by default and withholds AU tools", async () => {
+    await runLLMStream(baseParams());
+    const names = advertisedToolNames();
+    expect(names).toContain("courtlistener_verify_citations");
+    expect(names).not.toContain("au_search_legislation");
+  });
+
+  it("withholds US tools when includeUsResearchTools is false", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).not.toContain("au_search_legislation");
+  });
+
+  it("advertises AU tools only when includeAuResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).toContain("au_search_legislation");
+    expect(names).toContain("au_get_legislation");
+    expect(names).toContain("au_get_legislation_as_at");
+    expect(names).toContain("au_legislation_versions");
+    expect(names).toContain("au_find_in_legislation");
+    expect(names).not.toContain("au_search_energy");
+  });
+
+  it("can advertise both research surfaces independently", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: true,
+      includeAuResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).toContain("courtlistener_verify_citations");
+    expect(names).toContain("au_search_legislation");
+    expect(names).not.toContain("au_search_energy");
+  });
+
+  it("advertises AU energy tools only when includeAuEnergyResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: false,
+      includeAuEnergyResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).not.toContain("au_search_legislation");
+    expect(names).toContain("au_search_energy");
+    expect(names).toContain("au_get_energy");
+    expect(names).toContain("au_get_energy_as_at");
+    expect(names).toContain("au_energy_versions");
+    expect(names).toContain("au_find_in_energy");
+  });
+
+  it("advertises Victorian legislation tools only when includeAuVicResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: false,
+      includeAuEnergyResearchTools: false,
+      includeAuVicResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("au_search_legislation");
+    expect(names).not.toContain("au_search_energy");
+    expect(names).toContain("au_search_vic_legislation");
+    expect(names).toContain("au_get_vic_legislation");
+    expect(names).toContain("au_get_vic_legislation_as_at");
+    expect(names).toContain("au_vic_legislation_versions");
+    expect(names).toContain("au_find_in_vic_legislation");
+  });
+
+  it("advertises Australian case-law tools only when includeAuCasesResearchTools is true", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      includeUsResearchTools: false,
+      includeAuResearchTools: false,
+      includeAuCasesResearchTools: true,
+    });
+    const names = advertisedToolNames();
+    expect(names).not.toContain("courtlistener_verify_citations");
+    expect(names).toContain("au_search_case_law");
+    expect(names).toContain("au_get_case");
+    expect(names).toContain("au_find_in_case");
+  });
+});
+
+describe("runLLMStream Outlook draft gating", () => {
+  it("advertises create_outlook_draft only when Microsoft OAuth is enabled", async () => {
+    const previous = process.env.MICROSOFT_OAUTH_ENABLED;
+    delete process.env.MICROSOFT_OAUTH_ENABLED;
+    await runLLMStream(baseParams());
+    expect(advertisedToolNames()).not.toContain("create_outlook_draft");
+
+    process.env.MICROSOFT_OAUTH_ENABLED = "true";
+    streamChatWithTools.mockClear();
+    await runLLMStream(baseParams());
+    expect(advertisedToolNames()).toContain("create_outlook_draft");
+
+    if (previous === undefined) delete process.env.MICROSOFT_OAUTH_ENABLED;
+    else process.env.MICROSOFT_OAUTH_ENABLED = previous;
+  });
+});
+
+describe("runLLMStream planning", () => {
+  it("pauses after create_plan instead of letting the model keep working", async () => {
+    const planEvent = {
+      type: "plan" as const,
+      event_id: "plan-1",
+      title: "New job request",
+      items: [
+        {
+          id: "read",
+          content: "Read the emails",
+          status: "in_progress" as const,
+        },
+        {
+          id: "review",
+          content: "Review the terms",
+          status: "pending" as const,
+        },
+      ],
+    };
+    runToolCalls.mockResolvedValueOnce({
+      toolResults: [],
+      docsRead: [],
+      docsFound: [],
+      docsCreated: [],
+      docsReplicated: [],
+      docsFinalized: [],
+      workflowsApplied: [],
+      docsEdited: [],
+      askInputsEvents: [],
+      planEvents: [planEvent],
+      courtlistenerEvents: [],
+      caseCitationEvents: [],
+      auLegislationEvents: [],
+      auEnergyEvents: [],
+      auVicLegislationEvents: [],
+      auCaseLawEvents: [],
+      legislationCitationEvents: [],
+      mcpEvents: [],
+      outlookEvents: [],
+    } as never);
+    streamChatWithTools.mockImplementationOnce(
+      async (params: { runTools?: RunToolsFn }) => {
+        try {
+          await params.runTools?.([
+            { id: "call-a", name: "create_plan", input: {} },
+          ]);
+        } catch (error) {
+          throw new Error(error instanceof Error ? error.message : "wrapped");
+        }
+        return { fullText: "" };
+      },
+    );
+
+    const write = vi.fn();
+    const result = await runLLMStream({ ...baseParams(), write });
+
+    expect(result.events).toEqual(
+      expect.arrayContaining([
+        planEvent,
+        { type: "content", text: PLAN_PAUSE_CONTENT },
+      ]),
+    );
+    expect(result.events).not.toContainEqual(
+      expect.objectContaining({ type: "error" }),
+    );
+    expect(write).toHaveBeenCalledWith(
+      `data: ${JSON.stringify(planEvent)}\n\n`,
+    );
+  });
+
+  it("asks for a summary instead of pausing when the plan is finished", async () => {
+    const planEvent = {
+      type: "plan" as const,
+      event_id: "plan-1",
+      title: "BP confirmation",
+      items: [
+        {
+          id: "markup",
+          content: "Mark up the set-off clause",
+          status: "completed" as const,
+        },
+        {
+          id: "note",
+          content: "Draft the covering note",
+          status: "completed" as const,
+        },
+      ],
+    };
+    runToolCalls.mockResolvedValueOnce({
+      toolResults: [
+        {
+          role: "tool",
+          tool_call_id: "call-a",
+          content: JSON.stringify({ ok: true }),
+        },
+      ],
+      docsRead: [],
+      docsFound: [],
+      docsCreated: [],
+      docsReplicated: [],
+      docsFinalized: [],
+      workflowsApplied: [],
+      docsEdited: [],
+      askInputsEvents: [],
+      planEvents: [planEvent],
+      courtlistenerEvents: [],
+      caseCitationEvents: [],
+      auLegislationEvents: [],
+      auEnergyEvents: [],
+      auVicLegislationEvents: [],
+      auCaseLawEvents: [],
+      legislationCitationEvents: [],
+      mcpEvents: [],
+      outlookEvents: [],
+    } as never);
+    let toolResults: { tool_use_id: string; content: string }[] | undefined;
+    streamChatWithTools.mockImplementationOnce(
+      async (params: { runTools?: RunToolsFn }) => {
+        toolResults = await params.runTools?.([
+          { id: "call-a", name: "update_plan", input: {} },
+        ]);
+        return { fullText: "" };
+      },
+    );
+
+    const result = await runLLMStream(baseParams());
+
+    expect(result.events).toContainEqual(planEvent);
+    expect(result.events).not.toContainEqual(
+      expect.objectContaining({ type: "content", text: PLAN_PAUSE_CONTENT }),
+    );
+    expect(toolResults?.[0]?.content).toContain(PLAN_COMPLETE_SUMMARY);
+  });
+
+  it("blocks drafting on a workflow turn until a plan exists", async () => {
+    let toolResults: { tool_use_id: string; content: string }[] | undefined;
+    streamChatWithTools.mockImplementation(
+      async (params: { runTools?: RunToolsFn }) => {
+        toolResults = await params.runTools?.([
+          {
+            id: "call-a",
+            name: "replicate_document",
+            input: { doc_id: "doc-0" },
+          },
+          { id: "call-b", name: "read_document", input: { doc_id: "doc-0" } },
+        ]);
+        return { fullText: "" };
+      },
+    );
+
+    await runLLMStream({
+      ...baseParams(),
+      apiMessages: [
+        {
+          role: "user",
+          content:
+            "[Workflow: New job request (id: wf-1)]\n\nPlease process this new job.",
+        },
+      ],
+    });
+
+    const dispatched = runToolCalls.mock.calls[0]![0].map(
+      (call) => call.function.name,
+    );
+    expect(dispatched).toEqual(["read_document"]);
+    expect(toolResults?.[0]).toEqual({
+      tool_use_id: "call-a",
+      content: JSON.stringify({ error: CREATE_PLAN_REQUIRED_ERROR }),
+    });
+  });
+
+  it("caps a continuation that already has an active plan", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      maxIterations: 16,
+      reasoning: "high",
+      apiMessages: [
+        { role: "assistant", content: `${"[Active plan]"}\nTitle: Job` },
+        { role: "user", content: "Continue with the next step." },
+      ],
+    });
+
+    expect(streamChatWithTools.mock.calls[0]![0].maxIterations).toBe(
+      PLAN_SLICE_MAX_ITERATIONS,
+    );
+    expect(streamChatWithTools.mock.calls[0]![0].requirePlan).toBe(false);
+    expect(streamChatWithTools.mock.calls[0]![0].reasoning).toBe("high");
+  });
+
+  it("forces a plan on a long review with no workflow", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      reasoning: "high",
+      apiMessages: [
+        {
+          role: "user",
+          content:
+            "Could you please conduct an initial review of the confirmation that we received today from BP for the urgent review? Give me your thoughts on the commercial fundamentals and explain how the ex-ante energy offset transaction works.",
+        },
+      ],
+    });
+
+    expect(streamChatWithTools.mock.calls[0]![0].maxIterations).toBe(2);
+    expect(streamChatWithTools.mock.calls[0]![0].requirePlan).toBe(true);
+    expect(streamChatWithTools.mock.calls[0]![0].reasoning).toBe("low");
+  });
+
+  it("does not force a plan for a short question with no documents", async () => {
+    await runLLMStream({
+      ...baseParams(),
+      apiMessages: [{ role: "user", content: "What is an ISDA?" }],
+    });
+
+    expect(streamChatWithTools.mock.calls[0]![0].maxIterations).toBe(16);
+    expect(streamChatWithTools.mock.calls[0]![0].requirePlan).toBe(false);
+    expect(streamChatWithTools.mock.calls[0]![0].reasoning).toBe("high");
+  });
+
+  it("still pauses for ask_inputs on a review before any plan exists", async () => {
+    const askInputsEvent = {
+      type: "ask_inputs" as const,
+      items: [
+        {
+          id: "docs",
+          kind: "documents" as const,
+          question: "Please attach the confirmation.",
+          document_types: ["BP draft confirmation"],
+        },
+      ],
+    };
+    runToolCalls.mockResolvedValueOnce({
+      toolResults: [],
+      docsRead: [],
+      docsFound: [],
+      docsCreated: [],
+      docsReplicated: [],
+      docsFinalized: [],
+      workflowsApplied: [],
+      docsEdited: [],
+      askInputsEvents: [askInputsEvent],
+      planEvents: [],
+      courtlistenerEvents: [],
+      caseCitationEvents: [],
+      auLegislationEvents: [],
+      auEnergyEvents: [],
+      auVicLegislationEvents: [],
+      auCaseLawEvents: [],
+      legislationCitationEvents: [],
+      mcpEvents: [],
+      outlookEvents: [],
+    } as never);
+    streamChatWithTools.mockImplementationOnce(
+      async (params: { runTools?: RunToolsFn }) => {
+        try {
+          await params.runTools?.([
+            { id: "call-a", name: "ask_inputs", input: {} },
+          ]);
+        } catch (error) {
+          throw new Error(error instanceof Error ? error.message : "wrapped");
+        }
+        return { fullText: "" };
+      },
+    );
+
+    const result = await runLLMStream({
+      ...baseParams(),
+      apiMessages: [
+        {
+          role: "user",
+          content:
+            "Could you please conduct an initial review of the confirmation that we received today from BP for the urgent review and explain the ex-ante energy offset?",
+        },
+      ],
+    });
+
+    expect(result.events).toEqual([askInputsEvent]);
+    expect(result.events).not.toContainEqual(
+      expect.objectContaining({ type: "error" }),
+    );
+    expect(result.events).not.toContainEqual(
+      expect.objectContaining({ type: "plan" }),
+    );
   });
 });
 

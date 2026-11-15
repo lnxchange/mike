@@ -75,7 +75,11 @@ import {
     withChatLeaveAccess,
     updateChatSettings,
     updateChatTitle,
+    activeTurnFromChatRow,
+    schedulePlanContinuation,
+    stageOutlookPreview,
 } from "./chat.service";
+import { decidePlanContinuation } from "./engine/tools/planTools";
 import {
     resolveWorkspaceFilter,
     sendWorkspaceFailure,
@@ -201,6 +205,139 @@ chatRouter.get("/:chatId", requireAuth, asyncRoute(async (req, res) => {
         active_turn: getActiveAssistantTurn(chatId),
     });
 }));
+
+// POST /chat/:chatId/messages/:messageId/outlook-draft
+// Stages the draft card already stored on that message. No model turn.
+chatRouter.post(
+    "/:chatId/messages/:messageId/outlook-draft",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId, messageId } = req.params;
+        const rawIndex = (req.body as { event_index?: unknown } | undefined)
+            ?.event_index;
+        const eventIndex =
+            typeof rawIndex === "number" &&
+            Number.isInteger(rawIndex) &&
+            rawIndex >= 0
+                ? rawIndex
+                : null;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+        if (!can(access.projectRole, "content.edit")) {
+            return void res.status(403).json({
+                detail: "You do not have permission to modify this chat",
+            });
+        }
+
+        const result = await stageOutlookPreview(db, {
+            chatId,
+            messageId,
+            userId,
+            userEmail,
+            eventIndex,
+        });
+        if (!result.ok) {
+            if (result.kind === "not_found" || result.kind === "no_preview") {
+                return void res.status(404).json({
+                    code: result.kind,
+                    detail:
+                        result.kind === "no_preview"
+                            ? "There is no email draft to stage."
+                            : "Chat not found",
+                });
+            }
+            if (result.kind === "outlook_auth_required") {
+                return void res.status(409).json({
+                    code: "outlook_auth_required",
+                    detail: "Connect Microsoft in Settings to stage this draft.",
+                });
+            }
+            if (result.kind === "attachment_unavailable") {
+                return void res.status(400).json({
+                    code: "attachment_unavailable",
+                    detail: "One of the attached documents is not available.",
+                });
+            }
+            return void res.status(400).json({
+                code: "outlook_draft_failed",
+                detail: result.message,
+            });
+        }
+        res.json({ event: result.event });
+    }),
+);
+
+// POST /chat/:chatId/plan/continue — run the next slice of an unfinished plan.
+// No user message is stored. A run the server already holds is returned as-is.
+chatRouter.post(
+    "/:chatId/plan/continue",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { chatId } = req.params;
+        const db = createServerSupabase();
+        const access = await getAccessibleChat(db, { chatId, userId, userEmail });
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Chat not found" });
+        if (!can(access.projectRole, "content.edit")) {
+            return void res.status(403).json({
+                detail: "You do not have permission to modify this chat",
+            });
+        }
+
+        const active = activeTurnFromChatRow(access.chat);
+        if (active?.assistantMessageId) {
+            return void res.status(202).json({
+                assistant_message_id: active.assistantMessageId,
+            });
+        }
+
+        const messages = await getChatMessages(db, chatId);
+        let assistantMessageId: string | null = null;
+        let events: unknown[] = [];
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const row = messages[index] as {
+                id?: unknown;
+                role?: unknown;
+                content?: unknown;
+            };
+            if (row?.role !== "assistant" || typeof row.id !== "string") continue;
+            assistantMessageId = row.id;
+            events = Array.isArray(row.content) ? row.content : [];
+            break;
+        }
+        if (!assistantMessageId) {
+            return void res.status(404).json({ detail: "Chat not found" });
+        }
+
+        const decision = decidePlanContinuation({
+            events,
+            slicesCompleted: 0,
+            previousStatusKey: null,
+            userResume: true,
+        });
+        if (!decision.continue) {
+            return void res.json({ continued: false, reason: decision.stop });
+        }
+
+        schedulePlanContinuation({
+            db,
+            userId,
+            userEmail,
+            chatId,
+            assistantMessageId,
+            slicesCompleted: 0,
+            previousStatusKey: null,
+            userResume: true,
+        });
+        res.status(202).json({ assistant_message_id: assistantMessageId });
+    }),
+);
 
 // POST /chat/:chatId/leave — revoke only the authenticated recipient.
 chatRouter.post("/:chatId/leave", requireAuth, asyncRoute(async (req, res) => {
@@ -605,6 +742,10 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         apiMessages,
         workflowStore,
         legalResearchUs,
+        legalResearchAu,
+        legalResearchAuEnergy,
+        legalResearchAuVic,
+        legalResearchAuCases,
         webSearch,
         apiKeys,
         orgId,
@@ -618,6 +759,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     let chatTitle = prep.prepared.chatTitle;
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
     let memoryTurnScheduled = false;
+    let planHandoffId: string | null = null;
     const subagentRuns = createSubagentRunStore({
         db,
         userId,
@@ -683,6 +825,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
 
         const stream = attachAssistantTurnSse(res, run);
         const write = stream.write;
+        const turnSignal = stream.signal;
         const updateReservedAssistantMessage =
             createReservedAssistantMessageUpdater({
                 db,
@@ -744,7 +887,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                           });
                           if (!saved.ok) throw saved.error;
                           chatTitle = title;
-                          if (!stream.signal.aborted) {
+                          if (!turnSignal.aborted) {
                               write(
                                   `data: ${JSON.stringify({ type: "chat_title", chatId, title })}\n\n`,
                               );
@@ -769,6 +912,11 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 allowDocumentMutation,
                 workflowStore,
                 includeResearchTools: legalResearchUs,
+                includeUsResearchTools: legalResearchUs,
+                includeAuResearchTools: legalResearchAu,
+                includeAuEnergyResearchTools: legalResearchAuEnergy,
+                includeAuVicResearchTools: legalResearchAuVic,
+                includeAuCasesResearchTools: legalResearchAuCases,
                 webSearch,
                 subagentRuns,
                 subagentDefaults,
@@ -911,7 +1059,9 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 completedTurnPersisted &&
                 !persistedEvents.some(
                     (event) =>
-                        event.type === "ask_inputs" || event.type === "error",
+                        event.type === "ask_inputs" ||
+                        event.type === "plan" ||
+                        event.type === "error",
                 )
             ) {
                 const completedTurnId =
@@ -947,6 +1097,18 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 },
                 persistedEvents,
             );
+            const handoffId =
+                assistantMessageId ??
+                askInputsResponse?.assistant_message_id ??
+                null;
+            const continuation = decidePlanContinuation({
+                events: persistedEvents,
+                slicesCompleted: 1,
+                previousStatusKey: null,
+            });
+            if (handoffId && !turnSignal.aborted && continuation.continue) {
+                planHandoffId = handoffId;
+            }
             write("data: [DONE]\n\n");
         } catch (err) {
             // The title ran in parallel with the reply; only now is it known
@@ -1097,6 +1259,17 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
             stream.finish();
         }
     } finally {
+        if (planHandoffId) {
+            schedulePlanContinuation({
+                db,
+                userId,
+                userEmail,
+                chatId,
+                assistantMessageId: planHandoffId,
+                slicesCompleted: 1,
+                previousStatusKey: null,
+            });
+        }
         if (memoryTurn && !memoryTurnScheduled) {
             try {
                 await releaseMemoryConversationTurn({

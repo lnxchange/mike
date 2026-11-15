@@ -10,6 +10,7 @@ import { Check, Copy } from "lucide-react";
 import type {
     AssistantEvent,
     Citation,
+    DocumentCitation,
     EditAnnotation,
     PanelDocument,
 } from "../shared/types";
@@ -50,10 +51,15 @@ import {
     DocCreatedBlock,
     DocDownloadBlock,
     DocEditBlock,
+    DocFinalizedBlock,
     DocFindBlock,
     DocReadBlock,
     DocReplicatedBlock,
     EventBlock,
+    OutlookConnectBlock,
+    OutlookDraftBlock,
+    OutlookDraftPreviewBlock,
+    PlanBlock,
     ReasoningBlock,
     WorkflowAppliedBlock,
     type CourtListenerBlockItem,
@@ -137,6 +143,12 @@ interface Props {
      * edits flip their per-card UI without per-card clicks.
      */
     resolvedEditStatuses?: Record<string, "accepted" | "rejected">;
+    /** Assistant message id, so Stage in Outlook can save onto this turn. */
+    messageId?: string;
+    onStageOutlookDraft?: (
+        messageId: string,
+        eventIndex: number,
+    ) => Promise<void>;
 }
 
 function AssistantMessageImpl({
@@ -161,6 +173,8 @@ function AssistantMessageImpl({
     isDocReloading,
     isEditReloading,
     resolvedEditStatuses,
+    messageId,
+    onStageOutlookDraft,
 }: Props) {
     const contentDivRef = useRef<HTMLDivElement | null>(null);
     const [isCopied, setIsCopied] = useState(false);
@@ -206,6 +220,13 @@ function AssistantMessageImpl({
           : awaitingInput
             ? "waiting"
             : null;
+
+    const isRenderableEvent = (event: AssistantEvent) =>
+        event.type !== "error" &&
+        event.type !== "ask_inputs_response" &&
+        event.type !== "case_citation" &&
+        event.type !== "legislation_citation" &&
+        event.type !== "case_opinions";
 
     // Find the last content event so its raw text can be smoothed before
     // citation preprocessing — slicing already-preprocessed text would risk
@@ -277,7 +298,12 @@ function AssistantMessageImpl({
             onOpenCitationSource(citation);
             return;
         }
-        if (citation.kind === "case" || !onOpenDocument) return;
+        if (
+            citation.kind === "case" ||
+            citation.kind === "legislation" ||
+            !onOpenDocument
+        )
+            return;
         onOpenDocument({
             documentId: citation.document_id,
             filename: citation.filename,
@@ -287,7 +313,9 @@ function AssistantMessageImpl({
     };
     const canOpenCitationSource = (citation: Citation) =>
         !!onOpenCitationSource ||
-        (citation.kind !== "case" && !!onOpenDocument);
+        (citation.kind !== "case" &&
+            citation.kind !== "legislation" &&
+            !!onOpenDocument);
     const eventsWithDelegated = withDelegationEvents(events ?? []);
     // The pages an answer cites follow the answer, not the steps before it.
     // Several provider steps can cite the same page, so list each URL once.
@@ -359,7 +387,18 @@ function AssistantMessageImpl({
               kind: "content";
               event: Extract<AssistantEvent, { type: "content" }>;
               index: number;
-          };
+          }
+        | {
+              kind: "plan";
+              event: Extract<AssistantEvent, { type: "plan" }>;
+              index: number;
+          }
+        | { kind: "outlook"; event: AssistantEvent; index: number };
+
+    const isOutlookSurfaceEvent = (event: AssistantEvent) =>
+        event.type === "outlook_draft_preview" ||
+        event.type === "outlook_draft_created" ||
+        event.type === "outlook_auth_required";
 
     const groups: EventGroup[] = [];
     if (events) {
@@ -376,6 +415,18 @@ function AssistantMessageImpl({
                 } else {
                     groups.push({ kind: "content", event: e, index: i });
                 }
+            } else if (e.type === "plan") {
+                if (current) {
+                    groups.push(current);
+                    current = null;
+                }
+                groups.push({ kind: "plan", event: e, index: i });
+            } else if (isOutlookSurfaceEvent(e)) {
+                if (current) {
+                    groups.push(current);
+                    current = null;
+                }
+                groups.push({ kind: "outlook", event: e, index: i });
             } else {
                 if (!current)
                     current = { kind: "pre", events: [], indices: [] };
@@ -405,6 +456,7 @@ function AssistantMessageImpl({
                 (g.kind === "content" || g.kind === "text_card") &&
                 g.event.text.length > 0
             ) return true;
+            if (g.kind === "plan" || g.kind === "outlook") return true;
         }
         return false;
     };
@@ -440,6 +492,14 @@ function AssistantMessageImpl({
                 ? nextEvent.type !== "content"
                 : connectsToNextRow;
 
+        if (event.type === "delegation") {
+            return (
+                <p key={globalIdx} className="text-sm text-gray-600">
+                    {event.status === "completed" ? "Finished" : "Working on"}:{" "}
+                    {event.title}
+                </p>
+            );
+        }
         if (event.type === "reasoning") {
             return (
                 <ReasoningBlock
@@ -507,7 +567,8 @@ function AssistantMessageImpl({
         }
         if (event.type === "doc_read") {
             const ann = citations.find(
-                (a) => a.kind !== "case" && a.filename === event.filename,
+                (a): a is DocumentCitation =>
+                    "filename" in a && a.filename === event.filename,
             );
             return (
                 <DocReadBlock
@@ -574,6 +635,50 @@ function AssistantMessageImpl({
                                   })
                             : undefined
                     }
+                />
+            );
+        }
+        if (event.type === "outlook_draft_preview") {
+            return (
+                <OutlookDraftPreviewBlock
+                    key={globalIdx}
+                    subject={event.subject}
+                    to={event.to ?? []}
+                    cc={event.cc}
+                    htmlBody={event.html_body ?? ""}
+                    attachmentNames={event.attachment_names ?? []}
+                    isStreaming={event.isStreaming}
+                    showConnector={showConnector}
+                    onStage={
+                        !isStreaming && messageId && onStageOutlookDraft
+                            ? () => onStageOutlookDraft(messageId, globalIdx)
+                            : undefined
+                    }
+                />
+            );
+        }
+        if (event.type === "outlook_draft_created") {
+            return (
+                <OutlookDraftBlock
+                    key={globalIdx}
+                    subject={event.subject}
+                    to={event.to ?? []}
+                    cc={event.cc}
+                    htmlBody={event.html_body ?? ""}
+                    attachmentNames={event.attachment_names ?? []}
+                    threaded={event.threaded}
+                    threadStatus={event.thread_status}
+                    webLink={event.web_link}
+                    isStreaming={event.isStreaming}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "outlook_auth_required") {
+            return (
+                <OutlookConnectBlock
+                    key={globalIdx}
+                    showConnector={showConnector}
                 />
             );
         }
@@ -648,6 +753,33 @@ function AssistantMessageImpl({
                                       documentId: event.document_id,
                                       filename: event.filename,
                                       versionId: event.version_id || null,
+                                      versionNumber:
+                                          event.version_number ?? null,
+                                  })
+                            : undefined
+                    }
+                />
+            );
+        }
+        if (event.type === "doc_finalized") {
+            return (
+                <DocFinalizedBlock
+                    key={globalIdx}
+                    filename={event.filename}
+                    sourceFilename={event.source_filename}
+                    accepted={event.accepted}
+                    isStreaming={event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                    onClick={
+                        !event.isStreaming &&
+                        event.document_id &&
+                        onOpenDocument
+                            ? () =>
+                                  onOpenDocument({
+                                      documentId: event.document_id!,
+                                      filename: event.filename,
+                                      versionId: event.version_id ?? null,
                                       versionNumber:
                                           event.version_number ?? null,
                                   })
@@ -921,6 +1053,458 @@ function AssistantMessageImpl({
                 />
             );
         }
+        if (event.type === "au_search_legislation") {
+            const count = event.result_count ?? 0;
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}"`
+                    : undefined
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "result" : "results"}${event.query ? ` for "${event.query}"` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching the Federal Register"
+                            : event.error
+                              ? "Federal Register search failed"
+                              : "Searched the Federal Register"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (
+            event.type === "au_get_legislation" ||
+            event.type === "au_get_legislation_as_at"
+        ) {
+            const asAt =
+                event.type === "au_get_legislation_as_at"
+                    ? event.date
+                    : event.as_at;
+            const title =
+                [event.name, event.title_id].filter(Boolean).join(" ") ||
+                "legislation";
+            const sectionBit = event.section ? ` s ${event.section}` : "";
+            const asAtBit = asAt ? ` as at ${asAt}` : "";
+            const labelCore = `${title}${sectionBit}${asAtBit}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? `Reading ${labelCore}`
+                            : event.error
+                              ? `Legislation read failed ${labelCore}`
+                              : `Read ${labelCore}`
+                    }
+                    detail={event.error && !event.isStreaming ? event.error : undefined}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_legislation_versions") {
+            const count = event.version_count ?? 0;
+            const title = event.title_id;
+            const detail = event.isStreaming
+                ? title
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "compilation" : "compilations"}${title ? ` for ${title}` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Listing compilations"
+                            : event.error
+                              ? "Compilation list failed"
+                              : "Listed compilations"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_find_in_legislation") {
+            const searches = event.searches ?? [];
+            if (searches.length > 0) {
+                const matches =
+                    event.total_matches ??
+                    searches.reduce(
+                        (sum, search) => sum + (search.total_matches ?? 0),
+                        0,
+                    );
+                const detail = event.isStreaming
+                    ? undefined
+                    : event.error
+                      ? event.error
+                      : `(${matches} ${matches === 1 ? "match" : "matches"})`;
+                const items: CourtListenerBlockItem[] = searches.map(
+                    (search) => ({
+                        caseName: search.name ?? null,
+                        citation: search.title_id,
+                        url: null,
+                        query: search.query,
+                        totalMatches: search.total_matches ?? 0,
+                        hasError: !!search.error,
+                    }),
+                );
+                return (
+                    <CourtListenerBlock
+                        key={globalIdx}
+                        label={
+                            event.isStreaming
+                                ? "Searching legislation"
+                                : event.error
+                                  ? "Legislation searches failed"
+                                  : "Searched legislation"
+                        }
+                        detail={detail}
+                        isStreaming={!!event.isStreaming}
+                        hasError={!!event.error}
+                        showConnector={showConnector}
+                        items={items.length > 0 ? items : undefined}
+                    />
+                );
+            }
+            const matches = event.total_matches ?? 0;
+            const titleLabel =
+                [event.name, event.title_id].filter(Boolean).join(", ") ||
+                "legislation";
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}" in ${titleLabel}`
+                    : titleLabel
+                : event.error
+                  ? event.error
+                  : `${matches} ${matches === 1 ? "match" : "matches"}${event.query ? ` for "${event.query}"` : ""} in ${titleLabel}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching legislation"
+                            : event.error
+                              ? "Legislation search failed"
+                              : "Searched legislation"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_search_energy") {
+            const count = event.result_count ?? 0;
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}"`
+                    : undefined
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "result" : "results"}${event.query ? ` for "${event.query}"` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching energy instruments"
+                            : event.error
+                              ? "Energy instrument search failed"
+                              : "Searched energy instruments"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (
+            event.type === "au_get_energy" ||
+            event.type === "au_get_energy_as_at"
+        ) {
+            const asAt =
+                event.type === "au_get_energy_as_at"
+                    ? event.date
+                    : event.as_at;
+            const title =
+                [event.name, event.title_id].filter(Boolean).join(" ") ||
+                "energy instrument";
+            const sectionBit = event.section ? ` cl ${event.section}` : "";
+            const asAtBit = asAt ? ` as at ${asAt}` : "";
+            const labelCore = `${title}${sectionBit}${asAtBit}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? `Reading ${labelCore}`
+                            : event.error
+                              ? `Energy read failed ${labelCore}`
+                              : `Read ${labelCore}`
+                    }
+                    detail={event.error && !event.isStreaming ? event.error : undefined}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_energy_versions") {
+            const count = event.version_count ?? 0;
+            const title = event.title_id;
+            const detail = event.isStreaming
+                ? title
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "version" : "versions"}${title ? ` for ${title}` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Listing energy versions"
+                            : event.error
+                              ? "Energy version list failed"
+                              : "Listed energy versions"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_find_in_energy") {
+            const matches = event.total_matches ?? 0;
+            const titleLabel =
+                [event.name, event.title_id].filter(Boolean).join(", ") ||
+                "energy instrument";
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}" in ${titleLabel}`
+                    : titleLabel
+                : event.error
+                  ? event.error
+                  : `${matches} ${matches === 1 ? "match" : "matches"}${event.query ? ` for "${event.query}"` : ""} in ${titleLabel}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching energy instrument"
+                            : event.error
+                              ? "Energy instrument search failed"
+                              : "Searched energy instrument"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_search_vic_legislation") {
+            const count = event.result_count ?? 0;
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}"`
+                    : undefined
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "result" : "results"}${event.query ? ` for "${event.query}"` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching Victorian legislation"
+                            : event.error
+                              ? "Victorian legislation search failed"
+                              : "Searched Victorian legislation"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (
+            event.type === "au_get_vic_legislation" ||
+            event.type === "au_get_vic_legislation_as_at"
+        ) {
+            const asAt =
+                event.type === "au_get_vic_legislation_as_at"
+                    ? event.date
+                    : event.as_at;
+            const title =
+                [event.name, event.title_id].filter(Boolean).join(" ") ||
+                "Victorian legislation";
+            const sectionBit = event.section ? ` s ${event.section}` : "";
+            const asAtBit = asAt ? ` as at ${asAt}` : "";
+            const labelCore = `${title}${sectionBit}${asAtBit}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? `Reading ${labelCore}`
+                            : event.error
+                              ? `Victorian read failed ${labelCore}`
+                              : `Read ${labelCore}`
+                    }
+                    detail={event.error && !event.isStreaming ? event.error : undefined}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_vic_legislation_versions") {
+            const count = event.version_count ?? 0;
+            const title = event.title_id;
+            const detail = event.isStreaming
+                ? title
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "version" : "versions"}${title ? ` for ${title}` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Listing Victorian versions"
+                            : event.error
+                              ? "Victorian version list failed"
+                              : "Listed Victorian versions"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_find_in_vic_legislation") {
+            const matches = event.total_matches ?? 0;
+            const titleLabel =
+                [event.name, event.title_id].filter(Boolean).join(", ") ||
+                "Victorian legislation";
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}" in ${titleLabel}`
+                    : titleLabel
+                : event.error
+                  ? event.error
+                  : `${matches} ${matches === 1 ? "match" : "matches"}${event.query ? ` for "${event.query}"` : ""} in ${titleLabel}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching Victorian legislation"
+                            : event.error
+                              ? "Victorian legislation search failed"
+                              : "Searched Victorian legislation"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_search_case_law") {
+            const count = event.result_count ?? 0;
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}"`
+                    : undefined
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "result" : "results"}${event.query ? ` for "${event.query}"` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching Australian cases"
+                            : event.error
+                              ? "Australian case search failed"
+                              : "Searched Australian cases"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_get_case") {
+            const title =
+                [event.name, event.title_id].filter(Boolean).join(" ") ||
+                "Australian case";
+            const sectionBit = event.section ? ` [${event.section}]` : "";
+            const labelCore = `${title}${sectionBit}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? `Reading ${labelCore}`
+                            : event.error
+                              ? `Australian case read failed ${labelCore}`
+                              : `Read ${labelCore}`
+                    }
+                    detail={event.error && !event.isStreaming ? event.error : undefined}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "au_find_in_case") {
+            const matches = event.total_matches ?? 0;
+            const titleLabel =
+                [event.name, event.title_id].filter(Boolean).join(", ") ||
+                "Australian case";
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}" in ${titleLabel}`
+                    : titleLabel
+                : event.error
+                  ? event.error
+                  : `${matches} ${matches === 1 ? "match" : "matches"}${event.query ? ` for "${event.query}"` : ""} in ${titleLabel}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching Australian case"
+                            : event.error
+                              ? "Australian case search failed"
+                              : "Searched Australian case"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
         return null;
     };
 
@@ -1010,6 +1594,26 @@ function AssistantMessageImpl({
                                     </div>
                                 );
                             }
+                            if (g.kind === "plan") {
+                                return (
+                                    <PlanBlock
+                                        key={`plan-${g.index}`}
+                                        event={g.event}
+                                    />
+                                );
+                            }
+                            if (g.kind === "outlook") {
+                                return (
+                                    <div key={`o-${g.index}`}>
+                                        {renderEvent(
+                                            g.event,
+                                            0,
+                                            [g.event],
+                                            g.index,
+                                        )}
+                                    </div>
+                                );
+                            }
                             const subsequentContent = hasContentAfter(gIdx);
                             const pendingAskInput = hasPendingAskInput(g);
                             const wrapperIsStreaming =
@@ -1034,6 +1638,9 @@ function AssistantMessageImpl({
                                     }
                                     isStreaming={wrapperIsStreaming}
                                     forceOpen={pendingAskInput}
+                                    incomplete={
+                                        hasError && !subsequentContent
+                                    }
                                 >
                                     {renderPreEvents(g)}
                                 </PreResponseWrapper>

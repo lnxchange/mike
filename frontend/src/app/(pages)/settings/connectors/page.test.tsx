@@ -472,6 +472,30 @@ describe("ConnectorsPage OAuth poll cancellation", () => {
             screen.getByRole("switch", { name: "Retained connector connector" }),
         ).toBeTruthy();
     });
+
+    it("prefills the form when the Exa preset is clicked", async () => {
+        render(<ConnectorsPage />);
+        await act(async () => {
+            await flushMicrotasks();
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: /add/i }));
+        fireEvent.click(
+            screen.getByRole("button", { name: /exa mcp\.exa\.ai/i }),
+        );
+
+        expect(
+            (screen.getByPlaceholderText("Connector label") as HTMLInputElement)
+                .value,
+        ).toBe("Exa");
+        expect(
+            (
+                screen.getByPlaceholderText(
+                    "https://mcp.example.com/mcp",
+                ) as HTMLInputElement
+            ).value,
+        ).toBe("https://mcp.exa.ai/mcp");
+    });
 });
 
 describe("ConnectorsPage operator setup guidance", () => {

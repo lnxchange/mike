@@ -4,6 +4,7 @@ import path from "path";
 import JSZip from "jszip";
 import { describe, expect, it, vi } from "vitest";
 import {
+  SUGGEST_FILENAME_PROMPT,
   prepareWorkflowCatalog,
   removePreparedWorkflowCatalog,
   validateWorkflowCatalogDocument,
@@ -125,7 +126,23 @@ describe("GitHub workflow catalog preparation", () => {
         JSON.parse(await readFile(prepared.catalogPath, "utf8")) as unknown,
       );
       expect(document.source_commit).toBe(COMMIT);
-      expect(document.workflows).toHaveLength(6);
+      expect(document.workflows).toHaveLength(7);
+      expect(
+        document.workflows.find(
+          (workflow) => workflow.workflow_key === "saved-prompt",
+        ),
+      ).toMatchObject({
+        title: "Saved prompt",
+        quick_action_name: "Suggest a filename",
+        word_quick_action: true,
+        word_quick_action_prompt: SUGGEST_FILENAME_PROMPT,
+        document_upload: false,
+      });
+      expect(
+        document.workflows.find(
+          (workflow) => workflow.workflow_key === "saved-prompt",
+        )?.prompt_md,
+      ).toContain("Do not expand it into a document review");
       expect(
         document.workflows.find(
           (workflow) => workflow.workflow_key === "proofread",

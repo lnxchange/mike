@@ -4,6 +4,7 @@ import {
   initialize,
   signIn,
   signInWithGoogle,
+  signInWithMicrosoft,
   signOut,
   subscribe,
   type AddinAuthUser,
@@ -21,6 +22,7 @@ interface AuthState {
   error: string | null;
   login: (email: string, password: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
+  loginWithMicrosoft: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -40,8 +42,9 @@ export function useAuth(): AuthState {
     []
   );
   const loginWithGoogle = useCallback(() => signInWithGoogle(), []);
+  const loginWithMicrosoft = useCallback(() => signInWithMicrosoft(), []);
   const logout = useCallback(() => signOut(), []);
 
   const { user, loading, error } = getSessionState();
-  return { user, loading, error, login, loginWithGoogle, logout };
+  return { user, loading, error, login, loginWithGoogle, loginWithMicrosoft, logout };
 }

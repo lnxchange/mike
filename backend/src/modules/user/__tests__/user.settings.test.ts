@@ -26,13 +26,36 @@ vi.mock("../../../lib/supabase", () => ({ createServerSupabase: vi.fn() }));
 import { getUserModelSettings } from "../user.settings";
 
 function profileDb(row: Record<string, unknown> | null) {
-    const chain: Record<string, unknown> = {};
-    for (const method of ["from", "select", "eq"]) {
-        chain[method] = vi.fn(() => chain);
-    }
-    chain.single = vi.fn(async () => ({ data: row, error: null }));
-    chain.maybeSingle = vi.fn(async () => ({ data: row, error: null }));
-    return chain as never;
+    return {
+        from() {
+            let selected = "";
+            const chain: Record<string, unknown> = {};
+            chain.select = vi.fn((cols: string) => {
+                selected = String(cols);
+                return chain;
+            });
+            chain.eq = vi.fn(() => chain);
+            chain.single = vi.fn(async () => ({ data: row, error: null }));
+            chain.maybeSingle = vi.fn(async () => {
+                if (selected.includes("custom_instructions")) {
+                    return {
+                        data: {
+                            custom_instructions: row?.custom_instructions ?? "",
+                        },
+                        error: null,
+                    };
+                }
+                if (selected.includes("response_style")) {
+                    return {
+                        data: { response_style: row?.response_style ?? {} },
+                        error: null,
+                    };
+                }
+                return { data: row, error: null };
+            });
+            return chain;
+        },
+    } as never;
 }
 
 const NO_KEYS = {
@@ -152,12 +175,28 @@ function retryingProfileDb(
     second: { data: unknown; error: unknown },
 ) {
     const results = [first, second];
-    const chain: Record<string, unknown> = {};
-    for (const method of ["from", "select", "eq"]) {
-        chain[method] = vi.fn(() => chain);
-    }
-    chain.single = vi.fn(async () => results.shift() ?? second);
-    return chain as never;
+    return {
+        from() {
+            let selected = "";
+            const chain: Record<string, unknown> = {};
+            chain.select = vi.fn((cols: string) => {
+                selected = String(cols);
+                return chain;
+            });
+            chain.eq = vi.fn(() => chain);
+            chain.single = vi.fn(async () => results.shift() ?? second);
+            chain.maybeSingle = vi.fn(async () => ({
+                data: null,
+                error: {
+                    code: "42703",
+                    message: selected.includes("response_style")
+                        ? "column user_profiles.response_style does not exist"
+                        : "column user_profiles.custom_instructions does not exist",
+                },
+            }));
+            return chain;
+        },
+    } as never;
 }
 
 describe("getUserModelSettings keys", () => {
@@ -296,8 +335,69 @@ describe("getUserModelSettings on an un-migrated database", () => {
         );
 
         expect(settings.legal_research_us).toBe(true);
+        expect(settings.legal_research_au).toBe(false);
+        expect(settings.legal_research_au_energy).toBe(false);
+        expect(settings.legal_research_au_vic).toBe(false);
+        expect(settings.legal_research_au_cases).toBe(false);
         expect(settings.title_model).toBeNull();
         expect(settings.tabular_model).toBeNull();
+    });
+});
+
+describe("getUserModelSettings Australian legal research", () => {
+    it("defaults AU research on when jurisdiction is Australia and the column is unset", async () => {
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                title_model: "claude-haiku-4-5",
+                tabular_model: "claude-sonnet-5",
+                legal_research_us: true,
+                jurisdiction: "Australia",
+            }),
+        );
+
+        expect(settings.legal_research_au).toBe(true);
+        expect(settings.legal_research_au_energy).toBe(true);
+        expect(settings.legal_research_au_vic).toBe(true);
+        expect(settings.legal_research_au_cases).toBe(true);
+    });
+
+    it("keeps an explicit AU off choice even for an Australian jurisdiction", async () => {
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                title_model: "claude-haiku-4-5",
+                tabular_model: "claude-sonnet-5",
+                legal_research_us: true,
+                legal_research_au: false,
+                legal_research_au_energy: false,
+                legal_research_au_vic: false,
+                legal_research_au_cases: false,
+                jurisdiction: "Australia",
+            }),
+        );
+
+        expect(settings.legal_research_au).toBe(false);
+        expect(settings.legal_research_au_energy).toBe(false);
+        expect(settings.legal_research_au_vic).toBe(false);
+        expect(settings.legal_research_au_cases).toBe(false);
+    });
+
+    it("defaults AU research off when jurisdiction is not Australia", async () => {
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                title_model: "claude-haiku-4-5",
+                tabular_model: "claude-sonnet-5",
+                legal_research_us: true,
+                jurisdiction: "Singapore",
+            }),
+        );
+
+        expect(settings.legal_research_au).toBe(false);
+        expect(settings.legal_research_au_energy).toBe(false);
+        expect(settings.legal_research_au_vic).toBe(false);
+        expect(settings.legal_research_au_cases).toBe(false);
     });
 });
 

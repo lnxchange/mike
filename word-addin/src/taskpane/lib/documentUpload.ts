@@ -1,16 +1,9 @@
-export const SUPPORTED_DOCUMENT_ACCEPT =
-  ".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt";
+import {
+  SUPPORTED_UPLOAD_ACCEPT,
+  isSupportedUploadFilename,
+} from "@mike/upload-session-client";
 
-const SUPPORTED_EXTENSIONS = new Set([
-  "pdf",
-  "docx",
-  "doc",
-  "xlsx",
-  "xlsm",
-  "xls",
-  "pptx",
-  "ppt",
-]);
+export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_UPLOAD_ACCEPT;
 
 export function partitionSupportedDocumentFiles(files: File[]): {
   supported: File[];
@@ -20,11 +13,7 @@ export function partitionSupportedDocumentFiles(files: File[]): {
   const unsupported: File[] = [];
 
   for (const file of files) {
-    const extension = file.name.split(".").pop()?.toLowerCase();
-    (extension && SUPPORTED_EXTENSIONS.has(extension)
-      ? supported
-      : unsupported
-    ).push(file);
+    (isSupportedUploadFilename(file.name) ? supported : unsupported).push(file);
   }
 
   return { supported, unsupported };

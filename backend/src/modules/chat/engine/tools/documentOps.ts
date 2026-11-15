@@ -1,21 +1,43 @@
 import { loadVersionTextState, cachedTextForModel } from "../../../../lib/documentTextCache";
 import {
   applyTrackedEditsToDocument,
+  activateDocumentVersion,
   createDocumentVersion,
   loadCurrentVersionBytes,
   readStoredDocumentText,
   storedDocumentTextCurrent,
+  updateDocumentVersion,
 } from "../../../documents/documents.service";
 
 // Tracked-change editing lives in the documents module; the tool dispatcher
-// keeps calling it by its tool-facing name.
+// keeps calling it by its tool-facing name. Commenting and clean-copy
+// finalizing stay here.
 export { applyTrackedEditsToDocument as runEditDocument, loadCurrentVersionBytes };
-import { downloadFileIfAvailable, extractedTextKey, generatedDocKey, uploadFile } from "../../../../lib/storage";
+import {
+  downloadFileIfAvailable,
+  extractedTextKey,
+  generatedDocKey,
+  storageKey,
+  uploadFile,
+} from "../../../../lib/storage";
 import { convertedPdfKey, docxToPdf } from "../../../../lib/convert";
 import { enqueueConversion } from "../../../../lib/queue/conversionQueue";
-import { enqueueDbJob } from "../../../../lib/dbq/enqueue";
+import { enqueueDbJob, enqueueStorageCleanup } from "../../../../lib/dbq/enqueue";
 import type { Db } from "../../../../lib/supabase";
+import { profileAttributionName } from "../../../../lib/userLookup";
+import {
+  acceptAllTrackedChanges,
+  applyDocxComments,
+  type CommentInput,
+  type TrackedMarkupSummary,
+} from "../../../../lib/docxTrackedChanges";
 import { buildDownloadUrl } from "../../../../lib/downloadTokens";
+import {
+  generateImageBytes,
+  imageGenerationEnabled,
+  readImageGenConfig,
+} from "../../../../lib/imagegen/imageClient";
+import { AppError } from "../../../../lib/appError";
 import {
   contentSha256,
   loadActiveVersion,
@@ -28,12 +50,22 @@ import {
 } from "../types";
 import {
   contentTypeForDocumentType,
+  isEmailDocumentType,
   isPresentationDocumentType,
   isSpreadsheetDocumentType,
   isWordDocumentType,
   requiresLibreOfficeTextExtraction,
   shouldConvertToPdf,
 } from "../../../../lib/documentTypes";
+import { extractEmailText } from "../../../../lib/emailMessage";
+import {
+  fillExecutionBlock,
+  selectExecutionBlock,
+  type ExecutionBlockId,
+  type ExecutionLine,
+  type ExecutionPartyKind,
+  type ExecutionPlaceholderValues,
+} from "../../../../lib/auExecutionBlocks";
 import {
   ExtractionLimitError,
   ExtractionBusyError,
@@ -205,9 +237,13 @@ export async function generateDocx(
     ];
     const normalizeTable = (
       table: unknown,
-    ): { headers: string[]; rows: string[][] } | null => {
+    ): { headers: string[]; rows: string[][]; borders: boolean } | null => {
       if (!table || typeof table !== "object") return null;
-      const raw = table as { headers?: unknown; rows?: unknown };
+      const raw = table as {
+        headers?: unknown;
+        rows?: unknown;
+        borders?: unknown;
+      };
       const headers = Array.isArray(raw.headers)
         ? raw.headers
             .map((header) => (typeof header === "string" ? header.trim() : ""))
@@ -222,7 +258,67 @@ export async function generateDocx(
           headers.map((_, i) => (typeof row[i] === "string" ? row[i] : "")),
         );
 
-      return { headers, rows };
+      return { headers, rows, borders: raw.borders !== false };
+    };
+    const noBorder = {
+      top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    };
+    const tableNoBorder = {
+      ...noBorder,
+      insideHorizontal: noBorder.top,
+      insideVertical: noBorder.top,
+    };
+    const paragraphFromExecutionLines = (lines: ExecutionLine[]) =>
+      lines.map(
+        (line) =>
+          new Paragraph({
+            spacing: { after: 40 },
+            children: line.runs.map(
+              (run) =>
+                new TextRun({
+                  text: run.text,
+                  font: FONT,
+                  size: SIZE,
+                  bold: run.bold === true,
+                  italics: run.italic === true,
+                }),
+            ),
+          }),
+      );
+    const normalizeExecutionBlocks = (value: unknown) => {
+      if (!Array.isArray(value)) return [];
+      const blocks: ReturnType<typeof fillExecutionBlock>[] = [];
+      for (const raw of value) {
+        if (!raw || typeof raw !== "object") continue;
+        const request = raw as {
+          party?: unknown;
+          id?: unknown;
+          values?: unknown;
+        };
+        try {
+          const selected =
+            typeof request.party === "string"
+              ? selectExecutionBlock(request.party as ExecutionPartyKind)
+              : typeof request.id === "string"
+                ? selectExecutionBlock({ id: request.id as ExecutionBlockId })
+                : null;
+          if (!selected) continue;
+          blocks.push(
+            fillExecutionBlock(
+              selected,
+              request.values && typeof request.values === "object"
+                ? (request.values as ExecutionPlaceholderValues)
+                : undefined,
+            ),
+          );
+        } catch {
+          // Ignore a malformed party/id so one bad block cannot fail the document.
+        }
+      }
+      return blocks;
     };
     const stripManualNumbering = (
       value: string,
@@ -273,7 +369,13 @@ export async function generateDocx(
     const isUnnumberedHeading = (heading: string, sectionIndex: number) => {
       const normalized = normalizeHeadingText(heading);
       if (!normalized) return true;
-      if (normalized === "signatures" || normalized === "signature") {
+      if (
+        normalized === "signatures" ||
+        normalized === "signature" ||
+        normalized === "execution" ||
+        normalized === "execution block" ||
+        normalized === "execution blocks"
+      ) {
         return true;
       }
       if (isTitleLikeFirstHeading(heading, sectionIndex)) {
@@ -308,7 +410,8 @@ export async function generateDocx(
         content?: string;
         level?: number;
         pageBreak?: boolean;
-        table?: { headers: string[]; rows: string[][] };
+        table?: { headers: string[]; rows: string[][]; borders?: boolean };
+        executionBlocks?: unknown;
       }[]
     ).entries()) {
       if (section.pageBreak) {
@@ -358,9 +461,38 @@ export async function generateDocx(
           );
         }
       }
+      const executionBlocks = normalizeExecutionBlocks(section.executionBlocks);
+      for (const block of executionBlocks) {
+        for (const row of block.rows) {
+          children.push(
+            new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              borders: tableNoBorder,
+              rows: [
+                new TableRow({
+                  children: [
+                    new TableCell({
+                      borders: noBorder,
+                      width: { size: 55, type: WidthType.PERCENTAGE },
+                      children: paragraphFromExecutionLines(row.left),
+                    }),
+                    new TableCell({
+                      borders: noBorder,
+                      width: { size: 45, type: WidthType.PERCENTAGE },
+                      children: paragraphFromExecutionLines(row.right),
+                    }),
+                  ],
+                }),
+              ],
+            }),
+          );
+        }
+        children.push(new Paragraph({ text: "" }));
+      }
       const normalizedTable = normalizeTable(section.table);
       if (normalizedTable) {
-        const { headers, rows } = normalizedTable;
+        const { headers, rows, borders } = normalizedTable;
+        const tableBorder = borders ? cellBorder : noBorder;
         const tableRows: InstanceType<typeof TableRow>[] = [];
         // Header row
         tableRows.push(
@@ -369,8 +501,8 @@ export async function generateDocx(
             children: headers.map(
               (h) =>
                 new TableCell({
-                  borders: cellBorder,
-                  shading: { fill: "F2F2F2" },
+                  borders: tableBorder,
+                  shading: borders ? { fill: "F2F2F2" } : undefined,
                   children: [
                     new Paragraph({
                       children: [
@@ -397,8 +529,8 @@ export async function generateDocx(
             new TableRow({
               children: normalized.map(
                 (cell) =>
-                  new TableCell({
-                    borders: cellBorder,
+                new TableCell({
+                    borders: tableBorder,
                     children: [
                       new Paragraph({
                         children: [
@@ -418,6 +550,7 @@ export async function generateDocx(
         children.push(
           new Table({
             width: { size: 100, type: WidthType.PERCENTAGE },
+            borders: borders ? undefined : tableNoBorder,
             rows: tableRows,
           }),
         );
@@ -915,7 +1048,7 @@ ${slides
 
 async function persistGeneratedFile(params: {
   title: string;
-  extension: "docx" | "xlsx" | "pptx";
+  extension: "docx" | "xlsx" | "pptx" | "png" | "jpg";
   buffer: Buffer;
   userId: string;
   db: Db;
@@ -941,15 +1074,14 @@ async function persistGeneratedFile(params: {
   );
 
   // PPTX is the only generated type that pays for LibreOffice here (XLSX is
-  // never converted — spreadsheets are served raw). With the async flag on,
-  // the rendition rides the conversion queue instead: the document is
-  // inserted without one and a job fills it in with retries — closing the
-  // sync path's silent failure mode where a LibreOffice hiccup left the doc
-  // permanently rendition-less.
+  // never converted — spreadsheets are served raw, and PNG/JPEG stay rasters).
+  // With the async flag on, the rendition rides the conversion queue instead:
+  // the document is inserted without one and a job fills it in with retries —
+  // closing the sync path's silent failure mode where a LibreOffice hiccup
+  // left the doc permanently rendition-less.
   let pdfStoragePath: string | null = null;
   const deferRenditionToQueue =
-    shouldConvertToPdf(extension) &&
-    process.env.ASYNC_DOCUMENT_CONVERSION === "true";
+    shouldConvertToPdf(extension) && process.env.ASYNC_DOCUMENT_CONVERSION === "true";
   if (shouldConvertToPdf(extension) && !deferRenditionToQueue) {
     try {
       const pdfBuf = await docxToPdf(buffer);
@@ -1039,6 +1171,75 @@ async function persistGeneratedFile(params: {
   };
 }
 
+/**
+ * generate_image: render one image with the deployment's configured image
+ * engine (lib/imagegen) and store it as a first-class generated document, so
+ * it opens in the DocPanel and can be attached or downloaded like a DOCX.
+ * Images are never converted to PDF; documentTypes treats png/jpg as raster.
+ */
+export async function generateImage(
+  title: string,
+  prompt: string,
+  userId: string,
+  db: Db,
+  options?: {
+    size?: unknown;
+    negativePrompt?: string;
+    projectId?: string | null;
+    orgId?: string | null;
+    signal?: AbortSignal;
+  },
+) {
+  const cfg = readImageGenConfig();
+  if (!imageGenerationEnabled(cfg)) {
+    return {
+      error:
+        "Image generation is not configured on this Mike deployment. Tell the user an administrator can enable it (IMAGE_GEN_PROVIDER); do not retry.",
+    };
+  }
+  if (typeof prompt !== "string" || !prompt.trim()) {
+    return { error: "generate_image requires a non-empty prompt" };
+  }
+  let image;
+  try {
+    image = await generateImageBytes(
+      { prompt, size: options?.size, negativePrompt: options?.negativePrompt, signal: options?.signal },
+      cfg,
+    );
+  } catch (err) {
+    const kind = err instanceof AppError ? err.kind : "image_generation.failed";
+    devLog("[generate_image] failed:", kind);
+    return {
+      error:
+        kind === "image_generation.timeout"
+          ? "The image engine did not answer in time. Tell the user and suggest trying again later."
+          : "The image engine could not produce an image for this request. Tell the user; do not retry the same prompt.",
+      error_kind: kind,
+    };
+  }
+  if (options?.signal?.aborted) {
+    return {
+      error: "Image generation was stopped before the file was saved.",
+      error_kind: "image_generation.aborted",
+    };
+  }
+  const result = await persistGeneratedFile({
+    title: title || "image",
+    extension: image.extension,
+    buffer: image.bytes,
+    userId,
+    db,
+    projectId: options?.projectId ?? null,
+    orgId: options?.orgId ?? null,
+  });
+  if ("error" in result) return result;
+  return {
+    ...result,
+    ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}),
+    message: `Image '${result.filename}' has been generated successfully.`,
+  };
+}
+
 export async function generateExcel(
   title: string,
   sheets: unknown[],
@@ -1096,6 +1297,426 @@ export async function generatePpt(
 // ---------------------------------------------------------------------------
 // Document version helpers (DOCX tracked-change editing)
 // ---------------------------------------------------------------------------
+
+function clipCommentText(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/** Pending changes listed per read; the rest is summarised as a count. */
+export const TRACKED_CHANGES_LIST_LIMIT = 60;
+
+export function pendingTrackedChangeCount(summary: TrackedMarkupSummary): number {
+  return summary.changes.length + summary.moves + summary.propertyChanges;
+}
+
+/**
+ * What read_document appends below a Word document's body text so the model
+ * can tell existing redline from body text. The body above is the accepted
+ * view, so without this a pending insertion is indistinguishable from
+ * settled text and a pending deletion is invisible.
+ */
+export function formatTrackedChangesSection(
+  summary: TrackedMarkupSummary,
+): string {
+  const pending = pendingTrackedChangeCount(summary);
+  const commentRecords = summary.commentRecords ?? [];
+  const commentCount = Math.max(summary.comments, commentRecords.length);
+  if (pending === 0 && commentCount === 0) {
+    return "\n\n--- TRACKED CHANGES: none. This document carries no redline or comments. ---";
+  }
+  const lines: string[] = [
+    "",
+    "",
+    `--- TRACKED CHANGES (${pending} pending${commentCount ? `, ${commentCount} comment${commentCount === 1 ? "" : "s"}` : ""}) ---`,
+    "The body text above is the accepted view: pending insertions appear as body text and pending deletions are omitted. The redline still in the file, in document order:",
+  ];
+  const shown = summary.changes.slice(0, TRACKED_CHANGES_LIST_LIMIT);
+  shown.forEach((change, index) => {
+    const who = change.author ?? "unknown author";
+    const when = change.date ? `, ${change.date.slice(0, 10)}` : "";
+    const text = change.text.replace(/\s+/g, " ").trim();
+    const clipped = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+    lines.push(`${index + 1}. [${change.kind}] ${who}${when}: "${clipped}"`);
+  });
+  if (summary.changes.length > shown.length) {
+    const hidden = summary.changes.slice(shown.length);
+    const shownAuthors = new Set(
+      shown.map((change) => change.author ?? "unknown author"),
+    );
+    const counts = new Map<string, number>();
+    for (const change of hidden) {
+      const who = change.author ?? "unknown author";
+      counts.set(who, (counts.get(who) ?? 0) + 1);
+    }
+    const tally = [...counts.entries()]
+      .map(([who, count]) => `${who} (${count})`)
+      .join(", ");
+    lines.push(
+      `… and ${hidden.length} more insertions/deletions. Authors in that remainder: ${tally}.`,
+    );
+    // The first page of a long redline is usually the other side's early
+    // clauses. Changes by an author who does not appear there (this user's
+    // own round, sitting further down) would otherwise be invisible.
+    const unseen = hidden.filter(
+      (change) => !shownAuthors.has(change.author ?? "unknown author"),
+    );
+    const extra = unseen.slice(0, 12);
+    if (extra.length) {
+      lines.push("Changes by authors not in the list above:");
+      extra.forEach((change, index) => {
+        const who = change.author ?? "unknown author";
+        const when = change.date ? `, ${change.date.slice(0, 10)}` : "";
+        const text = change.text.replace(/\s+/g, " ").trim();
+        const clipped = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+        lines.push(`${shown.length + index + 1}. [${change.kind}] ${who}${when}: "${clipped}"`);
+      });
+      if (unseen.length > extra.length) {
+        lines.push(`… and ${unseen.length - extra.length} more from those authors.`);
+      }
+    }
+  }
+  const extras: string[] = [];
+  if (summary.propertyChanges) {
+    extras.push(
+      `${summary.propertyChanges} formatting change${summary.propertyChanges === 1 ? "" : "s"}`,
+    );
+  }
+  if (summary.moves) extras.push(`${summary.moves} moved block${summary.moves === 1 ? "" : "s"}`);
+  if (commentRecords.length === 0 && summary.comments) {
+    extras.push(`${summary.comments} comment${summary.comments === 1 ? "" : "s"}`);
+  }
+  if (extras.length) lines.push(`Also present: ${extras.join(", ")}.`);
+  if (commentRecords.length) {
+    lines.push("Review comments (the text inside each Word comment bubble):");
+    commentRecords.forEach((comment, index) => {
+      const who = comment.author ?? "unknown author";
+      const when = comment.date ? `, ${comment.date.slice(0, 10)}` : "";
+      const anchor = comment.anchor
+        ? ` on "${clipCommentText(comment.anchor, 120)}"`
+        : "";
+      const reply = comment.parentId ? ` reply to comment ${comment.parentId}` : "";
+      const state = comment.resolved ? " [resolved]" : "";
+      lines.push(
+        `${index + 1}. [id ${comment.id}] ${who}${when}${reply}${anchor}${state}: "${clipCommentText(comment.text, 500)}"`,
+      );
+    });
+    lines.push(
+      "To add a review comment or reply in the document, call comment_document. A reply uses parent_id set to the comment id above and does not repeat the anchor.",
+    );
+  }
+  lines.push(
+    "To produce a clean copy with all of this accepted and comments removed, call finalize_document. To produce a markup that shows only your own changes, call finalize_document first and then edit_document on the clean copy.",
+  );
+  return lines.join("\n");
+}
+
+export type DocFinalizedResult = {
+  filename: string;
+  document_id: string;
+  version_id: string;
+  version_number: number;
+  source_document_id: string;
+  source_filename: string;
+  download_url: string;
+  accepted: number;
+  comments_removed: number;
+  error?: string;
+};
+
+/** The clean copy's name: caller's choice, or the source stem plus "(clean)". */
+export function cleanCopyFilename(
+  sourceFilename: string,
+  requested: string | null,
+): string {
+  const stem = (requested?.trim() || sourceFilename).replace(/\.[^./\\]+$/, "");
+  const base = requested?.trim() ? stem : `${stem} (clean)`;
+  return `${base}.docx`;
+}
+
+/**
+ * Accept every tracked change in the source's active version and save the
+ * result as a new document beside it. The source is left as it is, redline
+ * and all, so the markup and the execution copy can travel together.
+ */
+export async function runFinalizeDocument(params: {
+  sourceDocumentId: string;
+  sourceFilename: string;
+  userId: string;
+  projectId: string | null;
+  newFilename: string | null;
+  db: Db;
+}): Promise<
+  | ({ ok: true } & DocFinalizedResult)
+  | { ok: false; error: string }
+> {
+  const { sourceDocumentId, sourceFilename, userId, projectId, newFilename, db } =
+    params;
+  const current = await loadCurrentVersionBytes(sourceDocumentId, db);
+  if (!current) return { ok: false, error: "Could not load document bytes." };
+
+  let accepted: Awaited<ReturnType<typeof acceptAllTrackedChanges>>;
+  try {
+    accepted = await acceptAllTrackedChanges(current.bytes);
+  } catch (err) {
+    devLog("[finalize_document] accept-all failed", err);
+    return { ok: false, error: "The document's tracked changes could not be accepted." };
+  }
+
+  const filename = cleanCopyFilename(sourceFilename, newFilename);
+  const documentId = crypto.randomUUID();
+  const key = storageKey(userId, documentId, filename);
+  const clean = accepted.bytes;
+  const ab = clean.buffer.slice(
+    clean.byteOffset,
+    clean.byteOffset + clean.byteLength,
+  ) as ArrayBuffer;
+  await uploadFile(
+    key,
+    ab,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  );
+
+  let pdfKey: string | null = null;
+  let deferConversion = false;
+  if (process.env.ASYNC_DOCUMENT_CONVERSION === "true") {
+    deferConversion = true;
+  } else {
+    try {
+      const pdf = await docxToPdf(clean);
+      pdfKey = convertedPdfKey(userId, documentId);
+      await uploadFile(
+        pdfKey,
+        pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) as ArrayBuffer,
+        "application/pdf",
+      );
+    } catch (err) {
+      devLog(`[finalize_document] PDF rendition failed for ${filename}:`, err);
+      pdfKey = null;
+    }
+  }
+
+  const { error: docErr } = await db.from("documents").insert({
+    id: documentId,
+    project_id: projectId,
+    user_id: userId,
+    status: "ready",
+    library_kind: "file",
+    library_folder_id: null,
+  });
+  if (docErr) {
+    void enqueueStorageCleanup(db, [key, ...(pdfKey ? [pdfKey] : [])]).catch(
+      () => {},
+    );
+    return { ok: false, error: "Failed to record the clean copy." };
+  }
+  const { data: versionRow, error: verErr } = await createDocumentVersion(db, {
+    document_id: documentId,
+    storage_path: key,
+    pdf_storage_path: pdfKey,
+    source: "upload",
+    version_number: 1,
+    filename,
+    file_type: "docx",
+    size_bytes: clean.byteLength,
+    page_count: null,
+    content_sha256: contentSha256(clean),
+  });
+  if (verErr || !versionRow) {
+    await db.from("documents").delete().eq("id", documentId);
+    return { ok: false, error: "Failed to record the clean copy's version." };
+  }
+  if (deferConversion) {
+    try {
+      await enqueueConversion({
+        documentId,
+        versionId: versionRow.id,
+        userId,
+        storagePath: key,
+        fileType: "docx",
+        pdfKey: convertedPdfKey(userId, documentId),
+        finalizeDocumentStatus: false,
+      });
+    } catch (err) {
+      devLog(`[finalize_document] rendition enqueue failed for ${filename}:`, err);
+    }
+  }
+
+  // The assistant's own pending edit cards on the source are now settled in
+  // the clean copy; mark them so the UI stops offering Accept/Reject for it.
+  await db
+    .from("document_edits")
+    .update({ status: "accepted" })
+    .eq("document_id", sourceDocumentId)
+    .eq("status", "pending");
+
+  return {
+    ok: true,
+    filename,
+    document_id: documentId,
+    version_id: versionRow.id,
+    version_number: versionRow.version_number,
+    source_document_id: sourceDocumentId,
+    source_filename: sourceFilename,
+    download_url: buildDownloadUrl(key, filename),
+    accepted: accepted.accepted + accepted.propertyChangesAccepted,
+    comments_removed: accepted.commentsRemoved,
+  };
+}
+
+
+export type DocCommentedResult = {
+  filename: string;
+  document_id: string;
+  version_id: string;
+  version_number: number;
+  storage_path: string;
+  download_url: string;
+  comments: { id: string; anchor: string; text: string; parent_id: string | null }[];
+  errors: { index: number; reason: string }[];
+};
+
+/**
+ * Write Word review comments into the active .docx version and save that as
+ * the new active version. The bubbles are real comment markup, so they show
+ * in Word's review pane.
+ */
+export async function runCommentDocument(params: {
+  documentId: string;
+  filename: string;
+  userId: string;
+  comments: CommentInput[];
+  db: Db;
+  reuseVersion?: {
+    versionId: string;
+    versionNumber: number;
+    storagePath: string;
+  };
+}): Promise<
+  | ({ ok: true } & DocCommentedResult)
+  | { ok: false; error: string }
+> {
+  const { documentId, filename, userId, comments, db, reuseVersion } = params;
+  const current = await loadCurrentVersionBytes(documentId, db);
+  if (!current) return { ok: false, error: "Could not load document bytes." };
+
+  const { data: authorProfile } = await db
+    .from("user_profiles")
+    .select("display_name, email")
+    .eq("user_id", userId)
+    .maybeSingle();
+  const author = profileAttributionName(authorProfile, "Mike");
+
+  let written: Awaited<ReturnType<typeof applyDocxComments>>;
+  try {
+    written = await applyDocxComments(current.bytes, comments, { author });
+  } catch (err) {
+    devLog("[comment_document] write failed", err);
+    return { ok: false, error: "The comments could not be written into the document." };
+  }
+  if (written.comments.length === 0) {
+    return {
+      ok: false,
+      error: written.errors[0]?.reason ?? "No comments could be added.",
+    };
+  }
+
+  const editedBytes = written.bytes;
+  const ab = editedBytes.buffer.slice(
+    editedBytes.byteOffset,
+    editedBytes.byteOffset + editedBytes.byteLength,
+  ) as ArrayBuffer;
+
+  let versionRowId: string;
+  let newPath: string;
+  let nextVersionNumber: number;
+  let versionFilename = filename;
+
+  if (reuseVersion) {
+    newPath = reuseVersion.storagePath;
+    versionRowId = reuseVersion.versionId;
+    nextVersionNumber = reuseVersion.versionNumber;
+    const clear = await updateDocumentVersion(db, documentId, versionRowId, {
+      content_sha256: null,
+    });
+    if (clear.error || !clear.data) {
+      return { ok: false, error: "Document version is unavailable." };
+    }
+    await uploadFile(
+      newPath,
+      ab,
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    const updated = await updateDocumentVersion(db, documentId, versionRowId, {
+      file_type: "docx",
+      size_bytes: editedBytes.byteLength,
+      page_count: null,
+      content_sha256: contentSha256(editedBytes),
+      pdf_storage_path: null,
+    });
+    if (updated.error || !updated.data) {
+      return { ok: false, error: "Failed to update document version." };
+    }
+  } else {
+    const versionId = crypto.randomUUID().replace(/-/g, "");
+    newPath = `documents/${userId}/${documentId}/edits/${versionId}.docx`;
+    await uploadFile(
+      newPath,
+      ab,
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    const { data: prevRow } = await db
+      .from("document_versions")
+      .select("filename")
+      .eq("document_id", documentId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    versionFilename =
+      (prevRow?.filename as string | null)?.trim() || filename || "Untitled document";
+    const { data: versionRow, error: verErr } = await createDocumentVersion(
+      db,
+      {
+        document_id: documentId,
+        storage_path: newPath,
+        source: "assistant_edit",
+        filename: versionFilename,
+        file_type: "docx",
+        size_bytes: editedBytes.byteLength,
+        page_count: null,
+        content_sha256: contentSha256(editedBytes),
+      },
+      { activate: false },
+    );
+    if (verErr || !versionRow) {
+      return { ok: false, error: "Failed to record document version." };
+    }
+    versionRowId = versionRow.id as string;
+    nextVersionNumber = versionRow.version_number;
+  }
+
+  const activation = await activateDocumentVersion(db, documentId, versionRowId);
+  if (activation.error || !activation.activated) {
+    return { ok: false, error: "Failed to activate document version." };
+  }
+
+  return {
+    ok: true,
+    filename: versionFilename,
+    document_id: documentId,
+    version_id: versionRowId,
+    version_number: nextVersionNumber,
+    storage_path: newPath,
+    download_url: buildDownloadUrl(newPath, versionFilename),
+    comments: written.comments.map((comment) => ({
+      id: comment.id,
+      anchor: comment.anchor,
+      text: comment.text,
+      parent_id: comment.parentId,
+    })),
+    errors: written.errors,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tool dispatch
@@ -1227,6 +1848,7 @@ export async function readDocumentContent(
     readIdentity?.versionId ?? docIndex?.[docLabel]?.version_id ?? null;
   const versionNumber =
     readIdentity?.versionNumber ?? docIndex?.[docLabel]?.version_number ?? null;
+  let trackedChangeCount: number | null = null;
   const emitDocRead = () => {
     if (!emitEvents) return;
     write(
@@ -1236,6 +1858,9 @@ export async function readDocumentContent(
         document_id: readIdentity?.documentId ?? documentId,
         version_id: versionId,
         version_number: versionNumber,
+        ...(trackedChangeCount !== null
+          ? { tracked_change_count: trackedChangeCount }
+          : {}),
       })}\n\n`,
     );
   };
@@ -1403,6 +2028,13 @@ export async function readDocumentContent(
         text = await readIsolated("presentation");
         devLog(
           `[read_document] presentation extracted length=${text.length} for filename="${docInfo.filename}"`,
+        );
+      } else if (isEmailDocumentType(fileType)) {
+        // Headers plus body, parsed from the stored message. Attachments are
+        // separate documents; the header block names them so the model can ask.
+        text = await extractEmailText(Buffer.from(raw), fileType);
+        devLog(
+          `[read_document] email extracted length=${text.length} for filename="${docInfo.filename}"`,
         );
       } else if (
         isPresentationDocumentType(fileType) ||

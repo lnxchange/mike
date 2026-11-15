@@ -3,6 +3,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Message } from "../shared/types";
 import { AskInputPopup } from "./AskInputPopup";
+import { PillButtonUI } from "@mike/ui";
 import { findPendingAskInput } from "@/app/lib/pendingAskInput";
 
 type AskInputSubmit = NonNullable<Parameters<typeof AskInputPopup>[0]["onSubmit"]>;
@@ -18,6 +19,34 @@ function pendingInput(messages: Message[]) {
     };
 }
 
+function pendingPlan(messages: Message[]) {
+    for (
+        let messageIndex = messages.length - 1;
+        messageIndex >= 0;
+        messageIndex--
+    ) {
+        const message = messages[messageIndex];
+        if (message.role === "user") return null;
+        if (message.role !== "assistant" || !message.events) continue;
+        for (
+            let eventIndex = message.events.length - 1;
+            eventIndex >= 0;
+            eventIndex--
+        ) {
+            const event = message.events[eventIndex];
+            if (event.type !== "plan") continue;
+            if (!event.items.some((item) => item.status !== "completed")) {
+                return null;
+            }
+            if (!message.id) return null;
+            return {
+                key: `${message.id}:${event.event_id}`,
+            };
+        }
+    }
+    return null;
+}
+
 export function ChatInputPrompt({
     messages,
     chatKey,
@@ -25,6 +54,7 @@ export function ChatInputPrompt({
     chatLoading = false,
     onSubmit,
     onCancel,
+    onContinue,
     children,
 }: {
     messages: Message[];
@@ -47,6 +77,7 @@ export function ChatInputPrompt({
         ...args: [...Parameters<AskInputSubmit>, onAccepted: () => void]
     ) => ReturnType<AskInputSubmit>;
     onCancel: () => void;
+    onContinue?: () => void;
     children: ReactNode;
 }) {
     // Keep the entered form mounted while the hook optimistically appends its
@@ -72,6 +103,33 @@ export function ChatInputPrompt({
     const activeInput = submittedInput && submittedInput.chatKey === chatKey
         ? submittedInput.input
         : pendingInput(messages);
+    const activePlan = pendingPlan(messages);
+    if (
+        canSend &&
+        !chatLoading &&
+        !activeInput &&
+        activePlan &&
+        onContinue &&
+        !(
+            hiddenInputs.chatKey === chatKey &&
+            hiddenInputs.keys.has(activePlan.key)
+        )
+    ) {
+        return (
+            <div className="flex flex-col gap-2">
+                <div className="flex justify-end px-1">
+                    <PillButtonUI
+                        type="button"
+                        tone="black"
+                        onClick={onContinue}
+                    >
+                        Continue
+                    </PillButtonUI>
+                </div>
+                {children}
+            </div>
+        );
+    }
     if (
         !canSend ||
         chatLoading ||

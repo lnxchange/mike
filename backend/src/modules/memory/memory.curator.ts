@@ -24,6 +24,7 @@ import { providerFailureLevel } from "../../lib/llm/providerErrors";
 import { AppError } from "../../lib/appError";
 import { setOperation } from "../../lib/observability/sentry";
 import { ensureMemoryFile, getMemoryCurrentForFile, MemoryConversationNotQuietError, MemoryDisabledError, MemoryEpochSupersededError, MemoryJobSupersededError, MemoryValidationError, writeMemoryFile, type MemoryFileRow, type MemoryScope, type MemorySurface } from "../../lib/memory/files";
+import { preserveMatterStatusSection } from "../../lib/memory/matterStatus";
 import { MEMORY_INACTIVITY_MS } from "../../lib/memory/schedule";
 import { teamOrgIdOf } from "../../lib/personalOrgs";
 
@@ -861,7 +862,7 @@ export async function runMemoryCuratorScope(
   const scopePolicy =
     args.file.scope === "user"
       ? `This is app-wide memory for one user. Keep only durable, cross-project user facts, explicit preferences, recurring working conventions, and stable personal context directly supported by that user's words. Never copy project-specific or client-confidential matter facts into app memory. Personalisation is the sole source of truth for profile facts: never add or preserve the user's display name, organisation, jurisdiction, practice setting, professional title, or practice areas in memory.md. The saved-personalisation input, when present, lists authoritative values that must be excluded. Existing memory containing any such profile fact should be changed to remove it even when no new memory is added. Never infer missing Personalisation fields from the transcript.`
-      : `This is shared project memory. Keep only durable matter facts, definitions, participant roles, explicit decisions, and working conventions that will help project members later. Do not store unrelated personal preferences. Assume every project member can read the result.`;
+      : `This is shared project memory. Keep only durable matter facts, definitions, participant roles, explicit decisions, and working conventions that will help project members later. Do not store unrelated personal preferences. Assume every project member can read the result. A fenced block bounded by <!-- matter-status:start --> and <!-- matter-status:end --> is written from the latest email thread by a separate pass. Copy that block into the replacement verbatim and do not edit it. Never write or replace a "Where the matter sits" section from this conversation. Chat is not evidence of what passed between the parties.`;
   const evidence = [
     fenced("existing-memory", args.current.content || "(empty)"),
     fenced("conversation-transcript", args.transcript),
@@ -968,7 +969,10 @@ export async function runMemoryCuratorScope(
             written = await services.write({
               db: args.db,
               file: args.file,
-              content: markdown,
+              content:
+                args.file.scope === "project"
+                  ? preserveMatterStatusSection(args.current.content, markdown)
+                  : markdown,
               expectedRevision: args.current.revision,
               source: "curator",
               updatedBy: args.actorUserId,

@@ -26,6 +26,11 @@ export type {
 
 import { isPanelDocument } from "@/app/components/shared/types";
 import { authenticatedFetch } from "@/app/lib/authEvents";
+import type {
+    MatterPullResult,
+    MatterSyncStatusResult,
+    ZohoMatterSearchHit,
+} from "@/app/lib/matterSync";
 import { notifyTabularReviewsChanged } from "@/app/lib/tabularReviewChanges";
 import type { RouterProfileLists } from "@mike/client";
 import { reportedUpstreamMessage } from "@mike/client";
@@ -112,6 +117,9 @@ interface ServerMessage {
     playbook?: { id: string; title: string } | null;
     citations?: Citation[] | null;
     created_at: string;
+    /** "running" on the one assistant row the server is still writing. */
+    status?: "running";
+    started_at?: string | null;
 }
 interface ServerChatDetailOut {
     chat: Chat;
@@ -591,6 +599,39 @@ export async function deleteAccount(): Promise<void> {
     return apiRequest<void>("account.delete", "/user/account", { method: "DELETE" });
 }
 
+type OutlookSignatureRecord = {
+    html: string | null;
+};
+
+export async function getOutlookSignature(): Promise<OutlookSignatureRecord> {
+    return apiRequest<OutlookSignatureRecord>(
+        "settings.connectors",
+        "/integrations/outlook-signature",
+    );
+}
+
+export async function saveOutlookSignature(
+    html: string,
+): Promise<OutlookSignatureRecord> {
+    return apiRequest<OutlookSignatureRecord>(
+        "settings.connectors",
+        "/integrations/outlook-signature",
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ html }),
+        },
+    );
+}
+
+export async function refreshOutlookSignature(): Promise<OutlookSignatureRecord> {
+    return apiRequest<OutlookSignatureRecord>(
+        "settings.connectors",
+        "/integrations/outlook-signature/refresh",
+        { method: "POST" },
+    );
+}
+
 // Settings' "Delete all" actions clear one workspace: `workspace` is
 // "personal" or an organization id; omitted, the server deletes in Personal.
 
@@ -729,6 +770,51 @@ export async function setProjectMemoryEnabled(
     );
 }
 
+export async function getOrgMemory(
+    orgId: string,
+    signal?: AbortSignal,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        "memory.read",
+        `/orgs/${encodeURIComponent(orgId)}/memory`,
+        { signal },
+    );
+}
+
+export async function updateOrgMemory(
+    orgId: string,
+    content: string,
+    expectedRevision: number,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        "memory.update",
+        `/orgs/${encodeURIComponent(orgId)}/memory`,
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                content,
+                expected_revision: expectedRevision,
+            }),
+        },
+    );
+}
+
+export async function setOrgMemoryEnabled(
+    orgId: string,
+    enabled: boolean,
+): Promise<MemoryCurrent> {
+    return apiRequest<MemoryCurrent>(
+        "memory.update",
+        `/orgs/${encodeURIComponent(orgId)}/memory/settings`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+        },
+    );
+}
+
 // --- Async (durable) exports -----------------------------------------------
 // POST schedules a backend job that builds the export off the request thread;
 // the status endpoint is polled until "done"; the download endpoint streams
@@ -787,10 +873,13 @@ export type PracticeSetting =
     "private_practice" | "in_house" | "not_practising";
 
 export type ProfessionalTitle =
+    | "Principal"
     | "Partner"
+    | "Special Counsel"
     | "Senior Associate"
     | "Associate"
     | "Law Clerk"
+    | "Paralegal"
     | "Counsel"
     | "General Counsel"
     | "Legal Counsel"
@@ -825,6 +914,11 @@ export interface UserProfile extends RouterProfileLists {
     lastSelectedChatModel: string | null;
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
+    legalResearchUs: boolean;
+    legalResearchAu: boolean;
+    legalResearchAuEnergy: boolean;
+    legalResearchAuVic: boolean;
+    legalResearchAuCases: boolean;
     /**
      * The deployment answers CourtListener lookups from its bulk index, so
      * the connector is installed for everyone without a token.
@@ -957,6 +1051,11 @@ export async function updateUserProfile(payload: {
     subagentReasoning?: NonNullable<Message["reasoning"]> | null;
     lastSelectedChatModel?: string | null;
     lastSelectedReasoningLevel?: NonNullable<Message["reasoning"]>;
+    legalResearchUs?: boolean;
+    legalResearchAu?: boolean;
+    legalResearchAuEnergy?: boolean;
+    legalResearchAuVic?: boolean;
+    legalResearchAuCases?: boolean;
     quickActionsVisible?: boolean;
     responseDetailsVisible?: boolean;
     darkMode?: boolean;
@@ -1058,6 +1157,10 @@ export async function updateResponseStyle(
     });
 }
 
+/** Names kept for the response-voice settings screen. */
+export const saveCustomInstructions = updateCustomInstructions;
+export const saveResponseStyle = updateResponseStyle;
+
 /** Mirrors backend/src/lib/webSearch/settings.ts. */
 export const WEB_SEARCH_BACKENDS = ["brave", "tavily", "deepseek"] as const;
 
@@ -1151,6 +1254,7 @@ export type ApiKeySettings = {
     vertex?: { location: string } | null;
     custom?: { baseUrl: string } | null;
 };
+
 export type ApiKeyState = Record<
     ApiKeyProvider,
     {
@@ -1264,6 +1368,10 @@ export function getOpenCodeGoModels(
  * Save, replace or remove a key. Keys that are saved with a setting (a region,
  * endpoint, location or base URL) also send it; a setting with a null key changes the saved key's setting only.
  */
+export async function getApiKeyStatus(): Promise<ApiKeyStatus> {
+    return apiRequest<ApiKeyStatus>("settings.keys", "/user/api-keys");
+}
+
 export async function saveApiKey(
     provider: ApiKeyProvider,
     apiKey: string | null,
@@ -1287,6 +1395,15 @@ export async function setApiKeyEnabled(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
     });
+}
+
+export async function getOrgApiKeyStatus(
+    orgId: string,
+): Promise<ApiKeyStatus> {
+    return apiRequest<ApiKeyStatus>(
+        "settings.keys",
+        `/orgs/${encodeURIComponent(orgId)}/api-keys`,
+    );
 }
 
 interface McpToolSummary {
@@ -1619,6 +1736,8 @@ export async function updateProject(
         name?: string;
         cm_number?: string;
         practice?: string | null;
+        client_name?: string | null;
+        description?: string | null;
         visibility?: ContentVisibility;
     },
 ): Promise<Project> {
@@ -1753,6 +1872,44 @@ export async function revokeProjectAccess(
 }
 
 // ---------------------------------------------------------------------------
+// Zoho matter pull and SharePoint sync (integrations module)
+// ---------------------------------------------------------------------------
+
+export async function searchZohoMatters(
+    q: string,
+): Promise<ZohoMatterSearchHit[]> {
+    const result = await apiRequest<{ matters: ZohoMatterSearchHit[] }>(
+        "projects.manage",
+        `/integrations/matters/search?q=${encodeURIComponent(q)}`,
+    );
+    return result.matters;
+}
+
+/**
+ * Enrol a matter and run the filer's first pass. Pass the Zoho matter id from
+ * a search hit, or the matter number a project already carries for "Sync now".
+ */
+export async function pullZohoMatter(
+    target: { matterId: string } | { matterNumber: string },
+    options?: { mode?: "incremental" | "full" },
+): Promise<MatterPullResult> {
+    return apiRequest<MatterPullResult>("projects.manage", "/integrations/matters/pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...target, ...(options ?? {}) }),
+    });
+}
+
+export async function getMatterSyncStatus(
+    projectId: string,
+): Promise<MatterSyncStatusResult> {
+    return apiRequest<MatterSyncStatusResult>(
+        "projects.manage",
+        `/integrations/matters/status/${projectId}`,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Organizations
 // ---------------------------------------------------------------------------
 
@@ -1832,6 +1989,12 @@ export interface OrgInvitation {
     /** Recipient list only — the recipient is not a member yet, so they
      *  cannot look the organization's name up any other way. */
     org_name?: string | null;
+    /**
+     * Present on create and resend only. `sent` means Supabase Auth emailed
+     * a signup invite. `existing_account` means they already have a login.
+     * `failed` means the invitation row was saved and the email was not.
+     */
+    email_delivery?: "sent" | "existing_account" | "failed";
 }
 
 export async function listOrgs(): Promise<Org[]> {
@@ -1954,15 +2117,24 @@ export async function saveOrgApiKey(
     orgId: string,
     provider: ApiKeyProvider,
     apiKey: string | null,
-    settings?: ApiKeySettings[keyof ApiKeySettings],
+    settings?: ApiKeySettings[keyof ApiKeySettings] | { usePersonal?: boolean },
 ): Promise<OrgApiKeySettings> {
+    const usePersonal =
+        !!settings &&
+        typeof settings === "object" &&
+        "usePersonal" in settings &&
+        settings.usePersonal === true;
     return apiRequest<OrgApiKeySettings>(
         "settings.keys", `/orgs/${orgId}/api-keys/${provider}`,
         {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(
-                settings ? { api_key: apiKey, settings } : { api_key: apiKey },
+                usePersonal
+                    ? { use_personal: true }
+                    : settings
+                      ? { api_key: apiKey, settings }
+                      : { api_key: apiKey },
             ),
         },
     );
@@ -2307,10 +2479,19 @@ export async function renameProjectDocument(
 
 export type LibraryKind = "files" | "templates";
 
+export interface LibrarySource {
+    id: string | null;
+    key: string;
+    label: string;
+    access_role: ProjectRole;
+    folder_id: string;
+}
+
 export interface LibraryCollection {
     documents: Document[];
     folders: LibraryFolder[];
     documentsHasMore: boolean;
+    sources?: LibrarySource[];
 }
 
 interface LibraryPagination {
@@ -2321,7 +2502,17 @@ interface LibraryPagination {
 interface LibrarySearchParams extends LibraryPagination {
     search?: string;
     fileType?: string;
-    sortKey?: "name" | "type" | "size" | "version" | "created" | "updated";
+    sortKey?:
+        | "name"
+        | "type"
+        | "size"
+        | "version"
+        | "created"
+        | "updated"
+        | "arrived"
+        | "from"
+        | "to"
+        | "subject";
     sortDirection?: "asc" | "desc";
     signal?: AbortSignal;
 }
@@ -2329,6 +2520,7 @@ interface LibrarySearchParams extends LibraryPagination {
 interface LibrarySearchResults {
     documents: Document[];
     documentsHasMore: boolean;
+    sources?: LibrarySource[];
 }
 
 /**
@@ -2414,6 +2606,7 @@ export async function getLibraryLevels(
     levels: { parentId: string | null; limit: number }[],
 ): Promise<{
     levels: Array<LibraryCollection & { parentId: string | null }>;
+    sources?: LibrarySource[];
 }> {
     return apiRequest("documents.directory", libraryUrl(kind, "/levels"), {
         method: "POST",
@@ -2441,9 +2634,10 @@ export async function searchLibraryDocuments(
 
 export async function getLibraryFilterOptions(
     kind: LibraryScope,
-): Promise<{ fileTypes: string[] }> {
-    return apiRequest<{ fileTypes: string[] }>(
-        "documents.directory", libraryUrl(kind, "/filter-options"),
+): Promise<{ fileTypes: string[]; sources?: LibrarySource[] }> {
+    return apiRequest<{ fileTypes: string[]; sources?: LibrarySource[] }>(
+        "documents.directory",
+        libraryUrl(kind, "/filter-options"),
     );
 }
 
@@ -2477,29 +2671,51 @@ export async function uploadLibraryDocument(
     kind: LibraryScope,
     file: File,
     folderId?: string | null,
-    options?: UploadRequestOptions<Document>,
+    options?: UploadRequestOptions<Document> & { orgId?: string | null },
 ): Promise<Document> {
     return firstUploadResult(
         await uploadLibraryDocuments(kind, [{ file, folderId }], options),
     );
 }
 
+function libraryUploadOrgId(
+    folderId: string | null | undefined,
+    orgId?: string | null,
+): string | null {
+    if (orgId) return orgId;
+    if (folderId?.startsWith("source:") && folderId !== "source:personal") {
+        return folderId.slice("source:".length);
+    }
+    return null;
+}
+
+function libraryUploadFolderId(folderId: string | null | undefined): string | null {
+    if (!folderId || folderId.startsWith("source:")) return null;
+    return folderId;
+}
+
 export async function uploadLibraryDocuments(
     kind: LibraryScope,
     files: UploadSessionInput[],
-    options?: UploadRequestOptions<Document>,
+    options?: UploadRequestOptions<Document> & { orgId?: string | null },
 ): Promise<UploadOutcome<Document>[]> {
+    const orgId =
+        workspaceOrgId(libraryWorkspaceOf(kind)) ??
+        libraryUploadOrgId(undefined, options?.orgId) ??
+        undefined;
     return uploadFilesWithSession<Document>({
         purpose: "document_create",
         destination: {
             scope: "library",
             library_kind: libraryKindOf(kind) === "files" ? "file" : "template",
-            // Filed under the workspace it is uploaded in; Personal has none.
-            ...(workspaceOrgId(libraryWorkspaceOf(kind))
-                ? { org_id: workspaceOrgId(libraryWorkspaceOf(kind)) }
-                : {}),
+            // Workspace wins when the caller named one. An explicit org id
+            // still files an upload onto an organization library shelf.
+            ...(orgId ? { org_id: orgId } : {}),
         },
-        files,
+        files: files.map((file) => ({
+            ...file,
+            folderId: libraryUploadFolderId(file.folderId),
+        })),
         onProgress: options?.onProgress,
         signal: options?.signal,
     });
@@ -2509,13 +2725,15 @@ export async function createLibraryFolder(
     kind: LibraryScope,
     name: string,
     parentFolderId?: string | null,
+    orgId?: string | null,
 ): Promise<LibraryFolder> {
     return apiRequest<LibraryFolder>("documents.directory", libraryUrl(kind, "/folders"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             name,
-            parent_folder_id: parentFolderId ?? null,
+            parent_folder_id: libraryUploadFolderId(parentFolderId),
+            org_id: libraryUploadOrgId(parentFolderId, orgId),
         }),
     });
 }
@@ -2525,6 +2743,7 @@ export async function resolveLibraryFolderPath(
     segments: string[],
     baseFolderId: string | null,
     conflictResolution: FolderConflictResolution = "error",
+    orgId?: string | null,
 ): Promise<FolderPathResolution<LibraryFolder>> {
     return apiRequest<FolderPathResolution<LibraryFolder>>(
         "documents.directory", libraryUrl(kind, "/folder-paths/resolve"),
@@ -2533,7 +2752,8 @@ export async function resolveLibraryFolderPath(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 segments,
-                base_folder_id: baseFolderId,
+                base_folder_id: libraryUploadFolderId(baseFolderId),
+                org_id: libraryUploadOrgId(baseFolderId, orgId),
                 conflict_resolution: conflictResolution,
             }),
         },
@@ -2691,6 +2911,26 @@ export async function replaceDocumentVersionFile(
             onProgress: options?.onProgress,
             signal: options?.signal,
         }),
+    );
+}
+
+export async function saveDocumentToSharePoint(
+    documentId: string,
+    filename: string,
+): Promise<{
+    filename: string;
+    webUrl: string | null;
+    created: boolean;
+    version: DocumentVersion;
+}> {
+    return apiRequest(
+        "documents.directory",
+        `/single-documents/${documentId}/sharepoint-draft`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename }),
+        },
     );
 }
 
@@ -2950,6 +3190,21 @@ export async function listProjectChats(projectId: string): Promise<Chat[]> {
     return apiRequest<Chat[]>("projects.manage", `/projects/${projectId}/chats`);
 }
 
+export async function stageChatOutlookDraft(
+    chatId: string,
+    messageId: string,
+    eventIndex: number,
+): Promise<Extract<AssistantEvent, { type: "outlook_draft_created" }>> {
+    const result = await apiRequest<{
+        event: Extract<AssistantEvent, { type: "outlook_draft_created" }>;
+    }>("chat.turn", `/chat/${chatId}/messages/${messageId}/outlook-draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_index: eventIndex }),
+    });
+    return result.event;
+}
+
 export async function getChat(chatId: string): Promise<ChatDetailOut> {
     const raw = await apiRequest<ServerChatDetailOut>("chat.turn", `/chat/${chatId}`);
     const messages: Message[] = raw.messages.map((m) => {
@@ -2976,6 +3231,9 @@ export async function getChat(chatId: string): Promise<ChatDetailOut> {
                     .join("") ?? "",
             citations: m.citations ?? undefined,
             events,
+            ...(m.status === "running"
+                ? { status: "running" as const, started_at: m.started_at ?? null }
+                : {}),
         };
     });
     return {
@@ -3188,6 +3446,26 @@ export async function streamChat(payload: {
         body: JSON.stringify({ ...body, time_zone: browserTimeZone() }),
         signal,
     }, "chat.turn");
+}
+
+/** Ask the server to start the next slice of a paused assistant plan. */
+export async function continueChatPlan(
+    chatId: string,
+): Promise<
+    | { continued: true; assistantMessageId: string }
+    | { continued: false }
+> {
+    const raw = await apiRequest<{
+        assistant_message_id?: string;
+        continued?: boolean;
+    }>("chat.turn", `/chat/${chatId}/plan/continue`, { method: "POST" });
+    if (typeof raw.assistant_message_id === "string") {
+        return {
+            continued: true,
+            assistantMessageId: raw.assistant_message_id,
+        };
+    }
+    return { continued: false };
 }
 
 type StreamChatMessage = {

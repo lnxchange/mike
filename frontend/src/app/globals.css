@@ -3,10 +3,33 @@
 @import "../../../packages/ui/styles/LiquidGlassUI.css";
 @import "../../../packages/ui/styles/ThemeTokensUI.css";
 @import "../../../packages/ui/styles/DesignTokensUI.css";
+/* Deployment-profile themes. Each is inert unless <html data-profile="..."> matches. */
+@import "./themes/libris-colleague.css";
 
 /* Tailwind v4 scans this application's sources automatically; the shared
    primitives in @mike/ui live outside it and are registered here. */
 @source "../../../packages/ui/src";
+
+/* DesignTokensUI.css owns the palette. These mappings let a deployment
+   profile re-accent azure and supply a display face without forking the
+   shared tokens. Defaults match Mike azure when no profile overrides them. */
+@theme inline {
+    --font-display: var(--font-display-face, var(--font-eb-garamond));
+    --color-blue: var(--brand-accent);
+    --color-blue-50: var(--brand-accent-tint-5);
+    --color-blue-100: var(--brand-accent-tint-10);
+    --color-blue-200: var(--brand-accent-tint-30);
+    --color-blue-600: var(--brand-accent);
+    --color-blue-700: var(--brand-accent-strong);
+}
+
+:root {
+    --brand-accent: rgb(0, 136, 255);
+    --brand-accent-strong: rgb(0, 120, 230);
+    --brand-accent-tint-5: rgba(0, 136, 255, 0.05);
+    --brand-accent-tint-10: rgba(0, 136, 255, 0.1);
+    --brand-accent-tint-30: rgba(0, 136, 255, 0.3);
+}
 
 /* Table surfaces are transparent. Sticky layers retain an opaque page-color
    backing so content scrolling beneath them never shows through. */
@@ -227,6 +250,32 @@
         }
         to {
             background-position: -200% 0;
+        }
+    }
+
+    .animate-shimmer {
+        animation: shimmer 8s linear infinite;
+    }
+
+    @keyframes indeterminate-slide {
+        0% {
+            transform: translateX(-120%);
+        }
+        100% {
+            transform: translateX(320%);
+        }
+    }
+
+    .animate-indeterminate {
+        animation: indeterminate-slide 1.4s ease-in-out infinite;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .animate-indeterminate {
+            animation: none;
+            transform: none;
+            width: 100%;
+            opacity: 0.45;
         }
     }
 }

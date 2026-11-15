@@ -12,6 +12,7 @@ import {
 import { TabPillButtonUI } from "@mike/ui";
 import { Modal } from "../modals/Modal";
 import { FileTypeIcon } from "../shared/FileTypeIcon";
+import { ImageDocumentView } from "../shared/views/ImageDocumentView";
 import { PdfView } from "../shared/views/PdfView";
 import { SpreadsheetView } from "../shared/views/SpreadsheetView";
 import { workflowAddonAssetDisplayUrl } from "@/app/lib/mikeApi";
@@ -216,6 +217,16 @@ function AddonAssetViewer({
     preferPdfForWord: true,
   });
 
+  if (viewType === "image") {
+    return (
+      <ImageDocumentView
+        documentId={asset.id}
+        displayUrl={displayUrl}
+        rounded
+        alt={asset.filename}
+      />
+    );
+  }
   if (viewType === "spreadsheet") {
     // The modal offers no download or upload, so failure copy must not
     // advise one.

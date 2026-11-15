@@ -34,7 +34,10 @@ import {
   startUserExport,
   type UserExportType,
 } from "@/app/lib/mikeApi";
+import { appConfig } from "@/config";
 import { UserVisibleError, notifyError } from "@/app/lib/userFacingError";
+
+const t = appConfig.terminology;
 
 type DeleteDataAction = "chats" | "tabular-reviews" | "projects" | "memory";
 type ExportDataAction =
@@ -78,17 +81,17 @@ function deleteDataCopy(
       };
     case "projects":
       return {
-        title: `Delete all projects${where}?`,
+        title: `Delete all ${t.projectsLower}${where}?`,
         message: personal
-          ? `This will permanently delete all projects you own${where}, including their documents, chats, and tabular reviews.${others} ${undo}`
-          : `This will permanently delete all projects you created${where}, including their documents, chats, and tabular reviews. Colleagues lose them too.${others} ${undo}`,
+          ? `This will permanently delete all ${t.projectsLower} you own${where}, including their documents, chats, and tabular reviews.${others} ${undo}`
+          : `This will permanently delete all ${t.projectsLower} you created${where}, including their documents, chats, and tabular reviews. Colleagues lose them too.${others} ${undo}`,
       };
     case "memory":
       return {
         title: `Delete all memory${where}?`,
         message: personal
-          ? `This permanently deletes your ${workspaceName ? `${workspaceName} memory` : "app memory"} and memories for private projects you created. Project collaborators will also lose those memories.${others} Memory remains enabled and can be rebuilt from future conversations. ${undo}`
-          : `This permanently deletes your memory${where}. Project memories there are not affected, and neither are your other workspaces. Memory remains enabled and can be rebuilt from future conversations. ${undo}`,
+          ? `This permanently deletes your ${workspaceName ? `${workspaceName} memory` : "app memory"} and memories for private ${t.projectsLower} you created. ${t.project} collaborators will also lose those memories.${others} Memory remains enabled and can be rebuilt from future conversations. ${undo}`
+          : `This permanently deletes your memory${where}. ${t.project} memories there are not affected, and neither are your other workspaces. Memory remains enabled and can be rebuilt from future conversations. ${undo}`,
       };
   }
 }
@@ -97,7 +100,7 @@ function deleteDataCopy(
 const DELETE_ACTION_LABELS: Record<DeleteDataAction, string> = {
   chats: "delete your chats",
   "tabular-reviews": "delete your tabular reviews",
-  projects: "delete your projects",
+  projects: `delete your ${t.projectsLower}`,
   memory: "delete your memory",
 };
 
@@ -440,8 +443,8 @@ function PrivacyData({
                 <SettingsLabel>Export account JSON</SettingsLabel>
                 <SettingsDescription>
                   {workspace === PERSONAL_WORKSPACE
-                    ? "Download account metadata, projects, document metadata, workflows, playbooks, and review data as JSON."
-                    : "Download your projects, document metadata, workflows, playbooks, and review data here as JSON."}
+                    ? `Download account metadata, ${t.projectsLower}, document metadata, workflows, playbooks, and review data as JSON.`
+                    : `Download your ${t.projectsLower}, document metadata, workflows, playbooks, and review data here as JSON.`}
                 </SettingsDescription>
               </div>
               <PillButtonUI
@@ -460,7 +463,7 @@ function PrivacyData({
               <div className="space-y-1">
                 <SettingsLabel>Export memory</SettingsLabel>
                 <SettingsDescription>
-                  Download your app memory and every project memory you can
+                  Download your app memory and every {t.projectLower} memory you can
                   access as Markdown files in a ZIP archive.
                 </SettingsDescription>
               </div>
@@ -533,11 +536,11 @@ function PrivacyData({
             </SettingsRow>
             <SettingsRow>
               <div className="space-y-1">
-                <SettingsLabel>Delete all projects</SettingsLabel>
+                <SettingsLabel>Delete all {t.projectsLower}</SettingsLabel>
                 <SettingsDescription>
                   {personal
-                    ? "Permanently delete all projects you own, including documents, chats, and tabular reviews."
-                    : "Permanently delete all projects you created here, including documents, chats, and tabular reviews."}
+                    ? `Permanently delete all ${t.projectsLower} you own, including documents, chats, and tabular reviews.`
+                    : `Permanently delete all ${t.projectsLower} you created here, including documents, chats, and tabular reviews.`}
                 </SettingsDescription>
               </div>
               <PillButtonUI
@@ -559,8 +562,8 @@ function PrivacyData({
                   {!personal
                     ? `Permanently delete your memory in ${workspaceName ?? "this workspace"}.`
                     : workspaceName
-                      ? `Permanently delete your ${workspaceName} memory and memories for private projects you created.`
-                      : "Permanently delete your app memory and memories for private projects you created."}
+                      ? `Permanently delete your ${workspaceName} memory and memories for private ${t.projectsLower} you created.`
+                      : `Permanently delete your app memory and memories for private ${t.projectsLower} you created.`}
                 </SettingsDescription>
               </div>
               <PillButtonUI

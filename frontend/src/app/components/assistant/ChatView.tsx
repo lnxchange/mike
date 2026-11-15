@@ -145,6 +145,12 @@ interface Props {
     chatLoading?: boolean;
     /** Shares document previews with the initial composer before a chat exists. */
     onInitialSubmit?: (message: Message) => void;
+    /** Starts the next slice of a plan the server has stopped. */
+    continuePlan?: () => void;
+    onStageOutlookDraft?: (
+        messageId: string,
+        eventIndex: number,
+    ) => Promise<void>;
     /** Leaves this chat for the new-chat view, without cancelling its answer. */
     onNewChat: () => void;
     /** After this chat is deleted. Defaults to the assistant's new-chat page. */
@@ -214,6 +220,8 @@ export function AssistantChatColumn({
     accessResolved = true,
     chatLoading,
     onInitialSubmit,
+    continuePlan,
+    onStageOutlookDraft,
     onNewChat,
     onChatDeleted,
     documentPanel,
@@ -1149,6 +1157,8 @@ export function AssistantChatColumn({
                                                     />
                                                 ) : (
                                                     <AssistantMessage
+                                                        messageId={msg.id}
+                                                        onStageOutlookDraft={onStageOutlookDraft}
                                                         events={msg.events}
                                                         isStreaming={
                                                             i === messages.length - 1 &&
@@ -1277,6 +1287,13 @@ export function AssistantChatColumn({
                                                     { role: "user", content, files },
                                                     { askInputsResponse: response, onAccepted },
                                                 )
+                                            }
+                                            onContinue={
+                                                isResponseLoading || !continuePlan
+                                                    ? undefined
+                                                    : () => {
+                                                          continuePlan();
+                                                      }
                                             }
                                             onCancel={cancel}
                                         >

@@ -23,10 +23,27 @@ import {
   type InvitableOrgRole,
 } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { appConfig } from "@/config";
 import { settleBulkRequests } from "@/app/lib/bulkRequests";
 
 function friendlyError(error: unknown, fallback: string) {
   return userFacingApiError(error, fallback);
+}
+
+function invitationNotice(
+  email: string,
+  delivery: OrgInvitation["email_delivery"],
+  resent = false,
+) {
+  if (delivery === "existing_account") {
+    return `${email} already has a ${appConfig.branding.appName} account. The invitation will be waiting when they sign in.`;
+  }
+  if (delivery === "failed") {
+    return `The invitation for ${email} is saved, but the signup email could not be sent. Try resend.`;
+  }
+  return resent
+    ? `Invitation resent to ${email}.`
+    : `Invitation sent to ${email}.`;
 }
 
 const OWNER_ONLY_INVITATION =
@@ -100,7 +117,10 @@ export function CreateOrganizationModal({
       const invitations = await settleBulkRequests(memberEmails, (email) =>
         createOrgInvitation(org.id, email, "member"),
       );
-      if (invitations.failed.length > 0) {
+      if (
+        invitations.failed.length > 0 ||
+        invitations.values.some((value) => value.email_delivery === "failed")
+      ) {
         setCreatedOrg(org);
         setError(
           "Organization created, but some invitations could not be sent. You can add them later.",
@@ -268,18 +288,21 @@ export function InviteOrganizationMemberModal({
   async function invite(email: string) {
     setError(null);
     setNotice(null);
+    let delivery: OrgInvitation["email_delivery"];
     try {
-      await createOrgInvitation(org.id, email, role);
+      const invitation = await createOrgInvitation(org.id, email, role);
+      delivery = invitation.email_delivery;
     } catch (err) {
       setError(friendlyError(err, "Could not send the invitation."));
       return false;
     }
-    setNotice(`Invitation sent to ${email}.`);
+    const sent = invitationNotice(email, delivery);
+    setNotice(sent);
     // The invitation really was sent, so the notice stands — but if the list
     // behind this modal could not be re-read, say that rather than let the
     // unchanged list quietly contradict the notice.
     if (!(await refreshQuietly(onChanged)))
-      setNotice(`Invitation sent to ${email}. ${STALE_LIST_NOTICE}`);
+      setNotice(`${sent} ${STALE_LIST_NOTICE}`);
     return true;
   }
 
@@ -294,8 +317,12 @@ export function InviteOrganizationMemberModal({
     let successNotice: string | null = null;
     try {
       if (action === "resend") {
-        await resendOrgInvitation(org.id, invitation.id);
-        successNotice = `Invitation resent to ${invitation.email}.`;
+        const resent = await resendOrgInvitation(org.id, invitation.id);
+        successNotice = invitationNotice(
+          invitation.email,
+          resent.email_delivery,
+          true,
+        );
       } else {
         await cancelOrgInvitation(org.id, invitation.id);
         successNotice = `Invitation to ${invitation.email} cancelled.`;

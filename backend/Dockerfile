@@ -6,7 +6,7 @@ FROM node:22-slim
 # schema and migrations applied always belong to the same release as the code
 # (scripts/migrate.sh needs psql).
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libreoffice util-linux postgresql-client \
+  && apt-get install -y --no-install-recommends libreoffice fonts-liberation util-linux postgresql-client \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

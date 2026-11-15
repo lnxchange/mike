@@ -46,7 +46,8 @@ export function DocumentTitleRow({
     const isFile =
         document.type === "docx" ||
         document.type === "pdf" ||
-        document.type === "spreadsheet";
+        document.type === "spreadsheet" ||
+        document.type === "image";
     const versionNumber = document.version_number;
 
     return (

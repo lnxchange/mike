@@ -5,6 +5,9 @@ import { DbJobDeferredError, type Db, type DbJob } from "../../lib/dbq/types";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import { AppError } from "../../lib/appError";
 import { reportError, setOperation } from "../../lib/observability/sentry";
+import { enrichExtractedPdfText, extractImageOcrText, ocrEnabled } from "../../lib/ocr/ocrClient";
+import { contentTypeForDocumentType, isImageDocumentType } from "../../lib/documentTypes";
+import { queueDocumentEmbeddings } from "./documents.embeddings";
 
 export { extractDocumentText } from "../../lib/extraction/documentText";
 
@@ -48,6 +51,26 @@ export async function handleDocumentExtractText(db: Db, job: DbJob): Promise<voi
         await markDocumentTextFailed(db, job, "too_large");
         return;
       }
+      if (
+        (fileType.toLowerCase() === "pdf" || isImageDocumentType(fileType)) &&
+        (extracted.textlessPageCount ?? 0) > 0 &&
+        ocrEnabled()
+      ) {
+        const enriched = isImageDocumentType(fileType)
+          ? await extractImageOcrText(
+              raw,
+              contentTypeForDocumentType(fileType) as "image/png" | "image/jpeg",
+            )
+          : await enrichExtractedPdfText(raw, extracted);
+        extracted = { text: enriched.text, textlessPageCount: enriched.textlessPageCount };
+        if (enriched.error) {
+          reportError(enriched.error, {
+            level: "warning",
+            tags: { component: "documents", stage: "ocr", job_kind: "document.extract_text" },
+            extra: { job_id: job.id, version_id: versionId },
+          });
+        }
+      }
       const { text, textlessPageCount } = extracted;
       const { error: publishError } = await db.rpc("publish_document_text", {
         p_version_id: versionId, p_revision: revision,
@@ -55,6 +78,8 @@ export async function handleDocumentExtractText(db: Db, job: DbJob): Promise<voi
         p_text: text.replaceAll("\0", ""), p_sha256: hash, p_textless_pages: textlessPageCount,
       });
       if (publishError) throw publishError;
+      // Optional RAG (RAG_ENABLED=true): best effort, never fails extraction.
+      await queueDocumentEmbeddings(db, versionId);
     });
   } catch (error) {
     if (error instanceof ExtractionBusyError) {

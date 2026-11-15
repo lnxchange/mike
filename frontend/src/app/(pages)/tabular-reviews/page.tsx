@@ -40,13 +40,16 @@ import {
     notifyBulkReviewDeleteOutcome,
 } from "@/app/lib/deleteTabularReviewsWithConcurrency";
 import { useQueryParamTab } from "@/app/hooks/useQueryParamTab";
+import { appConfig } from "@/config";
 import { useIdSet } from "@/app/hooks/useIdSet";
+
+const t = appConfig.terminology;
 
 type ReviewScope = TabularReviewScope;
 
 const REVIEW_SCOPES: { id: ReviewScope; label: string }[] = [
     { id: "all", label: "All" },
-    { id: "in-project", label: "In Project" },
+    { id: "in-project", label: `In ${t.project}` },
     { id: "standalone", label: "Standalone" },
 ];
 const REVIEW_SCOPE_IDS = REVIEW_SCOPES.map((scope) => scope.id);

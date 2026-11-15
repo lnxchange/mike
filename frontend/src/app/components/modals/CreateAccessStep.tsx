@@ -16,6 +16,7 @@ import {
     type OrganizationAccessAssignment,
     type AccessRow,
 } from "./AccessEditor";
+import { appConfig } from "@/config";
 
 export interface PendingDirectGrant {
     email: string;
@@ -46,7 +47,7 @@ export function CreateAccessStep({
     onOrgOverridesChange,
     inheritedFromProject = false,
     inheritedProjectId = null,
-    ownerLabel = "Project owners",
+    ownerLabel = `${appConfig.terminology.project} owners`,
     resourceNoun,
     visibility = "private",
 }: {

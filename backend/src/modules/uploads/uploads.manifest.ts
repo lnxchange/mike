@@ -27,6 +27,52 @@ export const UPLOAD_SESSION_TTL_SECONDS = 30 * 60;
 export const UPLOAD_URL_TTL_SECONDS = 15 * 60;
 export const UPLOAD_VERIFICATION_LEASE_SECONDS = 5 * 60;
 
+/**
+ * Where a file came from when an integration (the Attune filer mirroring a
+ * SharePoint matter folder) uploads on a person's behalf. Stored on the
+ * created document so a re-run recognises what is already here and a changed
+ * item becomes a new version instead of a duplicate. Browser uploads never
+ * send it.
+ */
+const externalReferenceSchema = z
+  .object({
+    provider: z.literal("sharepoint"),
+    drive_id: z.string().trim().min(1).max(512),
+    item_id: z.string().trim().min(1).max(512),
+    ctag: z.string().trim().min(1).max(512),
+    web_url: z.string().trim().min(1).max(2048).optional(),
+  })
+  .strict();
+
+export type UploadExternalReference = z.infer<typeof externalReferenceSchema>;
+
+function isIsoDateTime(value: string): boolean {
+  const time = Date.parse(value);
+  return Number.isFinite(time);
+}
+
+const emailMetaSchema = z
+  .object({
+    subject: z.string().trim().max(2000).optional(),
+    from: z.string().trim().max(2000).optional(),
+    to: z.string().trim().max(4000).optional(),
+    received_at: z
+      .string()
+      .trim()
+      .max(64)
+      .refine(isIsoDateTime, "received_at must be an ISO date")
+      .optional(),
+    internet_message_id: z.string().trim().max(998).optional(),
+  })
+  .strict();
+
+export type UploadEmailMeta = z.infer<typeof emailMetaSchema>;
+
+export type UploadClientMeta = {
+  external?: UploadExternalReference;
+  email?: UploadEmailMeta;
+};
+
 const clientFileSchema = z
   .object({
     client_id: z.string().trim().min(1).max(128),
@@ -34,13 +80,15 @@ const clientFileSchema = z
       .string()
       .trim()
       .min(1)
-      .max(255)
+      .max(400)
       .refine(
         (filename) => !/[\x00-\x1F\x7F/\\]/.test(filename),
         "filename is invalid",
       ),
     size_bytes: z.number().int().positive().max(MAX_UPLOAD_SIZE_BYTES),
     folder_id: z.string().uuid().nullable().optional(),
+    external: externalReferenceSchema.optional(),
+    email: emailMetaSchema.optional(),
   })
   .strict();
 
@@ -147,6 +195,11 @@ export type UploadSessionFile = {
   expected_size_bytes: number;
   staging_storage_path: string;
   sealed_storage_path: string;
+  /**
+   * Persisted as `upload_session_files.client_meta`. Null rather than
+   * absent so the RPC's jsonb_to_recordset column list always finds the key.
+   */
+  client_meta: UploadClientMeta | null;
 };
 
 export type ParsedUploadSessionRequest = {
@@ -184,10 +237,12 @@ export function parseUploadSessionRequest(
     const issue = parsed.error.issues[0];
     const isFileTooLarge =
       issue?.code === "too_big" && issue.path.includes("size_bytes");
+    const field = issue?.path.length ? issue.path.join(".") : "";
+    const message = isFileTooLarge
+      ? "Each uploaded file must be 100 MB or smaller"
+      : (issue?.message ?? "Invalid upload session request");
     throw new UploadSessionValidationError(
-      isFileTooLarge
-        ? "Each uploaded file must be 100 MB or smaller"
-        : (issue?.message ?? "Invalid upload session request"),
+      field ? `${field}: ${message}` : message,
       isFileTooLarge
         ? { status: 413, code: "upload_file_too_large" }
         : undefined,
@@ -249,6 +304,13 @@ export function parseUploadSessionRequest(
       expected_size_bytes: file.size_bytes,
       staging_storage_path: `${basePath}/staging`,
       sealed_storage_path: `${basePath}/sealed`,
+      client_meta:
+        file.external || file.email
+          ? {
+              ...(file.external ? { external: file.external } : {}),
+              ...(file.email ? { email: file.email } : {}),
+            }
+          : null,
     };
   });
 

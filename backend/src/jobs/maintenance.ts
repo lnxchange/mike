@@ -6,6 +6,7 @@ import { runIsolated } from "../lib/dbq/jobScope";
 import { reportError, setOperation } from "../lib/observability/sentry";
 import type { Operation } from "../lib/observability/sentryPrivacy";
 import { backfillDocumentText, sweepStaleProcessingDocuments } from "../modules/documents/documents.service";
+import { enqueueMatterBriefsForExistingProjects } from "../modules/memory/memory.service";
 import { sweepStaleGeneratingCells } from "../modules/tabular/tabular.service";
 import { expireDepartureArchives, purgeExpiredOrganizations } from "../modules/orgs/orgs.service";
 import { purgeExpiredSubagentRuns } from "../modules/chat/chat.service";
@@ -38,12 +39,13 @@ function runSweep<T>(operation: Operation, work: () => Promise<T>): Promise<T | 
 /** Run recovery/expiry sweeps; errors are contained per sweep. */
 export async function runStaleWorkSweep(
     db: Db = createServerSupabase(),
-): Promise<{ documents: number; cells: number }> {
+): Promise<{ documents: number; cells: number; matterBriefs: number }> {
     await runSweep("maintenance.document_text", () => backfillDocumentText(db));
     const documents = await runSweep("maintenance.documents", () => sweepStaleProcessingDocuments(db));
     const cells = await runSweep("maintenance.cells", () => sweepStaleGeneratingCells(db));
     await runSweep("maintenance.organization_archives", () => expireDepartureArchives(db));
     await runSweep("maintenance.organizations", () => purgeExpiredOrganizations(db));
     await runSweep("maintenance.subagent_runs", () => purgeExpiredSubagentRuns(db));
-    return { documents: documents ?? 0, cells: cells ?? 0 };
+    const matterBriefs = await runSweep("maintenance.matter_briefs", () => enqueueMatterBriefsForExistingProjects(db));
+    return { documents: documents ?? 0, cells: cells ?? 0, matterBriefs: matterBriefs ?? 0 };
 }

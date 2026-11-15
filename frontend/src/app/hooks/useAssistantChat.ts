@@ -12,7 +12,13 @@ import {
   type SetStateAction,
 } from "react";
 import { useRouter } from "next/navigation";
-import { stopChatTurn, streamChat, streamProjectChat } from "@/app/lib/mikeApi";
+import {
+  continueChatPlan,
+  stageChatOutlookDraft,
+  stopChatTurn,
+  streamChat,
+  streamProjectChat,
+} from "@/app/lib/mikeApi";
 import {
   createTurnCursor,
   createTurnEventSink,
@@ -757,6 +763,48 @@ export function useAssistantChat({
     }
   };
 
+  const continuePlan = async (): Promise<void> => {
+    const id = chatIdRef.current;
+    if (!id || hasAssistantTurn(id)) return;
+    setIsResponseLoading(true);
+    try {
+      const result = await continueChatPlan(id);
+      if (result.continued) await loadAssistantChat(id);
+    } catch (error) {
+      notifyError(error, {
+        action: "continue this response",
+        operation: turnOperation,
+        fallback: TURN_FAILED_MESSAGE,
+      });
+    } finally {
+      if (chatIdRef.current === id) setIsResponseLoading(false);
+    }
+  };
+
+  const stageOutlookDraft = async (messageId: string, eventIndex: number) => {
+    const id = chatIdRef.current;
+    if (!id) {
+      throw new UserVisibleError(
+        "The draft could not be staged. Please try again.",
+        { kind: "validation" },
+      );
+    }
+    const event = await stageChatOutlookDraft(id, messageId, eventIndex);
+    setMessages((prev) =>
+      prev.map((message) => {
+        if (message.id !== messageId || !message.events) return message;
+        return {
+          ...message,
+          events: message.events.map((item, index) =>
+            index === eventIndex && item.type === "outlook_draft_preview"
+              ? event
+              : item,
+          ),
+        };
+      }),
+    );
+  };
+
   const handleNewChat = async (
     message: Message,
     projectId?: string,
@@ -790,6 +838,8 @@ export function useAssistantChat({
     isLoadingCitations,
     handleChat,
     handleNewChat,
+    continuePlan,
+    stageOutlookDraft,
     setMessages,
     cancel,
     detach,

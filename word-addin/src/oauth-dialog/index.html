@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Continue with Google</title>
+    <title>Continue with Libris Colleague</title>
     <script
       type="text/javascript"
       src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"
@@ -18,10 +18,10 @@
 
       body {
         align-items: center;
-        background: #f9fafb;
-        color: #111827;
+        background: #f7f8f9;
+        color: #263033;
         display: flex;
-        font-family: Inter, system-ui, sans-serif;
+        font-family: "Source Sans Pro", ui-sans-serif, system-ui, sans-serif;
         justify-content: center;
         padding: 24px;
         text-align: left;
@@ -41,8 +41,21 @@
   </head>
   <body>
     <main>
-      <h1>Connecting to Google</h1>
-      <p id="status">Opening Google sign-in…</p>
+      <h1 id="title">Connecting</h1>
+      <p id="status">Opening sign-in…</p>
+      <script>
+        (function () {
+          var provider =
+            new URLSearchParams(window.location.search).get("provider") ||
+            window.sessionStorage.getItem("mike-word-oauth-provider");
+          var label = provider === "azure" ? "Microsoft" : "Google";
+          document.title = "Continue with " + label;
+          var title = document.getElementById("title");
+          var status = document.getElementById("status");
+          if (title) title.textContent = "Connecting to " + label;
+          if (status) status.textContent = "Opening " + label + " sign-in…";
+        })();
+      </script>
     </main>
   </body>
 </html>

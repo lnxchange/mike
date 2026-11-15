@@ -65,6 +65,7 @@ vi.mock("./ProjectWorkspace", () => ({
         setDocumentUploadHeaderAction: vi.fn(),
         accessRole: role.current,
         canDo: (capability: Capability) => can(role.current, capability),
+        sharepointIngest: null,
     }),
 }));
 
