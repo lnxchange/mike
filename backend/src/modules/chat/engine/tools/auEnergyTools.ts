@@ -1,5 +1,4 @@
 export type { AuEnergyToolEvent } from "@mike/contracts";
-import type { AuEnergyToolEvent } from "@mike/contracts";
 
 export type { LegislationCitationEvent } from "@mike/contracts";
 

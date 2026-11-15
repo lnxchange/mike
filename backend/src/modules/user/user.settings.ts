@@ -203,7 +203,13 @@ export async function getUserModelSettings(
             .eq("user_id", userId)
             .single();
         if (!retried.error) {
-            data = { ...retried.data, ...absent } as typeof data;
+            // A dynamic column list cannot be parsed by the client types, so
+            // the row is the same shape as the literal select above, with the
+            // dropped columns filled in as null.
+            data = {
+                ...(retried.data as unknown as NonNullable<typeof profileResult.data>),
+                ...absent,
+            } as typeof data;
             profileError = null;
         } else {
             profileError = retried.error;

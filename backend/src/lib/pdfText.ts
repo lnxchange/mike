@@ -353,6 +353,23 @@ export async function extractPdfTextForIndex(buf: ArrayBuffer): Promise<{ text: 
   };
 }
 
+/** How many pages the extraction notice says had no text layer. */
+export function textlessPageCount(text: string): number {
+  const scanned = text.match(
+    /none of its pages could be read \(([^)]+)\)/,
+  );
+  const partial = text.match(/^Pages without a text layer: ([^.]+)\./);
+  const list = scanned?.[1] ?? partial?.[1];
+  if (!list) return 0;
+  let count = 0;
+  for (const part of list.split(",").map((item) => item.trim())) {
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) count += Number(range[2]) - Number(range[1]) + 1;
+    else if (/^\d+$/.test(part)) count += 1;
+  }
+  return count;
+}
+
 export async function extractPdfText(buf: ArrayBuffer): Promise<string> {
   const read = await readPdfPages(buf);
   if (!read.pages) {

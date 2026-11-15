@@ -27,7 +27,6 @@ import { devLog } from "./log";
 /** AEMC books larger than this are not snapshotted into the shelf. */
 export const AEMC_SNAPSHOT_MAX_NODES = 500;
 
-const ESC_ORIGIN = "https://www.esc.vic.gov.au";
 const AEMC_API = "https://energy-rules.aemc.gov.au/api/v1";
 const AEMC_WEB = "https://energy-rules.aemc.gov.au";
 const USER_AGENT = "mike-legal-assistant (https://github.com/lnxchange/mike)";

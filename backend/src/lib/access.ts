@@ -254,6 +254,22 @@ export type LibraryActor = {
     sources: LibrarySource[];
 };
 
+/**
+ * Every org id the caller belongs to. Used to scope collection reads and to
+ * validate an org_id chosen at create time.
+ */
+export async function listUserOrgIds(userId: string, db: Db): Promise<string[]> {
+    const { data } = await db
+        .from("org_members")
+        .select("org_id")
+        .eq("user_id", userId);
+    const ids = new Set<string>();
+    for (const row of (data ?? []) as { org_id?: string | null }[]) {
+        if (row.org_id) ids.add(row.org_id);
+    }
+    return [...ids];
+}
+
 /** Personal shelf plus every organisation the caller belongs to. */
 export async function resolveLibraryActor(
     db: Db,

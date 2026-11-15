@@ -592,8 +592,6 @@ export const LAST_STEP_WRITE_REMINDER = `LAST STEP: Do not call any tools. Write
 /** Research steps already taken before the next step must be the answer. */
 export const RESEARCH_ROUNDS_BEFORE_WRITE = 4;
 
-const WRITE_FROM_RESEARCH_NUDGE = `Write the user-facing answer now from the documents and notes already in this conversation. Do not call tools. Do not start the research again. If something is still unread, say what remains.`;
-
 export const PLAN_NOW_REMINDER = `PLAN NOW: Call create_plan. Name the parts of the response, including what you still need to read. Each item is one short sentence. Do not review, explain, draft, or answer the substance in this response.`;
 
 export const PLAN_COMPLETE_SUMMARY = `PLAN COMPLETE: The plan has no remaining steps. Do not call any tools. Write a short summary of what was actually produced for the user. Name the documents, edits, and notes that exist in this conversation. If a step was marked done but the document, edit, or note was not produced, say so and include the text now. Do not claim something was drafted, filed, or placed in Outlook unless that happened in this conversation.`;

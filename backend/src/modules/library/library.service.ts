@@ -44,6 +44,10 @@ export type LibraryKind = "file" | "template";
 const LIBRARY_IDS_PAGE_SIZE = 1000;
 const LIBRARY_IDS_MAX_PAGES = 50;
 const LIBRARY_BULK_DELETE_BATCH_SIZE = 100;
+const SOURCE_FOLDER_PREFIX = "source:";
+const PERSONAL_SOURCE_KEY = "personal";
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function normalizeLibraryKind(value: unknown): LibraryKind | null {
   if (value === "file" || value === "files") return "file";
@@ -1523,12 +1527,12 @@ async function shelf_createLibraryFolder(
   actor: LibraryActor,
   kind: LibraryKind,
   body: {
-    name?: string;
+    name?: unknown;
     parent_folder_id?: string | null;
     org_id?: string | null;
   },
 ): Promise<ServiceResult<unknown>> {
-  const name = body.name?.trim();
+  const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return shelf_err(400, "name is required");
   const target = await resolveLibraryWriteTarget(db, actor, kind, {
     folder_id: body.parent_folder_id ?? null,
@@ -1556,7 +1560,7 @@ async function shelf_updateLibraryFolder(
   actor: LibraryActor,
   kind: LibraryKind,
   folderId: string,
-  body: { name?: string; parent_folder_id?: string | null },
+  body: { name?: unknown; parent_folder_id?: string | null },
 ): Promise<ServiceResult<unknown>> {
   const folder = await shelf_loadLibraryFolder(db, actor, kind, folderId);
   if (!folder || folder.virtual) return shelf_err(404, "Folder not found");
@@ -1566,6 +1570,7 @@ async function shelf_updateLibraryFolder(
     updated_at: new Date().toISOString(),
   };
   if (body.name != null) {
+    if (typeof body.name !== "string") return shelf_err(400, "name must be a non-empty string");
     const trimmed = body.name.trim();
     if (!trimmed) return shelf_err(400, "name is required");
     updates.name = trimmed;

@@ -12833,7 +12833,7 @@ grant execute on function public.publish_playbook_review(uuid, uuid, text, jsonb
 -- docs/document-semantic-search.md for an optional HNSW index once a
 -- deployment fixes its dimension.
 
-create extension if not exists vector;
+create extension if not exists vector with schema extensions;
 
 create table if not exists public.document_text_chunks (
   version_id uuid not null references public.document_versions(id) on delete cascade,
@@ -12847,7 +12847,7 @@ create table if not exists public.document_text_chunks (
   end_char integer not null,
   content text not null,
   content_tsv tsvector generated always as (to_tsvector('simple', content)) stored,
-  embedding vector not null,
+  embedding extensions.vector not null,
   created_at timestamptz not null default now(),
   primary key (version_id, embedding_model, embedding_dimensions, chunk_index)
 );
@@ -12915,7 +12915,7 @@ begin
   delete from public.document_text_chunks
     where version_id=p_version_id and embedding_model=p_model and embedding_dimensions=p_dimensions;
   insert into public.document_text_chunks(version_id,source_revision,embedding_model,embedding_dimensions,chunk_index,page_start,page_end,start_char,end_char,content,embedding)
-    select p_version_id,p_revision,p_model,p_dimensions,c.chunk_index,c.page_start,c.page_end,c.start_char,c.end_char,c.content,c.embedding::vector
+    select p_version_id,p_revision,p_model,p_dimensions,c.chunk_index,c.page_start,c.page_end,c.start_char,c.end_char,c.content,c.embedding::extensions.vector
     from jsonb_to_recordset(p_chunks) as c(chunk_index integer,page_start integer,page_end integer,start_char integer,end_char integer,content text,embedding text);
   update public.document_embedding_status set status='ready',chunk_count=jsonb_array_length(p_chunks),error_code=null,updated_at=now()
     where version_id=p_version_id and embedding_model=p_model and embedding_dimensions=p_dimensions and source_revision=p_revision;
@@ -12966,7 +12966,7 @@ create or replace function public.search_document_chunks(
   p_project_id uuid default null, p_document_id uuid default null, p_limit integer default 8,
   p_dimensions integer default 0
 ) returns jsonb language plpgsql stable security invoker set search_path=public,pg_temp as $$
-declare result jsonb; q vector; page_limit integer:=least(greatest(coalesce(p_limit,8),1),20);
+declare result jsonb; q extensions.vector; page_limit integer:=least(greatest(coalesce(p_limit,8),1),20);
   project_allowed boolean:=false; tsq tsquery;
 begin
   if p_scope is null or p_scope not in ('project','library','templates','document')
@@ -12975,7 +12975,7 @@ begin
      or (p_scope='project' and p_project_id is null) or (p_scope='document' and p_document_id is null) then
     raise exception 'Invalid semantic search' using errcode='22023';
   end if;
-  q:=p_query_embedding::vector;
+  q:=p_query_embedding::extensions.vector;
   tsq:=websearch_to_tsquery('simple',p_query_text);
   if p_scope='project' then
     select public.project_access_role(p.id,p.user_id,p.org_id,p_user_id,p_user_email) is not null
