@@ -1,44 +1,37 @@
-# Typecheck / lint / build for PRs that are not aimed at main.
+# Typecheck / build for PRs into the working branch.
 # Upstream CI already covers PRs into main. This job is the required check
 # that auto-merge of upstream-sync PRs into the working branch waits on.
 name: Fork verify
 
 on:
   pull_request:
-    branches-ignore: [main]
+    branches: ["cursor/setup-supabase-vercel-oss-cad9"]
+
+# Least privilege for the job token: checkout and npm only.
+permissions:
+  contents: read
 
 jobs:
-  backend:
-    name: Backend verify
+  verify:
+    strategy:
+      matrix:
+        include:
+          - workspace: Backend
+            dir: backend
+          - workspace: Frontend
+            dir: frontend
+    name: ${{ matrix.workspace }} verify
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: backend
+        working-directory: ${{ matrix.dir }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: backend/package-lock.json
-      - name: Validate package.json and lockfile parse
-        run: node -e "for (const f of ['package.json','package-lock.json']) JSON.parse(require('fs').readFileSync(f, 'utf8'))"
-      - run: npm ci
-      - run: npm run verify
-
-  frontend:
-    name: Frontend verify
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
       - name: Validate package.json and lockfile parse
         run: node -e "for (const f of ['package.json','package-lock.json']) JSON.parse(require('fs').readFileSync(f, 'utf8'))"
       - run: npm ci
