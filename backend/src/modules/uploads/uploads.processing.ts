@@ -54,6 +54,7 @@ import {
   deleteFilesBestEffort,
   StorageOperationError,
   storageKey,
+  uploadFileFromPath,
   versionStorageKey,
 } from "../../lib/storage";
 import { createServerSupabase, type Db } from "../../lib/supabase";

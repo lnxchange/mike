@@ -1,8 +1,6 @@
 export type { AuLegislationToolEvent } from "@mike/contracts";
-import type { AuLegislationToolEvent } from "@mike/contracts";
 
 export type { LegislationCitationEvent } from "@mike/contracts";
-import type { LegislationCitationEvent } from "@mike/contracts";
 
 export const AU_LEGISLATION_TOOL_NAMES = {
     search: "au_search_legislation",
